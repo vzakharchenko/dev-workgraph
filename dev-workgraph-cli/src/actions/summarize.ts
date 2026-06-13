@@ -1,0 +1,164 @@
+// SPDX-FileCopyrightText: 2025-2026 Vasyl Zakharchenko
+// SPDX-License-Identifier: Apache-2.0
+
+import fs from "node:fs";
+import path from "node:path";
+import inquirer from "inquirer";
+import { loadConfig, repoCommitsDir, setOllamaConfig } from "../lib/config.js";
+import { resolveRepo } from "../lib/git.js";
+import { type ModelLayer, enforceSignalReasons, modelJsonSchema } from "../lib/model.js";
+import { chatJson, listModels, resolveBaseUrl } from "../lib/ollama.js";
+import { COMMIT_SUMMARY_SYSTEM, buildCommitUserPrompt } from "../lib/prompts.js";
+import type { CommitRecord } from "../lib/records.js";
+
+/**
+ * Options for the `summarize` command.
+ */
+export interface SummarizeOptions {
+  /** Path to the repository whose exported commits should be summarized. */
+  repo: string;
+  /** Ollama base URL override. */
+  url?: string;
+  /** Model name; skips the interactive picker when given. */
+  model?: string;
+  /** Re-summarize commits that already have a model layer. */
+  force?: boolean;
+  /** Only process the first N pending commits (useful for trials). */
+  limit?: number;
+}
+
+/**
+ * Recursively lists every commit JSON file under the commits directory.
+ * @param dir - The commits directory.
+ */
+function listCommitJsonFiles(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  const files: string[] = [];
+  for (const entry of fs.readdirSync(dir)) {
+    const sub = path.join(dir, entry);
+    if (!fs.statSync(sub).isDirectory()) continue;
+    for (const f of fs.readdirSync(sub)) {
+      if (f.endsWith(".json")) files.push(path.join(sub, f));
+    }
+  }
+  return files.sort();
+}
+
+/**
+ * Resolves the model to use: the flag if given, otherwise an interactive
+ * picker seeded from the saved choice. Persists the resolved selection.
+ * @param baseUrl - Ollama base URL.
+ * @param flagModel - Value of `--model`, if any.
+ */
+async function resolveModel(baseUrl: string, flagModel?: string): Promise<string> {
+  const available = await listModels(baseUrl);
+  if (available.length === 0) {
+    throw new Error(`No models installed on Ollama at ${baseUrl}. Run \`ollama pull <model>\`.`);
+  }
+
+  if (flagModel) {
+    if (!available.includes(flagModel)) {
+      throw new Error(`Model "${flagModel}" not found. Available: ${available.join(", ")}`);
+    }
+    return flagModel;
+  }
+
+  const saved = loadConfig().ollama?.model;
+  const { model } = await inquirer.prompt<{ model: string }>([
+    {
+      type: "select",
+      name: "model",
+      message: `Which Ollama model should summarize patches? (${baseUrl})`,
+      choices: available,
+      default: saved && available.includes(saved) ? saved : available[0],
+    },
+  ]);
+  return model;
+}
+
+/**
+ * Fills the model layer of every pending commit record by querying Ollama.
+ * @param options - Resolved command options.
+ */
+export async function summarize(options: SummarizeOptions): Promise<void> {
+  const repoPath = resolveRepo(options.repo);
+  const dir = repoCommitsDir(repoPath);
+  const baseUrl = resolveBaseUrl(options.url);
+
+  const allFiles = listCommitJsonFiles(dir);
+  if (allFiles.length === 0) {
+    console.log(
+      `No exported commits found for ${repoPath}. Run \`dev-workgraph export\` first.`,
+    );
+    return;
+  }
+
+  const model = await resolveModel(baseUrl, options.model);
+  setOllamaConfig({ baseUrl, model });
+  console.log(`Using model "${model}" at ${baseUrl}\n`);
+
+  // Pending = not yet summarized, unless --force.
+  const pending: { file: string; record: CommitRecord }[] = [];
+  for (const file of allFiles) {
+    const record = JSON.parse(fs.readFileSync(file, "utf8")) as CommitRecord;
+    if (record.model && !options.force) continue;
+    pending.push({ file, record });
+  }
+
+  const total = allFiles.length;
+  const skipped = total - pending.length; // 0 when --force (nothing is skipped)
+
+  if (options.force) {
+    console.log(`${total} total · re-summarizing all (--force).`);
+  } else {
+    console.log(
+      `${total} total · ${skipped} already summarized (skipped) · ${pending.length} pending.`,
+    );
+  }
+
+  const work = options.limit ? pending.slice(0, options.limit) : pending;
+  if (work.length === 0) {
+    console.log("Nothing to do. Use --force to re-summarize existing records.");
+    return;
+  }
+
+  console.log(`Summarizing ${work.length} commit(s)...\n`);
+
+  let done = 0;
+  let failed = 0;
+  for (const [i, item] of work.entries()) {
+    const short = item.record.commitHash.slice(0, 8);
+    process.stdout.write(`[${i + 1}/${work.length}] ${short} ${item.record.title.slice(0, 50)} ... `);
+
+    const patchPath = item.file.replace(/\.json$/, ".patch");
+    const patch = fs.existsSync(patchPath) ? fs.readFileSync(patchPath, "utf8") : "";
+    const { prompt, truncated } = buildCommitUserPrompt(item.record, patch);
+
+    try {
+      const raw = (await chatJson({
+        baseUrl,
+        model,
+        system: COMMIT_SUMMARY_SYSTEM,
+        user: prompt,
+        schema: modelJsonSchema(),
+      })) as ModelLayer;
+
+      const layer = enforceSignalReasons(raw);
+      layer.provenance = {
+        model,
+        generatedAt: new Date().toISOString(),
+        patchTruncated: truncated,
+      };
+
+      item.record.model = layer;
+      fs.writeFileSync(item.file, `${JSON.stringify(item.record, null, 2)}\n`, "utf8");
+      console.log("ok");
+      done += 1;
+    } catch (err) {
+      console.log(`failed (${(err as Error).message})`);
+      failed += 1;
+    }
+  }
+
+  console.log(`\n✅ Summarized ${done}, failed ${failed}. Records updated in ${dir}.`);
+}
