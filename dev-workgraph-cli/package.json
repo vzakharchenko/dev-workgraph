@@ -20,6 +20,17 @@
     "start:export": "node dist/cli.js export '../../keycloak-radius-plugin'",
     "start:summarize": "node dist/cli.js summarize '../../keycloak-radius-plugin'",
     "commit-group": "node dist/cli.js commit-group '../../keycloak-radius-plugin' --force",
+    "report": "node dist/cli.js report '../../keycloak-radius-plugin'",
+    "prepare:radius": "node dist/cli.js prepare '../../keycloak-radius-plugin'",
+    "final:radius": "node dist/cli.js final '../../keycloak-radius-plugin'",
+    "init:repo": "node dist/cli.js init '../../keycloak-radius-plugin' --force",
+    "run:repo": "node dist/cli.js run '../../keycloak-radius-plugin' --force",
+    "run:repo:notes": "node dist/cli.js run '../../Forge-Secure-Notes-for-Jira'",
+    "run:industry-network": "node dist/cli.js run '/Users/vasylzakharchenko/Ignore TimeMachine/old hp/vzakharchenko/modeln/IndustryNetwork'",
+    "run:validata-poc": "node dist/cli.js run '/Users/vasylzakharchenko/Ignore TimeMachine/old hp/vzakharchenko/modeln/modn-sapljo-poc'",
+    "run:saas-validata": "node dist/cli.js run '/Users/vasylzakharchenko/Ignore TimeMachine/old hp/vzakharchenko/modeln/saas-validata'",
+    "final:repo:notes": "node dist/cli.js final '../../Forge-Secure-Notes-for-Jira' --force",
+    "run:forge-sql-orm": "node dist/cli.js run '../../forge-sql-orm'",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {

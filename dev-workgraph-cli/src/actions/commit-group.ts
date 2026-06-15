@@ -14,22 +14,27 @@ import {
 } from "../lib/config.js";
 import {resolveRepo} from "../lib/git.js";
 import {aggregateDeterministic, groupByGap, loadCommitRecords, partitionTiers,} from "../lib/grouping.js";
-import {enforceSignalReasons, groupClassifyJsonSchema, groupComposeJsonSchema, type ModelLayer,} from "../lib/model.js";
-import {chatJson, listModels, resolveBaseUrl} from "../lib/ollama.js";
+import {enforceSignalReasons, groupClassifyJsonSchema, groupHistoryJsonSchema, type ModelLayer,} from "../lib/model.js";
+import {chatJson, resolveBaseUrl} from "../lib/ollama.js";
+import { loadProjectContext } from "../lib/project.js";
+import { resolveModel } from "../lib/select.js";
 import {
   buildGroupClassifyPrompt,
   buildGroupComposePrompt,
   GROUP_CLASSIFY_SYSTEM,
   GROUP_COMPOSE_SYSTEM,
   type GroupClassifyView,
+  projectContextBlock,
+  withProjectContext,
 } from "../lib/prompts.js";
-import type {CommitRecord, GroupModelLayer, GroupRecord} from "../lib/records.js";
+import type {CommitRecord, GroupRecord} from "../lib/records.js";
 
 /** Coerces an LLM-provided value into an array of non-empty strings. */
 const asStringArray = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && v.length > 0) : [];
 
 const DEFAULT_THRESHOLD_DAYS = 7;
+const DEFAULT_MAX_COMMITS = 20;
 
 /**
  * Options for the `commit-group` command.
@@ -39,6 +44,8 @@ export interface CommitGroupOptions {
   repo: string;
   /** Days between commits before a new group starts; skips the prompt. */
   days?: number;
+  /** Max commits per group (0 = unlimited); skips the prompt. */
+  maxCommits?: number;
   /** Ollama base URL override. */
   url?: string;
   /** Model name; skips the interactive picker. */
@@ -75,33 +82,29 @@ async function resolveThreshold(repoPath: string, flagDays?: number): Promise<nu
 }
 
 /**
- * Resolves the model: the flag if given, else an interactive picker seeded from
- * the saved choice. Persists the selection.
- * @param baseUrl - Ollama base URL.
- * @param flagModel - Value of `--model`, if any.
+ * Resolves the max commits per group: the flag, else an interactive prompt
+ * seeded from the saved value, else the default. Persists the resolved value.
+ * 0 means unlimited.
+ * @param repoPath - Absolute repository path.
+ * @param flagMax - Value of `--max-commits`, if any.
  */
-async function resolveModel(baseUrl: string, flagModel?: string): Promise<string> {
-  const available = await listModels(baseUrl);
-  if (available.length === 0) {
-    throw new Error(`No models installed on Ollama at ${baseUrl}. Run \`ollama pull <model>\`.`);
+async function resolveMaxCommits(repoPath: string, flagMax?: number): Promise<number> {
+  if (flagMax !== undefined && Number.isFinite(flagMax) && flagMax >= 0) {
+    setRepoConfig(repoPath, { groupMaxCommits: flagMax });
+    return flagMax;
   }
-  if (flagModel) {
-    if (!available.includes(flagModel)) {
-      throw new Error(`Model "${flagModel}" not found. Available: ${available.join(", ")}`);
-    }
-    return flagModel;
-  }
-  const saved = loadConfig().ollama?.model;
-  const { model } = await inquirer.prompt<{ model: string }>([
+  const saved = getRepoConfig(repoPath)?.groupMaxCommits ?? DEFAULT_MAX_COMMITS;
+  const { maxCommits } = await inquirer.prompt<{ maxCommits: number }>([
     {
-      type: "select",
-      name: "model",
-      message: `Which Ollama model should summarize work sessions? (${baseUrl})`,
-      choices: available,
-      default: saved && available.includes(saved) ? saved : available[0],
+      type: "number",
+      name: "maxCommits",
+      message: "Max commits per group (0 = unlimited):",
+      default: saved,
     },
   ]);
-  return model;
+  const value = Number.isFinite(maxCommits) && maxCommits >= 0 ? maxCommits : saved;
+  setRepoConfig(repoPath, { groupMaxCommits: value });
+  return value;
 }
 
 /**
@@ -141,18 +144,31 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
   }
 
   const thresholdDays = await resolveThreshold(repoPath, options.days);
+  const maxCommits = await resolveMaxCommits(repoPath, options.maxCommits);
   const baseUrl = resolveBaseUrl(options.url);
-  const model = await resolveModel(baseUrl, options.model);
-  setOllamaConfig({ baseUrl, model });
+  const savedOllama = loadConfig().ollama;
+  const model = await resolveModel(baseUrl, options.model, {
+    message: "Which Ollama model should summarize work sessions?",
+    saved: savedOllama?.commitModel ?? savedOllama?.model,
+  });
+  setOllamaConfig({ baseUrl, commitModel: model });
 
   const groupsDir = repoGroupsDir(repoPath);
   fs.mkdirSync(groupsDir, { recursive: true });
 
-  const sessions = groupByGap(commits, thresholdDays);
+  const sessions = groupByGap(commits, thresholdDays, maxCommits);
   console.log(
-    `\n${commits.length} commit(s) → ${sessions.length} group(s) at ${thresholdDays}-day threshold.`,
+    `\n${commits.length} commit(s) → ${sessions.length} group(s) at ${thresholdDays}-day threshold` +
+      `${maxCommits > 0 ? `, max ${maxCommits}/group` : ""}.`,
   );
   console.log(`Using model "${model}" at ${baseUrl}\n`);
+
+  const projectBlock = projectContextBlock(loadProjectContext(repoPath));
+  if (!projectBlock) {
+    console.log("⚠️  No project context (run `dev-workgraph init`); grouping without it.\n");
+  }
+  const classifySystem = withProjectContext(projectBlock, GROUP_CLASSIFY_SYSTEM);
+  const composeSystem = withProjectContext(projectBlock, GROUP_COMPOSE_SYSTEM);
 
   let summarized = 0;
   let skipped = 0;
@@ -184,7 +200,7 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
       const rawClassify = (await chatJson({
         baseUrl,
         model,
-        system: GROUP_CLASSIFY_SYSTEM,
+        system: classifySystem,
         user: classifyPrompt.prompt,
         schema: groupClassifyJsonSchema(),
       })) as Record<string, unknown>;
@@ -200,19 +216,20 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
         lowContext: asStringArray(lowContext),
       };
 
-      // Stage 2 — merge the commit summaries into one narrative, weighted by tier.
+      // Stage 2 — merge the commit summaries into one HISTORY, weighted by tier.
       const composePrompt = buildGroupComposePrompt(record, tiers, members);
       const rawCompose = (await chatJson({
         baseUrl,
         model,
-        system: GROUP_COMPOSE_SYSTEM,
+        system: composeSystem,
         user: composePrompt.prompt,
-        schema: groupComposeJsonSchema(),
-      })) as { summary?: string };
+        schema: groupHistoryJsonSchema(),
+      })) as { history?: string };
 
+      const { summary: _omitSummary, ...signalFields } = signals;
       record.model = {
-        ...signals,
-        summary: rawCompose.summary ?? "",
+        ...signalFields,
+        history: rawCompose.history ?? "",
         hiContext: tiers.hiContext,
         mediumContext: tiers.mediumContext,
         lowContext: tiers.lowContext,

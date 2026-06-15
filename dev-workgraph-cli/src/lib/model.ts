@@ -5,6 +5,11 @@
 export const SIGNALS = ["low", "medium", "high"] as const;
 export type Signal = (typeof SIGNALS)[number];
 
+/** Returns the higher of two signal levels on the low < medium < high scale. */
+export function maxSignal(a: Signal, b: Signal): Signal {
+  return SIGNALS.indexOf(a) >= SIGNALS.indexOf(b) ? a : b;
+}
+
 /** Allowed change-type tags (MVP §2). */
 export const CHANGE_TYPES = [
   "feature",
@@ -108,14 +113,136 @@ export function groupClassifyJsonSchema(): Record<string, unknown> {
 }
 
 /**
- * JSON Schema for the group COMPOSE session: a single merged narrative built
- * from the classified tiers and the member commits' summaries.
+ * JSON Schema for the group COMPOSE session: a single merged HISTORY (a fuller
+ * account) built from the classified tiers and the member commits' summaries.
  */
-export function groupComposeJsonSchema(): Record<string, unknown> {
+export function groupHistoryJsonSchema(): Record<string, unknown> {
   return {
     type: "object",
-    properties: { summary: { type: "string" } },
-    required: ["summary"],
+    properties: { history: { type: "string" } },
+    required: ["history"],
+  };
+}
+
+/**
+ * JSON Schema for the report MERGE session: combines two model layers. Signal
+ * *levels* are computed in code (max), so the model only returns `signalReasons`
+ * as arrays plus the merged change types, questions, confidence, and re-ranked
+ * context tiers.
+ */
+export function reportMergeJsonSchema(): Record<string, unknown> {
+  const strArray = { type: "array", items: { type: "string" } };
+  return {
+    type: "object",
+    properties: {
+      changeTypes: { type: "array", items: { type: "string", enum: [...CHANGE_TYPES] } },
+      signalReasons: {
+        type: "object",
+        properties: { technical: strArray, architecture: strArray, security: strArray },
+        required: ["technical", "architecture", "security"],
+      },
+      questions: strArray,
+      confidence: { type: "string", enum: [...SIGNALS] },
+      hiContext: strArray,
+      mediumContext: strArray,
+      lowContext: strArray,
+    },
+    required: [
+      "changeTypes",
+      "signalReasons",
+      "questions",
+      "confidence",
+      "hiContext",
+      "mediumContext",
+      "lowContext",
+    ],
+  };
+}
+
+/** JSON Schema for `init` session 1: the role-adjusted prepared story context. */
+export function storyPrepareJsonSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: { preparedContext: { type: "string" } },
+    required: ["preparedContext"],
+  };
+}
+
+/** JSON Schema for `init` session 2: the structured project profile. */
+export function projectProfileJsonSchema(): Record<string, unknown> {
+  const strArray = { type: "array", items: { type: "string" } };
+  return {
+    type: "object",
+    properties: {
+      summary: { type: "string" },
+      domains: strArray,
+      apparentStack: strArray,
+      keyThemes: strArray,
+    },
+    required: ["summary", "domains", "apparentStack", "keyThemes"],
+  };
+}
+
+/** JSON Schema for `final`: the Role Narrative — four impact bullet points. */
+export function roleNarrativeJsonSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: { narrative: { type: "array", items: { type: "string" } } },
+    required: ["narrative"],
+  };
+}
+
+/** JSON Schema for `prepare` step 4: a flat array of reason strings. */
+export function prepareReasonsJsonSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: { signalReasons: { type: "array", items: { type: "string" } } },
+    required: ["signalReasons"],
+  };
+}
+
+/** JSON Schema for `prepare` step 5: role-aware questions + re-assessed confidence. */
+export function prepareQuestionsJsonSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      questions: { type: "array", items: { type: "string" } },
+      confidence: { type: "string", enum: [...SIGNALS] },
+    },
+    required: ["questions", "confidence"],
+  };
+}
+
+/** JSON Schema for the report routine-gate classifier (step 1). */
+export function routineCheckJsonSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      routine: { type: "boolean" },
+      reason: { type: "string" },
+    },
+    required: ["routine"],
+  };
+}
+
+/** JSON Schema for the "rewrite all running history entries" session. */
+export function reportHistoryJsonSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: { history: { type: "array", items: { type: "string" } } },
+    required: ["history"],
+  };
+}
+
+/** JSON Schema for the "add the new session's history entry if it adds anything" session. */
+export function reportNewHistoryJsonSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      needed: { type: "boolean" },
+      text: { type: "string" },
+    },
+    required: ["needed", "text"],
   };
 }
 

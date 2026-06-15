@@ -5,13 +5,135 @@
 // Two flows: per-commit `summarize` and per-session `commit-group`.
 
 import { tierOf } from "./grouping.js";
-import type { CommitRecord, GroupRecord } from "./records.js";
+import type { CommitRecord, GroupRecord, ProjectContext, ReportRecord } from "./records.js";
+
+// ───────────────────────────── project context (from `init`) ─────────────────
+
+/** Per-role guidance for what `questions` should probe (MVP §0). */
+const ROLE_QUESTION_EMPHASIS: Record<string, string> = {
+  "Principal Developer":
+    "system-wide trade-offs, cross-team boundaries, long-term architectural consequences, org-scale production adoption",
+  "Staff Developer":
+    "design ownership across subsystems, platform direction, integration with adjacent systems",
+  "Senior Developer":
+    "feature/design ownership, customer or product driver, replacing manual processes, mentoring or review scope",
+  "Junior Developer":
+    "assigned vs self-directed work, learning context, scope of autonomy, who reviewed or unblocked",
+};
+
+/**
+ * Renders the project-context grounding block to prepend to later prompts.
+ * Returns "" when `init` has not run (so prompts behave as before).
+ * @param ctx - The project context, or null.
+ */
+export function projectContextBlock(ctx: ProjectContext | null): string {
+  if (!ctx) return "";
+  const p = ctx.profile;
+  const emphasis =
+    ROLE_QUESTION_EMPHASIS[ctx.role] ?? "what Git cannot show — ownership, intent, production use";
+  return [
+    "PROJECT CONTEXT (grounding — interpret the work in light of this; NEVER let it inflate impact):",
+    `- Developer role: ${ctx.role}`,
+    `- Project: ${p.summary}`,
+    `- Domains: ${p.domains.join(", ") || "(unknown)"}`,
+    `- Apparent stack: ${p.apparentStack.join(", ") || "(unknown)"}`,
+    `- Key themes: ${p.keyThemes.join(", ") || "(unknown)"}`,
+    `- Background (prepared from the developer's story; may be incomplete): ${ctx.story.preparedContext}`,
+    `- Frame questions for a ${ctx.role}: ${emphasis}. Avoid questions the background already answers.`,
+  ].join("\n");
+}
+
+/**
+ * Prepends a project-context block to a system prompt when present.
+ * @param block - Output of {@link projectContextBlock}.
+ * @param system - The base system prompt.
+ */
+export function withProjectContext(block: string, system: string): string {
+  return block ? `${block}\n\n${system}` : system;
+}
+
+// ───────────────────────────── project init (`init`) ─────────────────────────
+
+/** Max README characters sent to the profile session. */
+export const MAX_README_CHARS = 12000;
+
+// Session 1: reframe the raw story for the developer's seniority.
+export const STORY_PREPARE_SYSTEM = [
+  "You help ONE developer prepare project context for later analysis of their Git history.",
+  "First person ('I'); never 'the team', 'they', or 'we'. Return JSON { \"preparedContext\": \"...\" }.",
+  "You are given the developer's ROLE and their raw, free-form PROJECT STORY.",
+  "Reframe the SAME facts for what matters at that seniority (e.g. Principal → system boundaries and",
+  "cross-cutting decisions; Junior → scope, learning, assigned vs self-directed). Do NOT invent facts",
+  "or inflate impact — only reorganize and emphasize what the story already states. Keep it concise.",
+].join("\n");
+
+/**
+ * Builds the story-prepare user prompt.
+ * @param role - The developer's role.
+ * @param rawStory - The raw free-form project story.
+ */
+export function buildStoryPreparePrompt(role: string, rawStory: string): string {
+  return [`Developer role: ${role}`, "", "Raw project story:", rawStory || "(none provided)"].join("\n");
+}
+
+// Session 2: build a factual project profile from the prepared story + README.
+export const PROJECT_PROFILE_SYSTEM = [
+  "You build a factual PROFILE of a software project to ground later analysis of its Git history.",
+  "Return JSON { \"summary\", \"domains\": [], \"apparentStack\": [], \"keyThemes\": [] }.",
+  "You are given the developer's role, a prepared project context, and the README (if any).",
+  "- summary: what the project appears to be about.",
+  "- domains: the problem domains it operates in.",
+  "- apparentStack: technologies evident from the README/story.",
+  "- keyThemes: recurring themes or events the README and story support.",
+  "This is interpretation, not proof — do NOT assert production usage, success, or business impact.",
+].join("\n");
+
+/**
+ * Builds the project-profile user prompt.
+ * @param role - The developer's role.
+ * @param preparedContext - The prepared story context from session 1.
+ * @param readme - README contents (may be empty).
+ */
+export function buildProjectProfilePrompt(
+  role: string,
+  preparedContext: string,
+  readme: string,
+): string {
+  const body =
+    readme.length > MAX_README_CHARS ? `${readme.slice(0, MAX_README_CHARS)}\n[...truncated...]` : readme;
+  return [
+    `Developer role: ${role}`,
+    "",
+    "Prepared project context:",
+    preparedContext || "(none)",
+    "",
+    "README:",
+    body || "(no README)",
+  ].join("\n");
+}
 
 /** Max patch characters sent to the per-commit model; longer patches are truncated. */
 export const MAX_PATCH_CHARS = 16000;
 
 /** Char budget for the serialized member commits in the group prompt. */
 export const MAX_MEMBERS_CHARS = 24000;
+
+// Shared across every stage: routine upkeep is named, never detailed; substantive work wins.
+const ROUTINE_RULE = [
+  "ROUTINE MAINTENANCE — name it, do not detail it:",
+  "- Dependency updates/bumps, version or release updates, lockfile and build-config tweaks,",
+  "  formatting, and CI/build upkeep are ROUTINE. The specific version or dependency does NOT matter.",
+  "- ROUTINE also includes: ADAPTING to a new version of a dependency or framework (e.g. supporting",
+  "  a new major framework version, bumping package/module/SCM versions, build-config changes to compile against it),",
+  "  and removing unused imports, fixing indentation, or reformatting — EVEN WHEN MANY FILES CHANGE.",
+  "  A large diff of version bumps and mechanical edits is still routine.",
+  "- SUBSTANTIVE = NEW behavior or features, a genuine refactor of real logic, real bug fixes, or",
+  "  security-relevant changes. Volume of changed files does NOT make upkeep substantive.",
+  "- If the work is ONLY routine, state that plainly as routine maintenance (no version numbers, no",
+  "  per-bump list).",
+  "- If there is substantive work as well, describe ONLY the substantive work and treat the routine",
+  "  part as incidental. Never enumerate individual version or dependency changes.",
+].join("\n");
 
 // ───────────────────────────── per-commit summarize ─────────────────────────────
 
@@ -33,6 +155,8 @@ export const COMMIT_SUMMARY_SYSTEM = [
   "  (was it used in production? your own design or maintenance of someone else's code?",
   "  customer-driven? part of a security boundary? replacing a manual process?).",
   "- confidence: your confidence in the summary.",
+  "",
+  ROUTINE_RULE,
 ].join("\n");
 
 /**
@@ -90,12 +214,15 @@ export const GROUP_CLASSIFY_SYSTEM = [
   "- hiContext: the SUBSTANTIAL design / implementation / security work (from HIGH-tier commits).",
   "- mediumContext: secondary, supporting work (from MEDIUM-tier commits).",
   "- lowContext: routine background — version bumps, CI, formatting, deps (from LOW-tier commits).",
-  "- Each bullet is a concise phrase, e.g. 'Implemented RAD-SEC protocol support'. A tier may be empty.",
+  "- Each bullet is a concise phrase, e.g. 'Implemented the background job scheduler'. A tier may be empty.",
   "",
   "changeTypes: the change-type tags that apply to the session.",
   "questions: what I must answer later to recover missing context",
   "  (production? my own design or maintenance? customer-driven? a security boundary?).",
   "confidence: confidence in this classification.",
+  "",
+  ROUTINE_RULE,
+  "- Keep routine upkeep to a single generic lowContext bullet; never put it in hiContext/mediumContext.",
 ].join("\n");
 
 // Stage 2 of the group flow: merge the commit summaries into one narrative,
@@ -103,20 +230,28 @@ export const GROUP_CLASSIFY_SYSTEM = [
 export const GROUP_COMPOSE_SYSTEM = [
   "You are an engineering historian. You are given a CLASSIFICATION of ONE developer's work",
   "session (signals + context tiers as bullets) and the per-commit summaries grouped by tier.",
-  "Your task is to MERGE the commit summaries into ONE first-person narrative.",
-  "Return JSON: { \"summary\": \"...\" }.",
+  "Your task is to MERGE the commit summaries into ONE first-person HISTORY — a fuller account,",
+  "not a terse summary. Return JSON: { \"history\": \"...\" }.",
   "",
   "VOICE: first person ('I'); never 'the team', 'they', or 'we'.",
   "",
-  "HOW TO COMPOSE the summary — a multi-paragraph narrative whose detail follows the tiers:",
-  "- HIGH-tier work: describe in FULL detail — a dedicated paragraph (or more) per distinct strand,",
-  "  naming the real subsystems, modules, and areas. This is the core of the narrative.",
-  "- MEDIUM-tier work: describe more briefly — a sentence or two each, woven into the narrative.",
-  "- LOW-tier work: just MENTION it in one short closing sentence (e.g. 'plus routine CI, version,",
-  "  and formatting upkeep'). No details.",
+  "Write ONE flowing first-person narrative. Do NOT label or head sections by tier — never output",
+  "'HIGH-tier context:', 'MEDIUM-tier:', 'LOW-tier:' or similar. The tiers control how much detail",
+  "each piece of work gets, NOT the structure of the text.",
+  "",
+  "HOW TO COMPOSE the history — a multi-paragraph narrative whose detail follows the tiers:",
+  "- HIGH-tier work: MANDATORY. Cover EVERY hiContext item in FULL detail — a dedicated paragraph",
+  "  (or more) per distinct strand, naming the real subsystems, modules, and areas. This is the core.",
+  "- MEDIUM-tier work: you MUST say something about it — cover the medium-tier work briefly, woven",
+  "  into the narrative. Do not drop it entirely; it need not be exhaustive item-by-item.",
+  "- LOW-tier work: OPTIONAL — at most a brief mention (e.g. 'plus routine version and formatting",
+  "  upkeep'); it may be omitted.",
   "- This is a MERGE of the commit summaries, not a new invention: stay faithful to what they say.",
   "- Be concrete; never claim production use, ownership, or business impact.",
   "- A large, multi-theme session must be SEVERAL full paragraphs — never one generic sentence.",
+  "",
+  ROUTINE_RULE,
+  "- If the whole session is only routine, the history is one short sentence stating that.",
 ].join("\n");
 
 /**
@@ -213,7 +348,7 @@ export function buildGroupComposePrompt(
   const sums = (tier: "hi" | "medium" | "low"): string => summariesByTier(members, tier).join("\n") || "(none)";
 
   let prompt = [
-    `Work session of ${group.commitCount} commit(s) by a single developer. Compose the summary now.`,
+    `Work session of ${group.commitCount} commit(s) by a single developer. Compose the history now.`,
     `Session signals: tech=${classify.technicalSignal} arch=${classify.architectureSignal} sec=${classify.securitySignal}`,
     "",
     "HIGH-tier context (describe in FULL detail — a paragraph or more per strand):",
@@ -236,4 +371,402 @@ export function buildGroupComposePrompt(
     truncated = true;
   }
   return { prompt, truncated };
+}
+
+// ───────────────────────────── cumulative report (`report`) ─────────────────────
+
+/** Max running history entries before the oldest are compacted (keeps the fold bounded). */
+export const MAX_HISTORY_ENTRIES = 12;
+/** Max bullets kept per context tier (keeps the merge prompt bounded). */
+export const MAX_CONTEXT_BULLETS = 12;
+
+// In the report, routine upkeep collapses to ONE generic item (builds on the shared ROUTINE_RULE).
+const ROUTINE_MAINTENANCE_RULE = [
+  ROUTINE_RULE,
+  "- In the report, represent ALL routine work as ONE generic low-tier item, e.g. 'Ongoing",
+  "  maintenance: dependency updates, version releases, build/CI upkeep.' Never a per-release entry.",
+].join("\n");
+
+const bulletList = (items: string[]): string => items.map((b) => `- ${b}`).join("\n") || "(none)";
+
+// Merge the accumulated report's model layer with the next group's model layer.
+export const REPORT_MERGE_SYSTEM = [
+  "You are merging an ACCUMULATED report of ONE developer's work with the NEXT work session,",
+  "to produce the combined classification. First person ('I'); never 'the team', 'they', or 'we'.",
+  "You are given the report's current model layer and the new group's model layer. Produce:",
+  "- changeTypes: union of both; merge near-duplicate tags.",
+  "- signalReasons.{technical,architecture,security}: ARRAYS merging both sides' reasons;",
+  "  collapse duplicate or near-duplicate reasons into one entry.",
+  "- questions: recompute for the COMBINED body of work; drop duplicates and ones already answered.",
+  "- confidence: re-assess for the combined work (low | medium | high).",
+  "- hiContext / mediumContext / lowContext: MERGE the bullets from both sides; collapse duplicate",
+  "  and near-duplicate bullets. Then RE-RANK importance DOWNWARD ONLY: a hi bullet that is minor",
+  "  next to the other hi/medium bullets may be merged into another bullet or demoted one tier.",
+  "  NEVER promote a bullet to a higher tier. This keeps the report from inflating as it grows.",
+  `- BOUND each tier to at most ${MAX_CONTEXT_BULLETS} bullets. When over the limit, merge near-duplicates`,
+  "  and DROP the least important; KEEP the bullets most relevant to the developer's role (see PROJECT",
+  "  CONTEXT). List the most important bullets first.",
+  "- No overclaiming: production use, ownership, and impact belong in questions, not statements.",
+  "",
+  ROUTINE_MAINTENANCE_RULE,
+].join("\n");
+
+// Step 1 gate: is this whole work session ONLY routine maintenance?
+export const ROUTINE_CHECK_SYSTEM = [
+  "You classify whether a developer's WORK SESSION is ONLY routine project maintenance.",
+  "Return JSON { \"routine\": true|false, \"reason\": \"...\" }.",
+  "ROUTINE = dependency bumps, version/release updates, lockfile/build-config tweaks, formatting,",
+  "  CI/build upkeep, and similar — work where the specific version or dependency does not matter.",
+  "SUBSTANTIVE = any design, implementation, refactor of real logic, new feature, bug fix, or",
+  "  security-relevant change.",
+  "Set routine=true ONLY if the session is entirely routine with nothing substantive.",
+  "When in doubt, set routine=false — better to analyze than to drop real work.",
+].join("\n");
+
+/**
+ * Builds the routine-gate prompt from the group's own model + evidence.
+ * @param group - The group record being folded.
+ */
+export function buildRoutineCheckPrompt(group: GroupRecord): string {
+  const g = group.model;
+  return [
+    `Work session of ${group.commitCount} commit(s).`,
+    `changeTypes: ${(g?.changeTypes ?? []).join(", ") || "(none)"}`,
+    `signals: tech=${g?.technicalSignal} arch=${g?.architectureSignal} sec=${g?.securitySignal}`,
+    `areas: ${group.deterministic.areas.join(", ") || "(none)"}`,
+    "",
+    "Session history:",
+    g?.history ?? "(none)",
+  ].join("\n");
+}
+
+// Compact the oldest part of the running history to keep the report bounded.
+export const REPORT_COMPACT_SYSTEM = [
+  "You compact the OLDEST part of a developer's running work HISTORY to keep the report bounded.",
+  "First person ('I'); never 'the team', 'they', or 'we'. Return JSON { \"history\": [\"...\"] }.",
+  "You are given several older history entries. Condense them into ONE (at most two) entries that",
+  "PRESERVE what matters most for the developer's role (see PROJECT CONTEXT) in detail, and compress",
+  "routine or less-relevant work into brief mentions. Stay FAITHFUL — do not invent facts.",
+  "Plain first-person prose — no tier headers or labels ('HIGH-tier:', etc.).",
+  "",
+  ROUTINE_MAINTENANCE_RULE,
+].join("\n");
+
+/**
+ * Builds the compaction prompt from the overflow (oldest) history entry texts.
+ * @param entries - The oldest history entry texts to condense.
+ */
+export function buildReportCompactPrompt(entries: string[]): string {
+  return [
+    "Older history entries to condense (oldest first):",
+    entries.map((s, i) => `${i + 1}. ${s}`).join("\n\n") || "(none)",
+  ].join("\n");
+}
+
+/**
+ * Builds the report-merge user prompt from the current report and the next group.
+ * @param report - The accumulated report.
+ * @param group - The next group to fold in.
+ */
+export function buildReportMergePrompt(report: ReportRecord, group: GroupRecord): string {
+  const r = report.model;
+  const g = group.model;
+  return [
+    "ACCUMULATED report model so far:",
+    `- changeTypes: ${r.changeTypes.join(", ") || "(none)"}`,
+    `- signalReasons.technical: ${bulletList(r.signalReasons.technical)}`,
+    `- signalReasons.architecture: ${bulletList(r.signalReasons.architecture)}`,
+    `- signalReasons.security: ${bulletList(r.signalReasons.security)}`,
+    `- questions:\n${bulletList(r.questions)}`,
+    `- hiContext:\n${bulletList(r.hiContext)}`,
+    `- mediumContext:\n${bulletList(r.mediumContext)}`,
+    `- lowContext:\n${bulletList(r.lowContext)}`,
+    "",
+    "NEXT group model to fold in:",
+    `- changeTypes: ${(g?.changeTypes ?? []).join(", ") || "(none)"}`,
+    `- signalReasons.technical: ${g?.signalReasons.technical ?? "(none)"}`,
+    `- signalReasons.architecture: ${g?.signalReasons.architecture ?? "(none)"}`,
+    `- signalReasons.security: ${g?.signalReasons.security ?? "(none)"}`,
+    `- questions:\n${bulletList(g?.questions ?? [])}`,
+    `- hiContext:\n${bulletList(g?.hiContext ?? [])}`,
+    `- mediumContext:\n${bulletList(g?.mediumContext ?? [])}`,
+    `- lowContext:\n${bulletList(g?.lowContext ?? [])}`,
+  ].join("\n");
+}
+
+/** Renders the three context tiers for a prompt. */
+function contextTiersBlock(contexts: {
+  hiContext: string[];
+  mediumContext: string[];
+  lowContext: string[];
+}): string {
+  return [
+    "Current context tiers:",
+    "HIGH:",
+    bulletList(contexts.hiContext),
+    "MEDIUM:",
+    bulletList(contexts.mediumContext),
+    "LOW:",
+    bulletList(contexts.lowContext),
+  ].join("\n");
+}
+
+// How the tiers control depth of detail in the history. Shared by both sessions.
+const HISTORY_TIER_RULES = [
+  "This is a HISTORY, not a terse summary: describe FULLY what I did. The tiers control DEPTH:",
+  "- HIGH-tier context: MANDATORY. Cover EVERY item in DETAIL — name the real subsystems, modules,",
+  "  and what changed. This is the core of the history.",
+  "- MEDIUM-tier context: you MUST say something about it — cover it briefly (do not drop it",
+  "  entirely), but it need not be exhaustive item-by-item.",
+  "- LOW-tier context: OPTIONAL — at most a brief mention, and may be omitted entirely.",
+].join("\n");
+
+// Re-read and rewrite ALL running history entries at once against the new tiers.
+export const REPORT_HISTORY_REWRITE_SYSTEM = [
+  "You maintain a running HISTORY of ONE developer's work for a cumulative report.",
+  "First person ('I'); never 'the team', 'they', or 'we'. Return JSON { \"history\": [\"...\"] }.",
+  "You are given the EXISTING numbered history entries and the report's CURRENT context tiers.",
+  HISTORY_TIER_RULES,
+  "Rewrite each entry IN PLACE to match the tiers. Stay FAITHFUL — do not invent facts.",
+  "CRITICAL: return EXACTLY the same number of entries, in the SAME ORDER. Do NOT merge, drop,",
+  "split, or reorder them. Item N out must be the rewrite of item N in. If an entry needs no",
+  "change, return it as-is.",
+].join("\n");
+
+/**
+ * Builds the prompt to rewrite all running history entries at once.
+ * @param history - The existing running history entry texts.
+ * @param contexts - The report's current context tiers.
+ */
+export function buildReportHistoryRewritePrompt(
+  history: string[],
+  contexts: { hiContext: string[]; mediumContext: string[]; lowContext: string[] },
+): string {
+  return [
+    contextTiersBlock(contexts),
+    "",
+    "Existing history entries:",
+    history.map((s, i) => `${i + 1}. ${s}`).join("\n\n") || "(none)",
+  ].join("\n");
+}
+
+// Decide whether the new session adds anything, and if so write only the new part.
+export const REPORT_NEW_HISTORY_SYSTEM = [
+  "You decide whether a NEW work session adds anything not already captured in the cumulative",
+  "report's HISTORY. First person ('I'); never 'the team', 'they', or 'we'.",
+  "Return JSON { \"needed\": bool, \"text\": \"...\" }.",
+  HISTORY_TIER_RULES,
+  "You are given the report's CURRENT (already up-to-date) history, the context tiers, and the",
+  "NEW session's history. If EVERYTHING in the new session is already stated in the report history,",
+  "set needed=false and text=\"\". Otherwise set needed=true and write a history entry capturing",
+  "ONLY what the new session adds, with depth matching the tiers. Stay faithful.",
+  "Plain first-person prose — no tier headers or labels ('HIGH-tier:', etc.).",
+  "",
+  ROUTINE_MAINTENANCE_RULE,
+  "- If the new session is ONLY routine maintenance and the history already has a maintenance",
+  "  mention, set needed=false (do not add another). Add an entry only for substantive new work.",
+].join("\n");
+
+/**
+ * Builds the prompt to decide on / create the new session's history entry.
+ * @param history - The report's current (already rewritten) history entry texts.
+ * @param contexts - The report's current context tiers.
+ * @param newGroupHistory - The new group's own history.
+ */
+export function buildReportNewHistoryPrompt(
+  history: string[],
+  contexts: { hiContext: string[]; mediumContext: string[]; lowContext: string[] },
+  newGroupHistory: string,
+): string {
+  return [
+    contextTiersBlock(contexts),
+    "",
+    "Existing report history:",
+    history.map((s, i) => `${i + 1}. ${s}`).join("\n\n") || "(none)",
+    "",
+    "NEW session history:",
+    newGroupHistory,
+  ].join("\n");
+}
+// ───────────────────────────── prepared narrative (`prepare`) ────────────────────
+
+// Step 2: distill all report history entries into one role-aligned narrative.
+export const PREPARE_HISTORY_SYSTEM = [
+  "You distill a developer's full work HISTORY into ONE coherent first-person narrative for review.",
+  "First person ('I'); never 'the team', 'they', or 'we'. Return JSON { \"history\": \"...\" }.",
+  "You are given the role + project context, the report's signals/changeTypes (for grounding only),",
+  "and the report's history entries. Rewrite them into a SINGLE flowing narrative that:",
+  "- prioritizes what matters for the developer's role;",
+  "- aligns with the project story and profile (no contradictions);",
+  "- de-emphasizes routine upkeep (already collapsed) to a brief mention;",
+  "- never overclaims production usage, ownership, or impact.",
+  "Write flowing prose — no tier headers/labels, no bullet list of versions.",
+].join("\n");
+
+/**
+ * Builds the prepare step-2 (compose history) user prompt.
+ * @param rawHistory - The report history entries joined one per line.
+ * @param signals - The report's three signal levels (for grounding).
+ * @param changeTypes - The report's change types (for grounding).
+ */
+export function buildPrepareHistoryPrompt(
+  rawHistory: string,
+  signals: { technical: string; architecture: string; security: string },
+  changeTypes: string[],
+): string {
+  return [
+    `Report signals: tech=${signals.technical} arch=${signals.architecture} sec=${signals.security}`,
+    `changeTypes: ${changeTypes.join(", ") || "(none)"}`,
+    "",
+    "Report history entries to merge into one narrative:",
+    rawHistory || "(none)",
+  ].join("\n");
+}
+
+// Step 4: collapse the report's signal-reason arrays into exactly four reasons.
+export const PREPARE_REASONS_SYSTEM = [
+  "You produce EXACTLY FOUR reason statements explaining why this body of work matters, reframed",
+  "for the developer's role and the unified narrative. First person ('I') is fine.",
+  "Return JSON { \"signalReasons\": [\"...\", \"...\", \"...\", \"...\"] } — a FLAT array of four strings.",
+  "You are given the report's technical/architecture/security reason arrays and the composed history.",
+  "Merge near-duplicates, DROP minor upkeep reasons, and keep the four most important. Never overclaim.",
+].join("\n");
+
+/**
+ * Builds the prepare step-4 (collapse reasons) user prompt.
+ * @param reasons - The report's signalReasons arrays.
+ * @param history - The composed history from step 2.
+ */
+export function buildPrepareReasonsPrompt(
+  reasons: { technical: string[]; architecture: string[]; security: string[] },
+  history: string,
+): string {
+  return [
+    "Composed history:",
+    history || "(none)",
+    "",
+    "Report signal reasons:",
+    `technical:\n${bulletList(reasons.technical)}`,
+    `architecture:\n${bulletList(reasons.architecture)}`,
+    `security:\n${bulletList(reasons.security)}`,
+  ].join("\n");
+}
+
+// Step 5: reframe exactly four role-aware questions + re-assess confidence.
+export const PREPARE_QUESTIONS_SYSTEM = [
+  "You produce EXACTLY FOUR role-aware questions that recover the missing human context Git cannot",
+  "show, plus a confidence. First person ('I'). Return JSON { \"questions\": [\"...\" x4], \"confidence\": \"low|medium|high\" }.",
+  "Given the composed history, the four signal reasons, the report's existing questions, and the",
+  "role + project context: write four questions targeting what still cannot be known (production",
+  "use, ownership vs maintenance, customer/product driver, security boundary), framed for the role.",
+  "Do NOT repeat facts already in the project context. confidence = your confidence in this narrative.",
+].join("\n");
+
+/**
+ * Builds the prepare step-5 (reframe questions) user prompt.
+ * @param history - The composed history from step 2.
+ * @param reasons - The four collapsed reasons from step 4.
+ * @param reportQuestions - The report's existing questions.
+ */
+export function buildPrepareQuestionsPrompt(
+  history: string,
+  reasons: string[],
+  reportQuestions: string[],
+): string {
+  return [
+    "Composed history:",
+    history || "(none)",
+    "",
+    "Signal reasons (4):",
+    bulletList(reasons),
+    "",
+    "The report's existing questions:",
+    bulletList(reportQuestions),
+  ].join("\n");
+}
+
+// ───────────────────────────── final deliverable (`final`) ───────────────────────
+
+// One session: turn the prepared history + human answers into a four-bullet Role Narrative.
+export const ROLE_NARRATIVE_SYSTEM = [
+  "You write a developer's ROLE NARRATIVE: EXACTLY FOUR impact bullet points, framed for their role.",
+  "First person ('I'); never 'the team', 'they', or 'we'. Return JSON { \"narrative\": [\"...\" x4] }.",
+  "You are given the prepared history, the project context (role + story + profile), the four",
+  "collapsed signal reasons, and the human's four question-answer pairs.",
+  "Each bullet describes what I did and WHERE, as the selected role, grounded in the history, the",
+  "reasons, and MY OWN answers. Rules:",
+  "- Never invent production usage, customer impact, or org-wide adoption unless I stated it in an answer.",
+  "- Frame emphasis to the role's seniority (see PROJECT CONTEXT).",
+  "TONE — technical and claim-safe, NOT marketing:",
+  "- Write like an engineer describing the work to another engineer: concrete and specific — name",
+  "  the actual components, protocols, mechanisms, and design decisions (e.g. 'implemented the",
+  "  request retry/backoff logic in the HTTP client', not 'delivered a robust networking solution').",
+  "- BAN marketing/hype words: spearheaded, revolutionized, robust, seamless, cutting-edge,",
+  "  world-class, leveraged, synergy, game-changing, best-in-class, drove, championed, owned (as a",
+  "  boast). Prefer plain verbs: implemented, added, refactored, designed, fixed, migrated.",
+  "- No numeric scores, no superlatives, no adjectives that inflate impact.",
+  "- State scope honestly (what changed, where); let the technical specifics carry the weight.",
+].join("\n");
+
+/**
+ * Builds the Role Narrative prompt.
+ * @param history - The prepared unified history.
+ * @param reasons - The four collapsed signal reasons.
+ * @param qa - The human's question-answer pairs.
+ */
+export function buildRoleNarrativePrompt(
+  history: string,
+  reasons: string[],
+  qa: { question: string; answer: string }[],
+): string {
+  return [
+    "Prepared history:",
+    history || "(none)",
+    "",
+    "Signal reasons:",
+    bulletList(reasons),
+    "",
+    "My answers to the open questions:",
+    qa.map((p) => `Q: ${p.question}\nA: ${p.answer || "(no answer)"}`).join("\n\n") || "(none)",
+  ].join("\n");
+}
+
+// `final` step: refine the prepared history into the "Your IMPACT" prose, now that
+// the human has answered the open questions. Same prose form as the prepared
+// history, but the answers fill in the ownership/intent/impact Git could not show.
+export const IMPACT_NARRATIVE_SYSTEM = [
+  "You refine a developer's work HISTORY into ONE coherent first-person narrative, now that the",
+  "human has answered the open questions. First person ('I'); never 'the team', 'they', or 'we'.",
+  "Return JSON { \"history\": \"...\" }.",
+  "You are given the prepared history (reconstructed from Git evidence) and the human's",
+  "question-answer pairs. Weave the answers into the narrative so it reflects the confirmed",
+  "ownership, intent, and context — but:",
+  "- use ONLY what the history shows or what I stated in an answer; invent nothing;",
+  "- if an answer is empty or says 'I don't remember', keep the original reconstruction for that part;",
+  "- never overclaim production usage, customer impact, or org-wide adoption beyond what I stated.",
+  "Write flowing prose — no tier headers/labels, no bullet list of versions, no Q/A formatting.",
+  "TONE — technical and claim-safe, NOT marketing:",
+  "- Write like an engineer to another engineer: name the actual components, protocols, mechanisms.",
+  "- BAN hype words: spearheaded, revolutionized, robust, seamless, cutting-edge, world-class,",
+  "  leveraged, synergy, game-changing, best-in-class, drove, championed, owned (as a boast).",
+  "  Prefer plain verbs: implemented, added, refactored, designed, fixed, migrated.",
+  "- No numeric scores, no superlatives, no adjectives that inflate impact.",
+].join("\n");
+
+/**
+ * Builds the `final` "Your IMPACT" refinement prompt.
+ * @param history - The prepared unified history (reconstructed from Git).
+ * @param qa - The human's question-answer pairs.
+ */
+export function buildImpactNarrativePrompt(
+  history: string,
+  qa: { question: string; answer: string }[],
+): string {
+  return [
+    "Prepared history (reconstructed from Git evidence):",
+    history || "(none)",
+    "",
+    "My answers to the open questions:",
+    qa.map((p) => `Q: ${p.question}\nA: ${p.answer || "(no answer)"}`).join("\n\n") || "(none)",
+  ].join("\n");
 }

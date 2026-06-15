@@ -3,12 +3,18 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import inquirer from "inquirer";
 import { loadConfig, repoCommitsDir, setOllamaConfig } from "../lib/config.js";
 import { resolveRepo } from "../lib/git.js";
 import { type ModelLayer, enforceSignalReasons, modelJsonSchema } from "../lib/model.js";
-import { chatJson, listModels, resolveBaseUrl } from "../lib/ollama.js";
-import { COMMIT_SUMMARY_SYSTEM, buildCommitUserPrompt } from "../lib/prompts.js";
+import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
+import { loadProjectContext } from "../lib/project.js";
+import { resolveModel } from "../lib/select.js";
+import {
+  COMMIT_SUMMARY_SYSTEM,
+  buildCommitUserPrompt,
+  projectContextBlock,
+  withProjectContext,
+} from "../lib/prompts.js";
 import type { CommitRecord } from "../lib/records.js";
 
 /**
@@ -45,38 +51,6 @@ function listCommitJsonFiles(dir: string): string[] {
 }
 
 /**
- * Resolves the model to use: the flag if given, otherwise an interactive
- * picker seeded from the saved choice. Persists the resolved selection.
- * @param baseUrl - Ollama base URL.
- * @param flagModel - Value of `--model`, if any.
- */
-async function resolveModel(baseUrl: string, flagModel?: string): Promise<string> {
-  const available = await listModels(baseUrl);
-  if (available.length === 0) {
-    throw new Error(`No models installed on Ollama at ${baseUrl}. Run \`ollama pull <model>\`.`);
-  }
-
-  if (flagModel) {
-    if (!available.includes(flagModel)) {
-      throw new Error(`Model "${flagModel}" not found. Available: ${available.join(", ")}`);
-    }
-    return flagModel;
-  }
-
-  const saved = loadConfig().ollama?.model;
-  const { model } = await inquirer.prompt<{ model: string }>([
-    {
-      type: "select",
-      name: "model",
-      message: `Which Ollama model should summarize patches? (${baseUrl})`,
-      choices: available,
-      default: saved && available.includes(saved) ? saved : available[0],
-    },
-  ]);
-  return model;
-}
-
-/**
  * Fills the model layer of every pending commit record by querying Ollama.
  * @param options - Resolved command options.
  */
@@ -93,9 +67,19 @@ export async function summarize(options: SummarizeOptions): Promise<void> {
     return;
   }
 
-  const model = await resolveModel(baseUrl, options.model);
-  setOllamaConfig({ baseUrl, model });
+  const savedOllama = loadConfig().ollama;
+  const model = await resolveModel(baseUrl, options.model, {
+    message: "Which Ollama model should summarize commit patches?",
+    saved: savedOllama?.commitModel ?? savedOllama?.model,
+  });
+  setOllamaConfig({ baseUrl, commitModel: model });
   console.log(`Using model "${model}" at ${baseUrl}\n`);
+
+  const projectBlock = projectContextBlock(loadProjectContext(repoPath));
+  if (!projectBlock) {
+    console.log("⚠️  No project context (run `dev-workgraph init`); summarizing without it.\n");
+  }
+  const system = withProjectContext(projectBlock, COMMIT_SUMMARY_SYSTEM);
 
   // Pending = not yet summarized, unless --force.
   const pending: { file: string; record: CommitRecord }[] = [];
@@ -138,7 +122,7 @@ export async function summarize(options: SummarizeOptions): Promise<void> {
       const raw = (await chatJson({
         baseUrl,
         model,
-        system: COMMIT_SUMMARY_SYSTEM,
+        system,
         user: prompt,
         schema: modelJsonSchema(),
       })) as ModelLayer;

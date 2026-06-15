@@ -3,7 +3,13 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { CommitRecord, DeterministicLayer, GroupTiers, Tier } from "./records.js";
+import type {
+  CommitRecord,
+  DeterministicLayer,
+  GroupRecord,
+  GroupTiers,
+  Tier,
+} from "./records.js";
 
 const SECONDS_PER_DAY = 86400;
 
@@ -30,18 +36,26 @@ export function loadCommitRecords(commitsDir: string): CommitRecord[] {
 
 /**
  * Splits commits into work-session groups: a new group starts whenever the gap
- * to the previous commit in the current group exceeds `thresholdDays`.
+ * to the previous commit in the current group exceeds `thresholdDays`, OR the
+ * current group has reached `maxCommits` commits (a positive cap; 0 = no cap).
  * @param commits - Commit records, oldest first.
  * @param thresholdDays - Max days between consecutive commits within a group.
+ * @param maxCommits - Max commits per group (0 or undefined = unlimited).
  */
-export function groupByGap(commits: CommitRecord[], thresholdDays: number): CommitRecord[][] {
+export function groupByGap(
+  commits: CommitRecord[],
+  thresholdDays: number,
+  maxCommits = 0,
+): CommitRecord[][] {
   const gap = thresholdDays * SECONDS_PER_DAY;
   const groups: CommitRecord[][] = [];
   let current: CommitRecord[] = [];
 
   for (const commit of commits) {
     const prev = current[current.length - 1];
-    if (prev && commit.timestamp - prev.timestamp > gap) {
+    const gapExceeded = prev !== undefined && commit.timestamp - prev.timestamp > gap;
+    const full = maxCommits > 0 && current.length >= maxCommits;
+    if (current.length > 0 && (gapExceeded || full)) {
       groups.push(current);
       current = [];
     }
@@ -49,6 +63,43 @@ export function groupByGap(commits: CommitRecord[], thresholdDays: number): Comm
   }
   if (current.length > 0) groups.push(current);
   return groups;
+}
+
+/**
+ * Loads every group record for a repo with its file name, sorted by
+ * `timestampEnd` (oldest session first).
+ * @param groupsDir - The repo's groups directory.
+ */
+export function loadGroupRecords(groupsDir: string): { file: string; record: GroupRecord }[] {
+  if (!fs.existsSync(groupsDir)) return [];
+  const out: { file: string; record: GroupRecord }[] = [];
+  for (const f of fs.readdirSync(groupsDir)) {
+    if (!f.endsWith(".json")) continue;
+    const record = JSON.parse(fs.readFileSync(path.join(groupsDir, f), "utf8")) as GroupRecord;
+    out.push({ file: f, record });
+  }
+  return out.sort((a, b) => a.record.timestampEnd - b.record.timestampEnd);
+}
+
+/**
+ * Merges two deterministic layers into one (union of paths, summed churn).
+ * @param a - First layer.
+ * @param b - Second layer.
+ */
+export function mergeDeterministic(a: DeterministicLayer, b: DeterministicLayer): DeterministicLayer {
+  return {
+    changedFiles: {
+      added: uniqSorted([...a.changedFiles.added, ...b.changedFiles.added]),
+      deleted: uniqSorted([...a.changedFiles.deleted, ...b.changedFiles.deleted]),
+      modified: uniqSorted([...a.changedFiles.modified, ...b.changedFiles.modified]),
+      renamed: uniqSorted([...a.changedFiles.renamed, ...b.changedFiles.renamed]),
+    },
+    linesAdded: a.linesAdded + b.linesAdded,
+    linesDeleted: a.linesDeleted + b.linesDeleted,
+    importantFolders: uniqSorted([...a.importantFolders, ...b.importantFolders]),
+    areas: uniqSorted([...a.areas, ...b.areas]),
+    excludedFiles: uniqSorted([...a.excludedFiles, ...b.excludedFiles]),
+  };
 }
 
 /**

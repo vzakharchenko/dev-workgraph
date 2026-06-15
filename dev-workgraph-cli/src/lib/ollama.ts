@@ -52,7 +52,13 @@ export async function listModels(baseUrl: string): Promise<string[]> {
  * @param opts.user - User prompt.
  * @param opts.schema - JSON Schema for the `format` parameter.
  */
-export async function chatJson(opts: {
+/** Total attempts for a chat call before giving up (HTTP/parse failures are retried). */
+const MAX_ATTEMPTS = 3;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** One chat attempt: POST, check status, parse the JSON content. */
+async function chatJsonOnce(opts: {
   baseUrl: string;
   model: string;
   system: string;
@@ -86,4 +92,26 @@ export async function chatJson(opts: {
   } catch {
     throw new Error(`Model returned non-JSON content: ${content.slice(0, 200)}`);
   }
+}
+
+export async function chatJson(opts: {
+  baseUrl: string;
+  model: string;
+  system: string;
+  user: string;
+  schema: Record<string, unknown>;
+}): Promise<unknown> {
+  let lastError: Error | undefined;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await chatJsonOnce(opts);
+    } catch (err) {
+      lastError = err as Error;
+      if (attempt < MAX_ATTEMPTS) {
+        process.stderr.write(`retry ${attempt}/${MAX_ATTEMPTS - 1} (${lastError.message.slice(0, 80)}) `);
+        await sleep(500 * attempt);
+      }
+    }
+  }
+  throw new Error(`Ollama chat failed after ${MAX_ATTEMPTS} attempts: ${lastError?.message ?? "unknown error"}`);
 }

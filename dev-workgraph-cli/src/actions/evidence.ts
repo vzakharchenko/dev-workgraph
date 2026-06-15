@@ -17,14 +17,14 @@ import {
 import { isNoise } from "../lib/noise.js";
 
 /**
- * Options for the `export` command.
+ * Options for the `evidence` command.
  */
-export interface ExportOptions {
+export interface EvidenceOptions {
   /** Path to the repository (relative or absolute). */
   repo: string;
   /** Override the saved author selection with these emails. */
   email?: string[];
-  /** Re-export and overwrite commits that already exist on disk. */
+  /** Re-extract and overwrite commits that already exist on disk. */
   force?: boolean;
 }
 
@@ -134,16 +134,16 @@ function classify(
  * Writes the patch and deterministic JSON for one commit.
  * @param repoPath - Absolute repository path.
  * @param outDir - The repo's commits directory.
- * @param commit - The commit to export.
- * @param force - Overwrite an existing export.
- * @returns "exported" when written, "skipped" when it already existed.
+ * @param commit - The commit to extract evidence for.
+ * @param force - Overwrite an existing record.
+ * @returns "extracted" when written, "skipped" when it already existed.
  */
-function exportOne(
+function extractOne(
   repoPath: string,
   outDir: string,
   commit: Commit,
   force: boolean,
-): "exported" | "skipped" {
+): "extracted" | "skipped" {
   const dir = path.join(outDir, String(commit.timestamp));
   const patchPath = path.join(dir, `${commit.hash}.patch`);
   const jsonPath = path.join(dir, `${commit.hash}.json`);
@@ -166,15 +166,16 @@ function exportOne(
   };
   fs.writeFileSync(jsonPath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
 
-  return "exported";
+  return "extracted";
 }
 
 /**
- * Exports every commit authored by the selected identities, oldest-first, into
+ * Extracts evidence — patch + deterministic JSON — for every commit authored by
+ * the selected identities, oldest-first, into
  * `~/.workgraph/data/commits/<timestamp>/<hash>.{patch,json}`.
  * @param options - Resolved command options.
  */
-export async function exportCommits(options: ExportOptions): Promise<void> {
+export async function evidence(options: EvidenceOptions): Promise<void> {
   const repoPath = resolveRepo(options.repo);
 
   const emails =
@@ -197,18 +198,18 @@ export async function exportCommits(options: ExportOptions): Promise<void> {
   }
 
   const outDir = repoCommitsDir(repoPath);
-  console.log(`Exporting ${commits.length} commit(s) by ${emails.join(", ")} → ${outDir}`);
+  console.log(`Extracting evidence for ${commits.length} commit(s) by ${emails.join(", ")} → ${outDir}`);
 
-  let exported = 0;
+  let extracted = 0;
   let skipped = 0;
   for (const commit of commits) {
-    const result = exportOne(repoPath, outDir, commit, options.force ?? false);
-    if (result === "exported") exported += 1;
+    const result = extractOne(repoPath, outDir, commit, options.force ?? false);
+    if (result === "extracted") extracted += 1;
     else skipped += 1;
   }
 
   console.log(
-    `\n✅ Done. Exported ${exported}, skipped ${skipped} (already present)${
+    `\n✅ Done. Extracted ${extracted}, skipped ${skipped} (already present)${
       options.force ? "" : " — use --force to overwrite"
     }.`,
   );

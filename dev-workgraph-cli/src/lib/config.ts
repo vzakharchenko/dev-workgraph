@@ -12,8 +12,12 @@ import path from "node:path";
 export interface RepoConfig {
   /** Author emails the user has claimed as "their own" work. */
   selectedAuthors: string[];
+  /** The developer's role on this project (captured by `init`). */
+  role?: string;
   /** Max days between consecutive commits before a new work-session group starts. */
   groupThresholdDays?: number;
+  /** Max commits per work-session group (0 = unlimited). */
+  groupMaxCommits?: number;
 }
 
 /**
@@ -21,7 +25,12 @@ export interface RepoConfig {
  */
 export interface OllamaConfig {
   baseUrl?: string;
+  /** Legacy/general model; used as a fallback seed for the role-specific slots. */
   model?: string;
+  /** Model for commit-level work: `summarize` and `commit-group`. */
+  commitModel?: string;
+  /** Model for report-level work: `init` and `report`. */
+  reportModel?: string;
 }
 
 /**
@@ -79,6 +88,33 @@ export function repoCommitsDir(repoPath: string): string {
  */
 export function repoGroupsDir(repoPath: string): string {
   return path.join(workgraphHome(), "data", "repos", repoId(repoPath), "groups");
+}
+
+/**
+ * Absolute path to a repository's cumulative reports directory
+ * (`~/.workgraph/data/repos/<repo-id>/reports`).
+ * @param repoPath - Absolute path to the repository (top-level).
+ */
+export function repoReportsDir(repoPath: string): string {
+  return path.join(workgraphHome(), "data", "repos", repoId(repoPath), "reports");
+}
+
+/**
+ * Absolute path to a repository's prepared-narratives directory
+ * (`~/.workgraph/data/repos/<repo-id>/prepared`), written by `prepare`.
+ * @param repoPath - Absolute path to the repository (top-level).
+ */
+export function repoPreparedDir(repoPath: string): string {
+  return path.join(workgraphHome(), "data", "repos", repoId(repoPath), "prepared");
+}
+
+/**
+ * Absolute path to a repository's project context file
+ * (`~/.workgraph/data/repos/<repo-id>/project.json`), written by `init`.
+ * @param repoPath - Absolute path to the repository (top-level).
+ */
+export function repoProjectPath(repoPath: string): string {
+  return path.join(workgraphHome(), "data", "repos", repoId(repoPath), "project.json");
 }
 
 /**
