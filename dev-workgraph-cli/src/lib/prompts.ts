@@ -135,14 +135,46 @@ const ROUTINE_RULE = [
   "  part as incidental. Never enumerate individual version or dependency changes.",
 ].join("\n");
 
+// Human answers are used in the final stage as a correction layer, not merely appended context.
+// This prevents final reports from keeping over-strong Git-based reconstructions after the
+// developer clarifies that the work was a POC, prototype, investigation, partial implementation,
+// rejected option, or unfinished production direction.
+const ANSWER_CORRECTION_RULE = [
+  "HUMAN ANSWERS ARE A CORRECTION LAYER:",
+  "- Treat my answers as higher-priority context than the prepared Git-based history whenever they",
+  "  clarify, narrow, or correct the reconstruction.",
+  "- If the prepared history says or implies a stronger claim, but my answer describes the work as",
+  "  a POC, prototype, investigation, evaluation, template, partial implementation, or future",
+  "  direction, rewrite the claim to that narrower scope.",
+  "- If my answer says a technology was evaluated, rejected, too expensive, not selected, or only",
+  "  used as an example, do NOT describe it as the final architecture or production solution.",
+  "- If my answer says ownership was not finalized, production adoption was not completed, or SLA/",
+  "  compliance/operations were not formally defined, do NOT imply completed production ownership.",
+  "- If my answer contradicts the prepared history, the answer wins. Rewrite the narrative instead",
+  "  of appending the answer as a separate caveat.",
+].join("\n");
+
 // ───────────────────────────── per-commit summarize ─────────────────────────────
 
 export const COMMIT_SUMMARY_SYSTEM = [
   "You are an engineering historian analyzing a single Git commit (metadata + patch)",
   "authored by ONE developer. Return a JSON object describing the change.",
+  "SOURCE OF TRUTH — the PATCH, not the commit message:",
+  "- Base every conclusion on what the DIFF actually does. The commit title/message is just the",
+  "  author's note: unverified CONTEXT, often vague, stale, aspirational, or plain wrong.",
+  "- Use the message only as a hint to interpret the diff (e.g. which problem it targets). NEVER",
+  "  restate the message as fact, and never describe work the diff does not show.",
+  "- If the message and the diff disagree, TRUST THE DIFF. If the message claims more than the diff",
+  "  proves (e.g. 'rewrote auth' but the diff only renames a variable), describe the diff's real,",
+  "  smaller scope and leave the discrepancy for 'questions'.",
   "Rules:",
-  "- summary: describe WHAT changed, in plain language. Describe the change itself,",
+  "- summary: describe WHAT the diff changed, in plain language. Describe the change itself,",
   "  NOT its importance, business impact, or whether it shipped to production.",
+  "- technologies: the concrete languages, frameworks, libraries, tools, services, and",
+  "  protocols the patch ACTUALLY uses — judged from file extensions, imports, config,",
+  "  package/dependency names, and API calls in the diff. Use canonical names (e.g.",
+  "  'TypeScript', 'React', 'PostgreSQL', 'Docker', 'GitHub Actions'). Only list what the",
+  "  patch shows; do NOT guess the broader stack. Empty array if nothing identifiable.",
   "- Never use 'the team', 'they', or imply multiple authors. This is one person's commit.",
   "- Signals are 'low' | 'medium' | 'high' only. technicalSignal = technical depth;",
   "  architectureSignal = effect on structure/boundaries/modules/system design;",
@@ -175,7 +207,7 @@ export function buildCommitUserPrompt(
 
   const det = record.deterministic;
   const prompt = [
-    `Commit title: ${record.title}`,
+    `Commit message (author's note — CONTEXT ONLY, may be inaccurate; trust the patch): ${record.title}`,
     `Areas touched: ${det.areas.join(", ") || "(none)"}`,
     `Files added: ${det.changedFiles.added.join(", ") || "(none)"}`,
     `Files modified: ${det.changedFiles.modified.join(", ") || "(none)"}`,
@@ -590,6 +622,34 @@ export function buildReportNewHistoryPrompt(
 }
 // ───────────────────────────── prepared narrative (`prepare`) ────────────────────
 
+// Tech-clean: dedupe and collapse the accumulated technology list.
+export const PREPARE_TECH_SYSTEM = [
+  "You clean up a list of technologies, languages, frameworks, libraries, and tools that was",
+  "accumulated across many commits. Return JSON { \"technologies\": [\"...\"] }.",
+  "Rules:",
+  "- Remove exact duplicates and near-duplicates (different casing/spelling/aliases →",
+  "  one canonical name, e.g. 'Postgres' and 'PostgreSQL' → 'PostgreSQL').",
+  "- COLLAPSE class hierarchies: when one entry is a more specific/'higher' form of another,",
+  "  keep ONLY the more specific one. E.g. JavaScript ⊂ TypeScript → keep 'TypeScript', drop",
+  "  'JavaScript'. Same for a base tool vs its concrete framework when one clearly subsumes the",
+  "  other in this project (judge from the list as a whole).",
+  "- Keep genuinely distinct technologies separate; do NOT over-merge unrelated items.",
+  "- Use canonical, human-readable names. Preserve only what was in the input — invent nothing.",
+  "- Return AT MOST 5 — the most SIGNIFICANT and prevalent technologies for this project",
+  "  (the core languages and primary frameworks/platforms the work centres on). DROP minor,",
+  "  incidental, or one-off tooling. Order from most to least significant.",
+].join("\n");
+
+/**
+ * Builds the prepare tech-clean user prompt.
+ * @param technologies - The report's accumulated (unioned) technology list.
+ */
+export function buildPrepareTechPrompt(technologies: string[]): string {
+  return ["Accumulated technologies to clean and collapse:", bulletList(technologies) || "(none)"].join(
+    "\n",
+  );
+}
+
 // Step 2: distill all report history entries into one role-aligned narrative.
 export const PREPARE_HISTORY_SYSTEM = [
   "You distill a developer's full work HISTORY into ONE coherent first-person narrative for review.",
@@ -693,9 +753,17 @@ export const ROLE_NARRATIVE_SYSTEM = [
   "First person ('I'); never 'the team', 'they', or 'we'. Return JSON { \"narrative\": [\"...\" x4] }.",
   "You are given the prepared history, the project context (role + story + profile), the four",
   "collapsed signal reasons, and the human's four question-answer pairs.",
+  "The history was already corrected against my answers; keep that narrower scope — if my answers",
+  "describe a POC/prototype/evaluation or unfinished work, do not re-inflate it into a stronger claim.",
   "Each bullet describes what I did and WHERE, as the selected role, grounded in the history, the",
   "reasons, and MY OWN answers. Rules:",
-  "- Never invent production usage, customer impact, or org-wide adoption unless I stated it in an answer.",
+  "- Never invent production usage, customer impact, org-wide adoption, SLA compliance, regulatory",
+  "  compliance, completed migration, or production operations ownership unless I explicitly stated it",
+  "  in an answer.",
+  "- If this was a POC, prototype, investigation, or architecture evaluation, say that directly.",
+  "- Prefer 'prototyped', 'evaluated', 'validated', 'implemented a template', 'created reusable",
+  "  automation', or 'defined a migration direction' over 'transformed', 'replaced', or 'migrated'",
+  "  unless the answers confirm a completed production migration.",
   "- Frame emphasis to the role's seniority (see PROJECT CONTEXT).",
   "TONE — technical and claim-safe, NOT marketing:",
   "- Write like an engineer describing the work to another engineer: concrete and specific — name",
@@ -703,7 +771,8 @@ export const ROLE_NARRATIVE_SYSTEM = [
   "  request retry/backoff logic in the HTTP client', not 'delivered a robust networking solution').",
   "- BAN marketing/hype words: spearheaded, revolutionized, robust, seamless, cutting-edge,",
   "  world-class, leveraged, synergy, game-changing, best-in-class, drove, championed, owned (as a",
-  "  boast). Prefer plain verbs: implemented, added, refactored, designed, fixed, migrated.",
+  "  boast). Prefer plain verbs: implemented, added, refactored, designed, fixed, migrated,",
+  "  evaluated, prototyped, validated.",
   "- No numeric scores, no superlatives, no adjectives that inflate impact.",
   "- State scope honestly (what changed, where); let the technical specifics carry the weight.",
 ].join("\n");
@@ -739,17 +808,39 @@ export const IMPACT_NARRATIVE_SYSTEM = [
   "human has answered the open questions. First person ('I'); never 'the team', 'they', or 'we'.",
   "Return JSON { \"history\": \"...\" }.",
   "You are given the prepared history (reconstructed from Git evidence) and the human's",
-  "question-answer pairs. Weave the answers into the narrative so it reflects the confirmed",
-  "ownership, intent, and context — but:",
-  "- use ONLY what the history shows or what I stated in an answer; invent nothing;",
-  "- if an answer is empty or says 'I don't remember', keep the original reconstruction for that part;",
-  "- never overclaim production usage, customer impact, or org-wide adoption beyond what I stated.",
+  "question-answer pairs.",
+  "",
+  ANSWER_CORRECTION_RULE,
+  "",
+  "Rewrite the narrative so it reflects the confirmed ownership, intent, scope, and constraints.",
+  "Do NOT merely append the answers at the end. Apply them throughout the history.",
+  "",
+  "CLAIM SAFETY:",
+  "- If the prepared history implies a completed production migration but my answers describe a POC,",
+  "  prototype, investigation, evaluation, template, partial implementation, or migration direction,",
+  "  rewrite it as that narrower scope.",
+  "- If the prepared history says a technology was the final solution but my answers say it was only",
+  "  evaluated, rejected, too expensive, or not selected, rewrite it accordingly.",
+  "- If the prepared history implies production monitoring, compliance, tenant guarantees, SLAs, or",
+  "  operational ownership, but my answers do not confirm them, soften the claim.",
+  "- Never say 'guaranteed HIPAA compliance', 'completed migration', 'production-ready', 'replaced",
+  "  the monolith', or 'owned production operations' unless I explicitly stated that.",
+  "",
+  "SAFE LANGUAGE EXAMPLES (the pattern, not the domain — adapt to the actual work):",
+  "- 'prototyped a target architecture' instead of 're-architected the system'",
+  "- 'validated a migration direction' instead of 'migrated the platform'",
+  "- 'evaluated option A but chose option B as more practical due to cost/constraints' instead of",
+  "  'built the solution on A'",
+  "- 'validated an isolation/security mechanism' instead of 'guaranteed compliance'",
+  "- 'created deployment templates/automation for handoff' instead of 'owned production operations'",
+  "",
   "Write flowing prose — no tier headers/labels, no bullet list of versions, no Q/A formatting.",
   "TONE — technical and claim-safe, NOT marketing:",
   "- Write like an engineer to another engineer: name the actual components, protocols, mechanisms.",
   "- BAN hype words: spearheaded, revolutionized, robust, seamless, cutting-edge, world-class,",
   "  leveraged, synergy, game-changing, best-in-class, drove, championed, owned (as a boast).",
-  "  Prefer plain verbs: implemented, added, refactored, designed, fixed, migrated.",
+  "  Prefer plain verbs: implemented, added, refactored, designed, fixed, migrated, evaluated,",
+  "  prototyped, validated.",
   "- No numeric scores, no superlatives, no adjectives that inflate impact.",
 ].join("\n");
 

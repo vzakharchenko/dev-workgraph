@@ -838,7 +838,7 @@ Limitations:
 
 After `report` produces the final cumulative report, `prepare` distills it into a **single role-aligned narrative** — the human-facing deliverable that answers "what did I do on this project, in terms that matter for my role?"
 
-`prepare` reads the **latest report** (the report file with the highest `reportId` / `timestampEnd` in `reports/`), combines it with `project.json` (role + prepared story + profile), and writes a compact prepared record. All LLM sessions use the **`reportModel`** (§14).
+`prepare` reads the **latest report** (the report file with the highest `reportId` / `timestampEnd` in `reports/`), combines it with `project.json` (role + prepared story + profile), and writes a compact prepared record. All LLM sessions use the **`narrativeModel`** (§14).
 
 ### Inputs
 
@@ -946,7 +946,7 @@ Same rules as `report` (§9): first person ('I'), no overclaiming. The prepared 
 
 ## 11. Final deliverable (`final`)
 
-The last pipeline step runs **only on the `prepare` result** (`prepared/<reportId>.json`, §10). It closes the loop: the system presents the four questions from the prepared record, the human answers them, and two `reportModel` LLM sessions produce the deliverable — first a **refined "Your IMPACT" narrative** that weaves the answers into the reconstructed history, then a **Role Narrative** of four impact bullet points framed for the selected role. Everything is written to a markdown file in the **current working directory** (where the CLI was launched), not under `~/.workgraph`.
+The last pipeline step runs **only on the `prepare` result** (`prepared/<reportId>.json`, §10). It closes the loop: the system presents the four questions from the prepared record, the human answers them, and two `narrativeModel` LLM sessions produce the deliverable — first a **refined "Your IMPACT" narrative** that weaves the answers into the reconstructed history, then a **Role Narrative** of four impact bullet points framed for the selected role. Everything is written to a markdown file in the **current working directory** (where the CLI was launched), not under `~/.workgraph`.
 
 `final` is **interactive** — it requires human input that cannot be gathered upfront (the questions only exist after `prepare`). It runs as the **last stage of `run`** (after `prepare`), and can also be run on its own.
 
@@ -981,7 +981,7 @@ Answers are persisted alongside the prepared record:
 
 A `--answers-file <path>` flag may supply pre-written Q&A as JSON (non-interactive).
 
-### Step 2a — Refine "Your IMPACT" with the answers (one LLM session, `reportModel`)
+### Step 2a — Refine "Your IMPACT" with the answers (one LLM session, `narrativeModel`)
 
 The prepared `model.history` is a reconstruction from Git evidence alone (§10). Now that the human has answered the open questions, refine it so the narrative reflects the **confirmed** ownership, intent, and context.
 
@@ -1000,7 +1000,7 @@ Produce **one** refined first-person `history` string — the same flowing-prose
 
 On model failure / empty output, fall back to the prepared `model.history` verbatim. This refined string is what fills the **`## Your IMPACT`** section, and it is the `history` fed into the Role Narrative below (so both sections stay consistent). It is written to the markdown only; the prepared record is not modified.
 
-### Step 2b — Role Narrative (one LLM session, `reportModel`)
+### Step 2b — Role Narrative (one LLM session, `narrativeModel`)
 
 Given:
 
@@ -1150,18 +1150,19 @@ dev-workgraph run          ./repo   # gather inputs upfront, run pipeline to pre
 
 ### `run` — unattended pipeline
 
-`check` is a standalone preflight: it verifies the Ollama server is reachable and has at least one model, and otherwise prints OS-specific install help (macOS: `brew install ollama`; Linux: `curl -fsSL https://ollama.com/install.sh | sh`) plus `ollama pull` suggestions; it also flags any saved `commitModel`/`reportModel` that is no longer installed. `run` invokes the same check as a **preflight** and aborts before prompting if Ollama is not ready.
+`check` is a standalone preflight: it verifies the Ollama server is reachable and has at least one model, and otherwise prints OS-specific install help (macOS: `brew install ollama`; Linux: `curl -fsSL https://ollama.com/install.sh | sh`) plus `ollama pull` suggestions; it also flags any saved `commitModel`/`reportModel`/`narrativeModel` that is no longer installed. `run` invokes the same check as a **preflight** and aborts before prompting if Ollama is not ready.
 
-`run` is an orchestrator that **gathers every upfront input first** (after the Ollama preflight), then executes `init → evidence → summarize → commit-group → report → prepare` without further prompts, and finishes with **`final`** which asks the four prepared questions interactively. Upfront it asks only for what is missing (unless `--force` re-gathers all): the two models (below), developer role + project story (if `project.json` is absent), author identities (if none saved), and the group-threshold days (if not saved). Each unattended stage runs with those values passed as flags. Stages skip work that is already done (append-only / resume), so `run` is safe to re-run; on re-run `final` reuses saved answers unless `--force`. `final` can also be run on its own at any time.
+`run` is an orchestrator that **gathers every upfront input first** (after the Ollama preflight), then executes `init → evidence → summarize → commit-group → report → prepare` without further prompts, and finishes with **`final`** which asks the four prepared questions interactively. Upfront it asks only for what is missing (unless `--force` re-gathers all): the three models (below), developer role + project story (if `project.json` is absent), author identities (if none saved), and the group-threshold days (if not saved). Each unattended stage runs with those values passed as flags. Stages skip work that is already done (append-only / resume), so `run` is safe to re-run; on re-run `final` reuses saved answers unless `--force`. `final` can also be run on its own at any time.
 
-### Two models (commit-level vs report-level)
+### Three models (commit-level vs report-level vs narrative)
 
-The local model is chosen and remembered **per role**, in `~/.workgraph/config.json` under `ollama`:
+The local model is chosen and remembered **per stage group**, in `~/.workgraph/config.json` under `ollama`:
 
 - **`commitModel`** — used by `summarize` and `commit-group` (per-commit and per-session work).
-- **`reportModel`** — used by `init`, `report`, `prepare`, and `final` (project-level / cumulative reasoning).
+- **`reportModel`** — used by `init` and `report` (project-level / cumulative reasoning).
+- **`narrativeModel`** — used by `prepare` and `final` (distilling the report into the human-facing narrative + Role Narrative).
 
-Each command seeds its picker from its own slot (falling back to a general `model`); `--model` forces a single model for that command. `run` asks for both upfront. This lets a fast model handle commit-level volume while a stronger model handles the higher-level report.
+Each command seeds its picker from its own slot, falling back through the more general slots — `narrativeModel ?? reportModel ?? model` for the narrative stages, `commitModel ?? model` for commit stages — so an existing two-model setup keeps working until a separate narrative model is chosen. `--model` forces a single model for that command. `run` asks for all three upfront. This lets a fast model handle commit-level volume, a stronger model fold the report, and (optionally) a different model — tuned for prose/claim-safety — write the final narrative.
 
 ### Resilience
 
@@ -1177,8 +1178,8 @@ Each command seeds its picker from its own slot (falling back to a general `mode
 - **Project context block** — role + `story.preparedContext` + `profile` injected into every LLM prompt in `summarize`, `commit-group`, and `report`.
 - **Noise filter** and **area detection** are deterministic, shared library modules.
 - **Model layer** is generated by a local Ollama model (chosen interactively, remembered) using structured JSON output; the signal-without-reason rule is enforced after generation.
-- `prepare` reads the latest report + `project.json`, runs three `reportModel` sessions (compose history, collapse reasons, reframe questions), writes `prepared/<reportId>.json`.
-- `final` reads the latest `prepared/<reportId>.json` + `project.json`, presents four prepared questions, persists Q&A to the prepared record, runs two `reportModel` sessions (refine the "Your IMPACT" narrative with the answers, then the four-bullet Role Narrative), writes `RESUME.<project>.md` to **cwd**.
+- `prepare` reads the latest report + `project.json`, runs three `narrativeModel` sessions (compose history, collapse reasons, reframe questions), writes `prepared/<reportId>.json`.
+- `final` reads the latest `prepared/<reportId>.json` + `project.json`, presents four prepared questions, persists Q&A to the prepared record, runs two `narrativeModel` sessions (refine the "Your IMPACT" narrative with the answers, then the four-bullet Role Narrative), writes `RESUME.<project>.md` to **cwd**.
 - `init`, `evidence`, `summarize`, and `commit-group` are **append-only** with a `--force` override; `report` is **resumable**; `prepare` is **idempotent per report** (`--force` to regenerate); `final` overwrites `RESUME.<project>.md` on `--force`.
 - **`groupThresholdDays`** and **`groupMaxCommits`** (0 = unlimited) are persisted per repo in config; `commit-group` prompts for both on first run (`--days`, `--max-commits` skip the prompts).
 
@@ -1215,41 +1216,47 @@ The system must **never overclaim impact, ownership, or production usage.** It r
 
 Reason:
 
-Two changes. **(1)** `report` history compaction (§9) now uses a **rolling merge cursor** (`mergeCursor` on the report record): on overflow it merges exactly the adjacent pair at the cursor, then advances the cursor down the list and wraps — so compression is spread evenly across all ages instead of repeatedly re-squashing the oldest blob (which degraded the oldest history through lossy re-paraphrasing). The newest entry is never merged. **(2)** `final` now **refines the "Your IMPACT" narrative with the human's answers** (§11, new Step 2a): a `reportModel` session weaves the Q&A into the Git-reconstructed history (invent-nothing; empty answer ⇒ keep reconstruction; claim-safe tone), and the Role Narrative bullets (Step 2b) are built from that refined history so both sections stay consistent. Falls back to the prepared history on model failure; written to markdown only (the prepared record is unchanged).
+Split out a **third model slot, `narrativeModel`** (§14): `prepare` and `final` now use it instead of `reportModel`, so the human-facing narrative + Role Narrative can run on a different model (e.g. one tuned for prose/claim-safety) than the report fold. The picker falls back through `narrativeModel ?? reportModel ?? model`, so existing two-model setups keep working until a narrative model is chosen. `run` now asks for all three models upfront; `check` flags a missing `narrativeModel` too. Model groups are now: `commitModel` (`summarize`, `commit-group`), `reportModel` (`init`, `report`), `narrativeModel` (`prepare`, `final`).
 
 ---
 
 ### Change history #1
 
-Renamed the **`export`** command to **`evidence`** (§2): `dev-workgraph evidence` extracts each commit's patch + deterministic evidence layer. The name matches the spec's "deterministic baseline / evidence" terminology. Renamed `export.ts` → `evidence.ts`, `exportCommits()` → `evidence()`, `ExportOptions` → `EvidenceOptions`; updated the `run` pipeline stage (`[2/7] evidence`) and all command-flow references. Historical change-log entries below keep the old `export` name.
+Two changes. **(1)** `report` history compaction (§9) now uses a **rolling merge cursor** (`mergeCursor` on the report record): on overflow it merges exactly the adjacent pair at the cursor, then advances the cursor down the list and wraps — so compression is spread evenly across all ages instead of repeatedly re-squashing the oldest blob (which degraded the oldest history through lossy re-paraphrasing). The newest entry is never merged. **(2)** `final` now **refines the "Your IMPACT" narrative with the human's answers** (§11, new Step 2a): a `narrativeModel` session weaves the Q&A into the Git-reconstructed history (invent-nothing; empty answer ⇒ keep reconstruction; claim-safe tone), and the Role Narrative bullets (Step 2b) are built from that refined history so both sections stay consistent. Falls back to the prepared history on model failure; written to markdown only (the prepared record is unchanged).
 
 ---
 
 ### Change history #2
 
-`prepare` now prints a **console preview** after writing its record (§10, Step 6): the unified `history` as one block, then the four numbered `questions`. This makes the upcoming `final` step transparent — the user sees the reconstructed narrative and exactly which questions they will be asked before running `final`.
+Renamed the **`export`** command to **`evidence`** (§2): `dev-workgraph evidence` extracts each commit's patch + deterministic evidence layer. The name matches the spec's "deterministic baseline / evidence" terminology. Renamed `export.ts` → `evidence.ts`, `exportCommits()` → `evidence()`, `ExportOptions` → `EvidenceOptions`; updated the `run` pipeline stage (`[2/7] evidence`) and all command-flow references. Historical change-log entries below keep the old `export` name.
 
 ---
 
 ### Change history #3
 
-Added a **`check`** command (§14): verifies the Ollama server is reachable and has ≥1 model, else prints OS-specific install help (macOS `brew install ollama`, Linux `curl … install.sh`) + `ollama pull` suggestions, and flags saved `commitModel`/`reportModel` no longer installed. The reusable `ollamaReady()` runs as a **preflight in `run`** (aborts before prompting if Ollama isn't ready). Removed the keycloak/RAD-SEC examples from the prompts (now domain-neutral). Suggested-pull models: `qwen2.5-coder:14b`, `gpt-oss:latest`.
+`prepare` now prints a **console preview** after writing its record (§10, Step 6): the unified `history` as one block, then the four numbered `questions`. This makes the upcoming `final` step transparent — the user sees the reconstructed narrative and exactly which questions they will be asked before running `final`.
 
 ---
 
 ### Change history #4
 
-Tuned the `final` Role Narrative prompt (§11) for a **technical, claim-safe tone**: write engineer-to-engineer with concrete components/protocols/mechanisms, ban marketing/hype words (spearheaded, robust, seamless, leveraged, …), prefer plain verbs (implemented, added, refactored, fixed). No behavior change elsewhere.
+Added a **`check`** command (§14): verifies the Ollama server is reachable and has ≥1 model, else prints OS-specific install help (macOS `brew install ollama`, Linux `curl … install.sh`) + `ollama pull` suggestions, and flags saved `commitModel`/`reportModel` no longer installed. The reusable `ollamaReady()` runs as a **preflight in `run`** (aborts before prompting if Ollama isn't ready). Removed the keycloak/RAD-SEC examples from the prompts (now domain-neutral). Suggested-pull models: `qwen2.5-coder:14b`, `gpt-oss:latest`.
 
 ---
 
 ### Change history #5
 
-Added a second grouping bound to `commit-group` (§3): **`groupMaxCommits`** (0 = unlimited) caps commits per work-session group, so a new group also starts when the current one reaches the cap — not only on the day-gap. Persisted per repo; prompted on first run (`--max-commits` skips). `run` gathers it upfront alongside the day threshold. Default 20.
+Tuned the `final` Role Narrative prompt (§11) for a **technical, claim-safe tone**: write engineer-to-engineer with concrete components/protocols/mechanisms, ban marketing/hype words (spearheaded, robust, seamless, leveraged, …), prefer plain verbs (implemented, added, refactored, fixed). No behavior change elsewhere.
 
 ---
 
 ### Change history #6
+
+Added a second grouping bound to `commit-group` (§3): **`groupMaxCommits`** (0 = unlimited) caps commits per work-session group, so a new group also starts when the current one reaches the cap — not only on the day-gap. Persisted per repo; prompted on first run (`--max-commits` skips). `run` gathers it upfront alongside the day threshold. Default 20.
+
+---
+
+### Change history #7
 
 Built **`prepare`** (§10) and **`final`** (§11).
 
@@ -1262,25 +1269,25 @@ Next: `ask` (deferred), polish.
 
 ---
 
-### Change history #7
+### Change history #8
 
 Added **`answers`** (now **`final`**, §11) as the final pipeline step. Interactive: presents the four prepared questions, persists Q&A to `prepared/<reportId>.json`, runs one `reportModel` session to produce a **Role Narrative** (exactly four impact bullets from `history` + project context + `signalReasons` + answers). Writes **`RESUME.<project>.md`** to **cwd**. Not part of `run`. Updated Goal (Q7), success criteria, out of scope, command flow, core principle.
 
 ---
 
-### Change history #8
+### Change history #9
 
 Added **`prepare`** (§10): reads the **latest report**, concatenates `history[]` entries (newline-separated), then three `reportModel` LLM sessions — (1) compose a single role-aligned `history` using `project.json` context, (2) collapse `signalReasons` into exactly **four** bullets, (3) reframe exactly **four** role-aware `questions`. Signals and `changeTypes` are copied from the report unchanged. Output: `data/repos/<repo-id>/prepared/<reportId>.json`. Updated Goal (question 6), §8, §11 success criteria, §13 command flow (`prepare` after `report`, `run` includes `prepare`), §14 core principle. Renumbered §10–§13 → §11–§14.
 
 ---
 
-### Change history #9
+### Change history #10
 
 Pushed the **routine rule** upstream to `summarize` (§2) and `commit-group` (§3): a shared `ROUTINE_RULE` now governs every stage — routine upkeep (dependency/version bumps, build/CI/formatting) is **named, not detailed** (no versions, no per-bump list); if work is only routine, say so plainly; if there is substantive work, describe **only** the substantive part. At group level routine stays a single generic `lowContext` bullet (never hi/medium), and a routine-only session's `history` is one short sentence. The report's collapse rule now builds on this shared rule.
 
 ---
 
-### Change history #10
+### Change history #11
 
 Added a **routine gate** to `report` (§8, step 1): a small LLM classifier decides routine-upkeep vs substantive; routine groups are folded **deterministically** (evidence accumulates, one generic maintenance bullet, history untouched) so they cost one cheap LLM call instead of three, while only substantive groups run the merge/add/compact sessions. Added a **routine-maintenance collapse** rule to all three report sessions: upkeep is folded into one generic low-tier item instead of per-release/per-bump entries. `report` now prints **per-fold sub-steps** (`[1/4] check`, `[2/4] merge`, `[3/4] add-if-new`, `[4/4] compact`) so it's clear which LLM session is running.
 
@@ -1288,7 +1295,7 @@ Made `report` **scalable** (§8). The linear fold was O(N²) — every fold re-r
 
 ---
 
-### Change history #11
+### Change history #12
 
 Built **`init`** and the **`run`** orchestrator, plus resilience and a two-model split (§12):
 
@@ -1302,19 +1309,19 @@ Built so far: `init`, `authors`, `export`, `summarize`, `commit-group`, `report`
 
 ---
 
-### Change history #12
+### Change history #13
 
 Renamed the group model's prose field from `summary` to **`history`** (§4, §7): `commit-group`'s second session now produces a fuller first-person `history` (covering BOTH high- and medium-tier work; low only mentioned/omitted), and `report` folds each group's `history` (not a summary) into the cumulative report history. The per-commit `summary` (§3) is unchanged. Strengthened both the group-compose and report-history prompts so the tiers control DEPTH, not inclusion — medium work must never be dropped.
 
 ---
 
-### Change history #13
+### Change history #14
 
 Redefined `report` (§8) as a **cumulative fold over groups**: `report_k = merge(report_{k-1}, group_k)`, every intermediate report kept under `data/repos/<repo-id>/reports/<timestampEnd>.json`. A report links source groups by **file name** (no commit hashes); `deterministic` is unioned; `*Signal` is the **max** across groups while `signalReasons` become **arrays**; `changeTypes`/`questions`/`confidence` and the `hiContext`/`mediumContext`/`lowContext` tiers are recomputed in one LLM merge session that dedups similar bullets and **re-ranks importance downward only** (never promotes). `history` (renamed from "summary" — it is a fuller account, not a terse summary, with the tiers controlling depth: HIGH detailed, MEDIUM lighter, LOW at most a brief mention or omitted) is a running list of `{ text, sourceGroups }` entries: on each fold, the whole list is re-read and rewritten **1:1** to the new contexts in **one** session (so per-entry provenance accumulates by group file name), then a second session appends a new entry only if the incoming session adds something not already covered. Cost is intentionally not optimized (maximize local-LLM use). `report` is **[BUILT]**. §11 and §12 updated.
 
 ---
 
-### Change history #14
+### Change history #15
 
 Reworked `commit-group` (§3, §6) to **two LLM sessions** per group. The `groups` block now holds `commits` plus a **deterministic** tier partition `tiers: { low, medium, hi }` (the commit→tier link stays as evidence; the model no longer re-partitions hashes). The model layer's `hiContext` / `mediumContext` / `lowContext` are now arrays of **context bullets** (not hashes), produced by **session 1 (classify)** along with signals/changeTypes/questions/confidence — merging commits that are close in meaning, adding unrelated ones separately. **Session 2 (compose)** then merges the per-commit summaries into a first-person, multi-paragraph `summary` whose detail follows the tiers (HIGH in full, MEDIUM briefly, LOW just mentioned). Voice switched to first person; area detection simplified to "top-level project folder" (§5). Prompts extracted to `src/lib/prompts.ts`.
 
@@ -1322,7 +1329,7 @@ Built so far: `authors`, `export`, `summarize`, `commit-group`. Next: `report`.
 
 ---
 
-### Change history #15
+### Change history #16
 
 Synced the spec with the implemented CLI. Added §0 "Author selection" (select your own work by email; persisted per repo) as a precondition, with the lesson about confusable near-identical emails. Switched the data layout to per-repository namespacing (`data/repos/<repo-id>/commits/...`) so repos never mix. Documented the model layer as a separate, append-only `summarize` step backed by a local Ollama model with structured JSON output and provenance. Rewrote §11 to the actual command flow, marking what is built vs TODO, and added implementation notes (TypeScript/commander/inquirer, deterministic noise + area modules, `--force` semantics).
 

@@ -31,6 +31,8 @@ export interface OllamaConfig {
   commitModel?: string;
   /** Model for report-level work: `init` and `report`. */
   reportModel?: string;
+  /** Model for narrative work: `prepare` and `final`. */
+  narrativeModel?: string;
 }
 
 /**

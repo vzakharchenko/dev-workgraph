@@ -78,7 +78,7 @@ export async function run(options: RunOptions): Promise<void> {
     throw new Error("Ollama is not ready (see above). Fix it, then re-run.");
   }
 
-  // 1. Models — separate for commit-level vs report-level work.
+  // 1. Models — separate slots for commit-level, report-level, and narrative work.
   const savedOllama = loadConfig().ollama;
   const commitModel = await resolveModel(baseUrl, options.model, {
     message: "Model for commit summaries & commit-group?",
@@ -88,7 +88,11 @@ export async function run(options: RunOptions): Promise<void> {
     message: "Model for project context (init) & report?",
     saved: savedOllama?.reportModel ?? savedOllama?.model,
   });
-  setOllamaConfig({ baseUrl, commitModel, reportModel });
+  const narrativeModel = await resolveModel(baseUrl, options.model, {
+    message: "Model for the narrative (prepare) & final?",
+    saved: savedOllama?.narrativeModel ?? savedOllama?.reportModel ?? savedOllama?.model,
+  });
+  setOllamaConfig({ baseUrl, commitModel, reportModel, narrativeModel });
 
   const cfg = getRepoConfig(repoPath);
   const projectExists = fs.existsSync(repoProjectPath(repoPath));
@@ -172,11 +176,11 @@ export async function run(options: RunOptions): Promise<void> {
   await report({ repo: repoPath, model: reportModel, url: baseUrl, force });
 
   console.log("\n[6/7] prepare");
-  await prepare({ repo: repoPath, model: reportModel, url: baseUrl, force });
+  await prepare({ repo: repoPath, model: narrativeModel, url: baseUrl, force });
 
   // final is interactive (answers the prepared questions) — it runs last.
   console.log("\n[7/7] final");
-  await final({ repo: repoPath, model: reportModel, url: baseUrl, force });
+  await final({ repo: repoPath, model: narrativeModel, url: baseUrl, force });
 
   console.log("\n✅ Pipeline complete.");
 }

@@ -32,6 +32,8 @@ export const CHANGE_TYPES = [
 export interface ModelLayer {
   summary: string;
   changeTypes: string[];
+  /** Languages, frameworks, tools, and libraries the patch actually uses. */
+  technologies: string[];
   technicalSignal: Signal;
   architectureSignal: Signal;
   securitySignal: Signal;
@@ -61,6 +63,7 @@ export function modelJsonSchema(): Record<string, unknown> {
     properties: {
       summary: { type: "string" },
       changeTypes: { type: "array", items: { type: "string", enum: [...CHANGE_TYPES] } },
+      technologies: { type: "array", items: { type: "string" } },
       technicalSignal: signal,
       architectureSignal: signal,
       securitySignal: signal,
@@ -79,6 +82,7 @@ export function modelJsonSchema(): Record<string, unknown> {
     required: [
       "summary",
       "changeTypes",
+      "technologies",
       "technicalSignal",
       "architectureSignal",
       "securitySignal",
@@ -97,9 +101,14 @@ export function modelJsonSchema(): Record<string, unknown> {
 export function groupClassifyJsonSchema(): Record<string, unknown> {
   const base = modelJsonSchema();
   const props = { ...(base.properties as Record<string, unknown>) };
+  // `summary` is produced by the compose step; `technologies` is a deterministic
+  // union of the member commits — neither is re-derived by the classify session.
   delete props.summary;
+  delete props.technologies;
   const strArray = { type: "array", items: { type: "string" } };
-  const required = (base.required as string[]).filter((field) => field !== "summary");
+  const required = (base.required as string[]).filter(
+    (field) => field !== "summary" && field !== "technologies",
+  );
   return {
     type: "object",
     properties: {
@@ -189,6 +198,34 @@ export function roleNarrativeJsonSchema(): Record<string, unknown> {
     type: "object",
     properties: { narrative: { type: "array", items: { type: "string" } } },
     required: ["narrative"],
+  };
+}
+
+/**
+ * Case-insensitively unions technology lists, preserving the first-seen casing
+ * and order. Used to accumulate `technologies` across commits → groups → report
+ * (deterministic, no model). The model only cleans/collapses the list at `prepare`.
+ * @param lists - Technology arrays to merge.
+ */
+export function mergeTechnologies(...lists: (string[] | undefined)[]): string[] {
+  const seen = new Map<string, string>();
+  for (const list of lists) {
+    for (const raw of list ?? []) {
+      const tech = typeof raw === "string" ? raw.trim() : "";
+      if (!tech) continue;
+      const key = tech.toLowerCase();
+      if (!seen.has(key)) seen.set(key, tech);
+    }
+  }
+  return [...seen.values()];
+}
+
+/** JSON Schema for `prepare`: the cleaned/deduped technology list. */
+export function prepareTechnologiesJsonSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: { technologies: { type: "array", items: { type: "string" } } },
+    required: ["technologies"],
   };
 }
 

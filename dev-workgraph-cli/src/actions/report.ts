@@ -9,6 +9,7 @@ import { loadGroupRecords, mergeDeterministic } from "../lib/grouping.js";
 import {
   type Signal,
   maxSignal,
+  mergeTechnologies,
   reportHistoryJsonSchema,
   reportMergeJsonSchema,
   reportNewHistoryJsonSchema,
@@ -81,6 +82,7 @@ function initReport(file: string, group: GroupRecord, generatedAt: string, model
     deterministic: group.deterministic,
     model: {
       changeTypes: g?.changeTypes ?? [],
+      technologies: mergeTechnologies(g?.technologies),
       technicalSignal: g?.technicalSignal ?? "low",
       architectureSignal: g?.architectureSignal ?? "low",
       securitySignal: g?.securitySignal ?? "low",
@@ -233,6 +235,7 @@ async function foldGroup(
         architectureSignal,
         securitySignal,
         changeTypes: uniq([...prev.model.changeTypes, ...(g?.changeTypes ?? [])]),
+        technologies: mergeTechnologies(prev.model.technologies, g?.technologies),
         lowContext: cap(ensureMaintenanceBullet(prev.model.lowContext)),
         provenance: { model, generatedAt },
       },
@@ -263,6 +266,7 @@ async function foldGroup(
 
   const newModel: ReportModelLayer = {
     changeTypes: asStringArray(merged.changeTypes),
+    technologies: mergeTechnologies(prev.model.technologies, g?.technologies),
     technicalSignal,
     architectureSignal,
     securitySignal,

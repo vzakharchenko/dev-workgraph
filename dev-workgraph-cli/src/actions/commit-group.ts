@@ -14,7 +14,7 @@ import {
 } from "../lib/config.js";
 import {resolveRepo} from "../lib/git.js";
 import {aggregateDeterministic, groupByGap, loadCommitRecords, partitionTiers,} from "../lib/grouping.js";
-import {enforceSignalReasons, groupClassifyJsonSchema, groupHistoryJsonSchema, type ModelLayer,} from "../lib/model.js";
+import {enforceSignalReasons, groupClassifyJsonSchema, groupHistoryJsonSchema, mergeTechnologies, type ModelLayer,} from "../lib/model.js";
 import {chatJson, resolveBaseUrl} from "../lib/ollama.js";
 import { loadProjectContext } from "../lib/project.js";
 import { resolveModel } from "../lib/select.js";
@@ -229,6 +229,8 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
       const { summary: _omitSummary, ...signalFields } = signals;
       record.model = {
         ...signalFields,
+        // Technologies are a deterministic union of the member commits, not re-derived.
+        technologies: mergeTechnologies(...members.map((m) => m.model?.technologies)),
         history: rawCompose.history ?? "",
         hiContext: tiers.hiContext,
         mediumContext: tiers.mediumContext,

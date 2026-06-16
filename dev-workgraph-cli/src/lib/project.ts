@@ -10,7 +10,13 @@ export const ROLES = [
   "Principal Developer",
   "Staff Developer",
   "Senior Developer",
+  "Middle Developer",
   "Junior Developer",
+  "Principal Frontend Developer",
+  "Staff Frontend Developer",
+  "Senior Frontend Developer",
+  "Middle Frontend Developer",
+  "Junior Frontend Developer",
 ] as const;
 
 /**

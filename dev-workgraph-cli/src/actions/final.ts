@@ -131,9 +131,9 @@ export async function final(options: FinalOptions): Promise<void> {
   const savedOllama = loadConfig().ollama;
   const model = await resolveModel(baseUrl, options.model, {
     message: "Which Ollama model should write the Role Narrative?",
-    saved: savedOllama?.reportModel ?? savedOllama?.model,
+    saved: savedOllama?.narrativeModel ?? savedOllama?.reportModel ?? savedOllama?.model,
   });
-  setOllamaConfig({ baseUrl, reportModel: model });
+  setOllamaConfig({ baseUrl, narrativeModel: model });
 
   const projectBlock = projectContextBlock(project);
 
@@ -177,6 +177,10 @@ export async function final(options: FinalOptions): Promise<void> {
     `## Your IMPACT as ${role}`,
     "",
     impactHistory || "(no history)",
+    "",
+    "## Technologies",
+    "",
+    prepared.model.technologies.length > 0 ? prepared.model.technologies.join(", ") : "(none)",
     "",
     "## Impact bullet points (Role Narrative)",
     "",

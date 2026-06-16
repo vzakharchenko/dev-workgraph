@@ -17,6 +17,8 @@ export interface ProjectProfile {
  */
 export interface PreparedModelLayer {
   changeTypes: string[];
+  /** Cleaned, deduped, class-collapsed technology list (e.g. JS subsumed by TS). */
+  technologies: string[];
   technicalSignal: Signal;
   architectureSignal: Signal;
   securitySignal: Signal;
@@ -162,6 +164,8 @@ export interface ReportHistoryEntry {
  */
 export interface ReportModelLayer {
   changeTypes: string[];
+  /** Union of the folded groups' technologies (deduped; cleaned only at `prepare`). */
+  technologies: string[];
   technicalSignal: Signal;
   architectureSignal: Signal;
   securitySignal: Signal;
