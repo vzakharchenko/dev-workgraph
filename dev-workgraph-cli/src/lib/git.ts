@@ -90,13 +90,23 @@ export interface ChangedFile {
 
 const UNIT = "\x1f";
 
+/** An optional author-timestamp window (epoch seconds), half-open `[from, to)`. */
+export interface CommitRange {
+  /** Inclusive lower bound; commits before this are dropped. */
+  from?: number;
+  /** Exclusive upper bound; commits at or after this are dropped. */
+  to?: number;
+}
+
 /**
  * Returns all non-merge commits authored by any of the given emails, across
- * every branch, sorted oldest-first.
+ * every branch, sorted oldest-first. An optional author-timestamp `range`
+ * (half-open `[from, to)`) restricts the result to a review period.
  * @param repoPath - Absolute path to the repository.
  * @param emails - Author emails to keep (case-insensitive).
+ * @param range - Optional `[from, to)` author-timestamp window (epoch seconds).
  */
-export function getCommits(repoPath: string, emails: string[]): Commit[] {
+export function getCommits(repoPath: string, emails: string[], range?: CommitRange): Commit[] {
   const wanted = new Set(emails.map((e) => e.toLowerCase()));
   const fmt = ["%H", "%at", "%ae", "%an", "%s"].join(UNIT);
   const raw = git(repoPath, ["log", "--all", "--no-merges", `--format=${fmt}%x00`]);
@@ -110,9 +120,12 @@ export function getCommits(repoPath: string, emails: string[]): Commit[] {
     if (!hash || !email) continue;
     const lowered = email.trim().toLowerCase();
     if (!wanted.has(lowered)) continue;
+    const timestamp = Number.parseInt(at ?? "0", 10);
+    if (range?.from !== undefined && timestamp < range.from) continue;
+    if (range?.to !== undefined && timestamp >= range.to) continue;
     commits.push({
       hash,
-      timestamp: Number.parseInt(at ?? "0", 10),
+      timestamp,
       email: lowered,
       name: (name ?? "").trim(),
       subject: subject.trim(),

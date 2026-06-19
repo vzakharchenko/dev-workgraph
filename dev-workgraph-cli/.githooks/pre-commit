@@ -1,0 +1,27 @@
+#!/bin/sh
+# Pre-commit hook for the dev-workgraph-cli project.
+#
+# The git working tree is the PARENT of this project, so the hook runs from the
+# repo root and only fires when staged changes touch the project directory.
+# Wired up by the package.json `prepare` script (sets core.hooksPath).
+set -e
+
+PROJECT_DIR="dev-workgraph-cli"
+
+# Skip when nothing in the project is staged.
+if ! git diff --cached --name-only | grep -q "^$PROJECT_DIR/"; then
+  exit 0
+fi
+
+cd "$PROJECT_DIR"
+
+echo "pre-commit › lint"
+npm run --silent lint
+
+echo "pre-commit › typecheck"
+npm run --silent typecheck
+
+echo "pre-commit › knip"
+npm run --silent knip
+
+echo "pre-commit › ok"

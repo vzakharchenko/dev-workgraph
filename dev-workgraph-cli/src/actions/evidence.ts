@@ -3,8 +3,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { getRepoConfig, repoCommitsDir } from "../lib/config.js";
 import { areaOf } from "../lib/areas.js";
+import { getRepoConfig, repoCommitsDir } from "../lib/config.js";
 import {
   type ChangedFile,
   type Commit,
@@ -15,6 +15,7 @@ import {
   resolveRepo,
 } from "../lib/git.js";
 import { isNoise } from "../lib/noise.js";
+import { resolvePeriodRange } from "../lib/periods.js";
 
 /**
  * Options for the `evidence` command.
@@ -26,6 +27,8 @@ export interface EvidenceOptions {
   email?: string[];
   /** Re-extract and overwrite commits that already exist on disk. */
   force?: boolean;
+  /** Restrict extraction to a defined review period (scopes output too). */
+  period?: string;
 }
 
 /**
@@ -184,21 +187,28 @@ export async function evidence(options: EvidenceOptions): Promise<void> {
       : getRepoConfig(repoPath)?.selectedAuthors;
 
   if (!emails || emails.length === 0) {
-    console.error(
-      "✖ No authors selected. Run `dev-workgraph authors` first, or pass --email.",
-    );
+    console.error("✖ No authors selected. Run `dev-workgraph authors` first, or pass --email.");
     process.exitCode = 1;
     return;
   }
 
-  const commits = getCommits(repoPath, emails);
+  const range = options.period ? resolvePeriodRange(repoPath, options.period) : undefined;
+  const commits = getCommits(repoPath, emails, range);
   if (commits.length === 0) {
-    console.log("No commits found for the selected authors.");
+    console.log(
+      options.period
+        ? `No commits found for the selected authors in period "${options.period}".`
+        : "No commits found for the selected authors.",
+    );
     return;
   }
 
-  const outDir = repoCommitsDir(repoPath);
-  console.log(`Extracting evidence for ${commits.length} commit(s) by ${emails.join(", ")} → ${outDir}`);
+  const outDir = repoCommitsDir(repoPath, options.period);
+  console.log(
+    `Extracting evidence for ${commits.length} commit(s) by ${emails.join(", ")}${
+      options.period ? ` in period "${options.period}"` : ""
+    } → ${outDir}`,
+  );
 
   let extracted = 0;
   let skipped = 0;

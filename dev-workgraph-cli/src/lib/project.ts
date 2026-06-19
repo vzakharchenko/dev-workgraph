@@ -21,14 +21,23 @@ export const ROLES = [
 
 /**
  * Loads the project context for a repo, or null when `init` has not run.
+ * When a `period` is given, prefers the period's own `project.json` and falls
+ * back to the repo-level context so a period pipeline still has grounding even
+ * if `init:period` was skipped.
  * @param repoPath - Absolute repository path.
+ * @param period - Optional review period to prefer.
  */
-export function loadProjectContext(repoPath: string): ProjectContext | null {
-  const file = repoProjectPath(repoPath);
-  if (!fs.existsSync(file)) return null;
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf8")) as ProjectContext;
-  } catch {
-    return null;
+export function loadProjectContext(repoPath: string, period?: string): ProjectContext | null {
+  const candidates = period
+    ? [repoProjectPath(repoPath, period), repoProjectPath(repoPath)]
+    : [repoProjectPath(repoPath)];
+  for (const file of candidates) {
+    if (!fs.existsSync(file)) continue;
+    try {
+      return JSON.parse(fs.readFileSync(file, "utf8")) as ProjectContext;
+    } catch {
+      // try the next candidate
+    }
   }
+  return null;
 }

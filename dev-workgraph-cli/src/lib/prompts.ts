@@ -6,6 +6,9 @@
 
 import { tierOf } from "./grouping.js";
 import type { CommitRecord, GroupRecord, ProjectContext, ReportRecord } from "./records.js";
+import { MAX_HISTORY_ENTRIES } from "./report-provenance.js";
+
+export { MAX_HISTORY_ENTRIES };
 
 // ───────────────────────────── project context (from `init`) ─────────────────
 
@@ -55,7 +58,7 @@ export function withProjectContext(block: string, system: string): string {
 // ───────────────────────────── project init (`init`) ─────────────────────────
 
 /** Max README characters sent to the profile session. */
-export const MAX_README_CHARS = 12000;
+const MAX_README_CHARS = 12000;
 
 // Session 1: reframe the raw story for the developer's seniority.
 export const STORY_PREPARE_SYSTEM = [
@@ -73,13 +76,15 @@ export const STORY_PREPARE_SYSTEM = [
  * @param rawStory - The raw free-form project story.
  */
 export function buildStoryPreparePrompt(role: string, rawStory: string): string {
-  return [`Developer role: ${role}`, "", "Raw project story:", rawStory || "(none provided)"].join("\n");
+  return [`Developer role: ${role}`, "", "Raw project story:", rawStory || "(none provided)"].join(
+    "\n",
+  );
 }
 
 // Session 2: build a factual project profile from the prepared story + README.
 export const PROJECT_PROFILE_SYSTEM = [
   "You build a factual PROFILE of a software project to ground later analysis of its Git history.",
-  "Return JSON { \"summary\", \"domains\": [], \"apparentStack\": [], \"keyThemes\": [] }.",
+  'Return JSON { "summary", "domains": [], "apparentStack": [], "keyThemes": [] }.',
   "You are given the developer's role, a prepared project context, and the README (if any).",
   "- summary: what the project appears to be about.",
   "- domains: the problem domains it operates in.",
@@ -100,7 +105,9 @@ export function buildProjectProfilePrompt(
   readme: string,
 ): string {
   const body =
-    readme.length > MAX_README_CHARS ? `${readme.slice(0, MAX_README_CHARS)}\n[...truncated...]` : readme;
+    readme.length > MAX_README_CHARS
+      ? `${readme.slice(0, MAX_README_CHARS)}\n[...truncated...]`
+      : readme;
   return [
     `Developer role: ${role}`,
     "",
@@ -113,10 +120,10 @@ export function buildProjectProfilePrompt(
 }
 
 /** Max patch characters sent to the per-commit model; longer patches are truncated. */
-export const MAX_PATCH_CHARS = 16000;
+const MAX_PATCH_CHARS = 16000;
 
 /** Char budget for the serialized member commits in the group prompt. */
-export const MAX_MEMBERS_CHARS = 24000;
+const MAX_MEMBERS_CHARS = 24000;
 
 // Shared across every stage: routine upkeep is named, never detailed; substantive work wins.
 const ROUTINE_RULE = [
@@ -263,7 +270,7 @@ export const GROUP_COMPOSE_SYSTEM = [
   "You are an engineering historian. You are given a CLASSIFICATION of ONE developer's work",
   "session (signals + context tiers as bullets) and the per-commit summaries grouped by tier.",
   "Your task is to MERGE the commit summaries into ONE first-person HISTORY — a fuller account,",
-  "not a terse summary. Return JSON: { \"history\": \"...\" }.",
+  'not a terse summary. Return JSON: { "history": "..." }.',
   "",
   "VOICE: first person ('I'); never 'the team', 'they', or 'we'.",
   "",
@@ -377,7 +384,8 @@ export function buildGroupComposePrompt(
   members: CommitRecord[],
 ): { prompt: string; truncated: boolean } {
   const bullets = (items: string[]): string => items.map((b) => `- ${b}`).join("\n") || "(none)";
-  const sums = (tier: "hi" | "medium" | "low"): string => summariesByTier(members, tier).join("\n") || "(none)";
+  const sums = (tier: "hi" | "medium" | "low"): string =>
+    summariesByTier(members, tier).join("\n") || "(none)";
 
   let prompt = [
     `Work session of ${group.commitCount} commit(s) by a single developer. Compose the history now.`,
@@ -407,8 +415,6 @@ export function buildGroupComposePrompt(
 
 // ───────────────────────────── cumulative report (`report`) ─────────────────────
 
-/** Max running history entries before the oldest are compacted (keeps the fold bounded). */
-export const MAX_HISTORY_ENTRIES = 12;
 /** Max bullets kept per context tier (keeps the merge prompt bounded). */
 export const MAX_CONTEXT_BULLETS = 12;
 
@@ -446,7 +452,7 @@ export const REPORT_MERGE_SYSTEM = [
 // Step 1 gate: is this whole work session ONLY routine maintenance?
 export const ROUTINE_CHECK_SYSTEM = [
   "You classify whether a developer's WORK SESSION is ONLY routine project maintenance.",
-  "Return JSON { \"routine\": true|false, \"reason\": \"...\" }.",
+  'Return JSON { "routine": true|false, "reason": "..." }.',
   "ROUTINE = dependency bumps, version/release updates, lockfile/build-config tweaks, formatting,",
   "  CI/build upkeep, and similar — work where the specific version or dependency does not matter.",
   "SUBSTANTIVE = any design, implementation, refactor of real logic, new feature, bug fix, or",
@@ -472,10 +478,27 @@ export function buildRoutineCheckPrompt(group: GroupRecord): string {
   ].join("\n");
 }
 
+// How the tiers control depth of detail in the history. Shared by both sessions.
+const HISTORY_TIER_RULES = [
+  "This is a HISTORY, not a terse summary: describe FULLY what I did. The tiers control DEPTH:",
+  "- HIGH-tier context: MANDATORY. Cover EVERY item in DETAIL — name the real subsystems, modules,",
+  "  and what changed. This is the core of the history.",
+  "- MEDIUM-tier context: you MUST say something about it — cover it briefly (do not drop it",
+  "  entirely), but it need not be exhaustive item-by-item.",
+  "- LOW-tier context: OPTIONAL — at most a brief mention, and may be omitted entirely.",
+].join("\n");
+
+/** Provenance is code-side only — history LLM sessions return text, never sourceGroups. */
+const HISTORY_NO_PROVENANCE = [
+  "Return TEXT ONLY. Do NOT include sourceGroups, sourceGroup, group file names, or any provenance",
+  "metadata — the CLI tracks which group files fed each entry deterministically.",
+].join("\n");
+
 // Compact the oldest part of the running history to keep the report bounded.
 export const REPORT_COMPACT_SYSTEM = [
   "You compact the OLDEST part of a developer's running work HISTORY to keep the report bounded.",
   "First person ('I'); never 'the team', 'they', or 'we'. Return JSON { \"history\": [\"...\"] }.",
+  HISTORY_NO_PROVENANCE,
   "You are given several older history entries. Condense them into ONE (at most two) entries that",
   "PRESERVE what matters most for the developer's role (see PROJECT CONTEXT) in detail, and compress",
   "routine or less-relevant work into brief mentions. Stay FAITHFUL — do not invent facts.",
@@ -543,54 +566,16 @@ function contextTiersBlock(contexts: {
   ].join("\n");
 }
 
-// How the tiers control depth of detail in the history. Shared by both sessions.
-const HISTORY_TIER_RULES = [
-  "This is a HISTORY, not a terse summary: describe FULLY what I did. The tiers control DEPTH:",
-  "- HIGH-tier context: MANDATORY. Cover EVERY item in DETAIL — name the real subsystems, modules,",
-  "  and what changed. This is the core of the history.",
-  "- MEDIUM-tier context: you MUST say something about it — cover it briefly (do not drop it",
-  "  entirely), but it need not be exhaustive item-by-item.",
-  "- LOW-tier context: OPTIONAL — at most a brief mention, and may be omitted entirely.",
-].join("\n");
-
-// Re-read and rewrite ALL running history entries at once against the new tiers.
-export const REPORT_HISTORY_REWRITE_SYSTEM = [
-  "You maintain a running HISTORY of ONE developer's work for a cumulative report.",
-  "First person ('I'); never 'the team', 'they', or 'we'. Return JSON { \"history\": [\"...\"] }.",
-  "You are given the EXISTING numbered history entries and the report's CURRENT context tiers.",
-  HISTORY_TIER_RULES,
-  "Rewrite each entry IN PLACE to match the tiers. Stay FAITHFUL — do not invent facts.",
-  "CRITICAL: return EXACTLY the same number of entries, in the SAME ORDER. Do NOT merge, drop,",
-  "split, or reorder them. Item N out must be the rewrite of item N in. If an entry needs no",
-  "change, return it as-is.",
-].join("\n");
-
-/**
- * Builds the prompt to rewrite all running history entries at once.
- * @param history - The existing running history entry texts.
- * @param contexts - The report's current context tiers.
- */
-export function buildReportHistoryRewritePrompt(
-  history: string[],
-  contexts: { hiContext: string[]; mediumContext: string[]; lowContext: string[] },
-): string {
-  return [
-    contextTiersBlock(contexts),
-    "",
-    "Existing history entries:",
-    history.map((s, i) => `${i + 1}. ${s}`).join("\n\n") || "(none)",
-  ].join("\n");
-}
-
 // Decide whether the new session adds anything, and if so write only the new part.
 export const REPORT_NEW_HISTORY_SYSTEM = [
   "You decide whether a NEW work session adds anything not already captured in the cumulative",
   "report's HISTORY. First person ('I'); never 'the team', 'they', or 'we'.",
-  "Return JSON { \"needed\": bool, \"text\": \"...\" }.",
+  'Return JSON { "needed": bool, "text": "..." } — text only, no sourceGroups.',
+  HISTORY_NO_PROVENANCE,
   HISTORY_TIER_RULES,
-  "You are given the report's CURRENT (already up-to-date) history, the context tiers, and the",
+  "You are given the report's CURRENT history entry texts, the context tiers, and the",
   "NEW session's history. If EVERYTHING in the new session is already stated in the report history,",
-  "set needed=false and text=\"\". Otherwise set needed=true and write a history entry capturing",
+  'set needed=false and text="". Otherwise set needed=true and write a history entry capturing',
   "ONLY what the new session adds, with depth matching the tiers. Stay faithful.",
   "Plain first-person prose — no tier headers or labels ('HIGH-tier:', etc.).",
   "",
@@ -601,7 +586,7 @@ export const REPORT_NEW_HISTORY_SYSTEM = [
 
 /**
  * Builds the prompt to decide on / create the new session's history entry.
- * @param history - The report's current (already rewritten) history entry texts.
+ * @param history - The report's current history entry texts (provenance is not passed in).
  * @param contexts - The report's current context tiers.
  * @param newGroupHistory - The new group's own history.
  */
@@ -625,7 +610,7 @@ export function buildReportNewHistoryPrompt(
 // Tech-clean: dedupe and collapse the accumulated technology list.
 export const PREPARE_TECH_SYSTEM = [
   "You clean up a list of technologies, languages, frameworks, libraries, and tools that was",
-  "accumulated across many commits. Return JSON { \"technologies\": [\"...\"] }.",
+  'accumulated across many commits. Return JSON { "technologies": ["..."] }.',
   "Rules:",
   "- Remove exact duplicates and near-duplicates (different casing/spelling/aliases →",
   "  one canonical name, e.g. 'Postgres' and 'PostgreSQL' → 'PostgreSQL').",
@@ -645,9 +630,10 @@ export const PREPARE_TECH_SYSTEM = [
  * @param technologies - The report's accumulated (unioned) technology list.
  */
 export function buildPrepareTechPrompt(technologies: string[]): string {
-  return ["Accumulated technologies to clean and collapse:", bulletList(technologies) || "(none)"].join(
-    "\n",
-  );
+  return [
+    "Accumulated technologies to clean and collapse:",
+    bulletList(technologies) || "(none)",
+  ].join("\n");
 }
 
 // Step 2: distill all report history entries into one role-aligned narrative.
@@ -687,7 +673,7 @@ export function buildPrepareHistoryPrompt(
 export const PREPARE_REASONS_SYSTEM = [
   "You produce EXACTLY FOUR reason statements explaining why this body of work matters, reframed",
   "for the developer's role and the unified narrative. First person ('I') is fine.",
-  "Return JSON { \"signalReasons\": [\"...\", \"...\", \"...\", \"...\"] } — a FLAT array of four strings.",
+  'Return JSON { "signalReasons": ["...", "...", "...", "..."] } — a FLAT array of four strings.',
   "You are given the report's technical/architecture/security reason arrays and the composed history.",
   "Merge near-duplicates, DROP minor upkeep reasons, and keep the four most important. Never overclaim.",
 ].join("\n");
@@ -715,7 +701,7 @@ export function buildPrepareReasonsPrompt(
 // Step 5: reframe exactly four role-aware questions + re-assess confidence.
 export const PREPARE_QUESTIONS_SYSTEM = [
   "You produce EXACTLY FOUR role-aware questions that recover the missing human context Git cannot",
-  "show, plus a confidence. First person ('I'). Return JSON { \"questions\": [\"...\" x4], \"confidence\": \"low|medium|high\" }.",
+  'show, plus a confidence. First person (\'I\'). Return JSON { "questions": ["..." x4], "confidence": "low|medium|high" }.',
   "Given the composed history, the four signal reasons, the report's existing questions, and the",
   "role + project context: write four questions targeting what still cannot be known (production",
   "use, ownership vs maintenance, customer/product driver, security boundary), framed for the role.",
@@ -806,7 +792,7 @@ export function buildRoleNarrativePrompt(
 export const IMPACT_NARRATIVE_SYSTEM = [
   "You refine a developer's work HISTORY into ONE coherent first-person narrative, now that the",
   "human has answered the open questions. First person ('I'); never 'the team', 'they', or 'we'.",
-  "Return JSON { \"history\": \"...\" }.",
+  'Return JSON { "history": "..." }.',
   "You are given the prepared history (reconstructed from Git evidence) and the human's",
   "question-answer pairs.",
   "",

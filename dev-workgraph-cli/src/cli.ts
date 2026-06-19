@@ -3,16 +3,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Command } from "commander";
-import { authors, type AuthorsOptions } from "./actions/authors.js";
-import { check, type CheckOptions } from "./actions/check.js";
-import { commitGroup, type CommitGroupOptions } from "./actions/commit-group.js";
-import { evidence, type EvidenceOptions } from "./actions/evidence.js";
-import { final, type FinalOptions } from "./actions/final.js";
-import { init, type InitOptions } from "./actions/init.js";
-import { prepare, type PrepareOptions } from "./actions/prepare.js";
-import { report, type ReportOptions } from "./actions/report.js";
-import { run, type RunOptions } from "./actions/run.js";
-import { summarize, type SummarizeOptions } from "./actions/summarize.js";
+import { type AuthorsOptions, authors } from "./actions/authors.js";
+import { type CheckOptions, check } from "./actions/check.js";
+import { type CommitGroupOptions, commitGroup } from "./actions/commit-group.js";
+import { type EvidenceOptions, evidence } from "./actions/evidence.js";
+import { type ExportOptions, exportRepo } from "./actions/export.js";
+import { type FinalOptions, final } from "./actions/final.js";
+import { type ImportOptions, importRepo } from "./actions/import.js";
+import { type InitOptions, init } from "./actions/init.js";
+import { type PrepareOptions, prepare } from "./actions/prepare.js";
+import { type ReportOptions, report } from "./actions/report.js";
+import { type RunOptions, run } from "./actions/run.js";
+import { type SummarizeOptions, summarize } from "./actions/summarize.js";
 
 /**
  * Collects a repeatable CLI option into an array.
@@ -47,43 +49,74 @@ program
   });
 
 // ✅ Command: capture developer role + project story → project profile
-program
-  .command("init")
-  .description("Capture developer role and project story, build a project profile.")
-  .argument("[repo]", "Path to the Git repository", ".")
-  .option("--role <name>", "Developer role (skips the prompt)")
-  .option("--story <text>", "Project story text (skips the editor prompt)")
-  .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
-  .option("--model <name>", "Model to use (skips the interactive picker)")
-  .option("--force", "Re-run and overwrite an existing project.json")
-  .action(
-    async (
-      repo: string,
-      opts: { role?: string; story?: string; url?: string; model?: string; force?: boolean },
-    ) => {
-      const options: InitOptions = {
-        repo,
-        role: opts.role,
-        story: opts.story,
-        url: opts.url,
-        model: opts.model,
-        force: opts.force,
-      };
-      try {
-        await init(options);
-      } catch (err) {
-        console.error(`✖ ${(err as Error).message}`);
-        process.exitCode = 1;
-      }
-    },
-  );
+// Registered twice: `init` (repo-level) and `init:period` (scoped to a review
+// window, inheriting the repo-level context by default).
+function registerInit(name: string, periodMode: boolean): void {
+  program
+    .command(name)
+    .description(
+      periodMode
+        ? "Init a review period (inherits the repo-level context; --force rebuilds it)."
+        : "Capture developer role and project story, build a project profile.",
+    )
+    .argument("[repo]", "Path to the Git repository", ".")
+    .option("--role <name>", "Developer role (skips the prompt)")
+    .option("--story <text>", "Project story text (skips the editor prompt)")
+    .option("--period <id>", "Review period label (e.g. 2022, 2022-H1)")
+    .option("--from <date>", "Period start date, ISO YYYY-MM-DD (inclusive)")
+    .option("--to <date>", "Period end date, ISO YYYY-MM-DD (exclusive)")
+    .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
+    .option("--model <name>", "Model to use (skips the interactive picker)")
+    .option("--force", "Re-run and overwrite an existing project.json")
+    .action(
+      async (
+        repo: string,
+        opts: {
+          role?: string;
+          story?: string;
+          period?: string;
+          from?: string;
+          to?: string;
+          url?: string;
+          model?: string;
+          force?: boolean;
+        },
+      ) => {
+        const options: InitOptions = {
+          repo,
+          role: opts.role,
+          story: opts.story,
+          period: opts.period,
+          from: opts.from,
+          to: opts.to,
+          periodMode,
+          url: opts.url,
+          model: opts.model,
+          force: opts.force,
+        };
+        try {
+          await init(options);
+        } catch (err) {
+          console.error(`✖ ${(err as Error).message}`);
+          process.exitCode = 1;
+        }
+      },
+    );
+}
+registerInit("init", false);
+registerInit("init:period", true);
 
 // ✅ Command: select which author identities are the user's own work
 program
   .command("authors")
   .description("List commit authors by email and select which are your own work.")
   .argument("[repo]", "Path to the Git repository", ".")
-  .option("--email <email>", "Pre-select an author email (repeatable, non-interactive)", collect, [])
+  .option(
+    "--email <email>",
+    "Pre-select an author email (repeatable, non-interactive)",
+    collect,
+    [],
+  )
   .option("--json", "Print authors as JSON and exit without saving")
   .action(async (repo: string, opts: { email: string[]; json?: boolean }) => {
     const options: AuthorsOptions = {
@@ -105,11 +138,13 @@ program
   .description("Extract your commits as patches and a deterministic evidence layer.")
   .argument("[repo]", "Path to the Git repository", ".")
   .option("--email <email>", "Override saved author selection (repeatable)", collect, [])
+  .option("--period <id>", "Restrict to a defined review period (scopes output too)")
   .option("--force", "Re-extract and overwrite commits that already exist")
-  .action(async (repo: string, opts: { email: string[]; force?: boolean }) => {
+  .action(async (repo: string, opts: { email: string[]; period?: string; force?: boolean }) => {
     const options: EvidenceOptions = {
       repo,
       email: opts.email,
+      period: opts.period,
       force: opts.force,
     };
     try {
@@ -129,10 +164,11 @@ program
   .option("--model <name>", "Model to use (skips the interactive picker)")
   .option("--force", "Re-summarize commits that already have a model layer")
   .option("--limit <n>", "Only process the first N pending commits", (v) => Number.parseInt(v, 10))
+  .option("--period <id>", "Operate on a defined review period's data")
   .action(
     async (
       repo: string,
-      opts: { url?: string; model?: string; force?: boolean; limit?: number },
+      opts: { url?: string; model?: string; force?: boolean; limit?: number; period?: string },
     ) => {
       const options: SummarizeOptions = {
         repo,
@@ -140,6 +176,7 @@ program
         model: opts.model,
         force: opts.force,
         limit: opts.limit,
+        period: opts.period,
       };
       try {
         await summarize(options);
@@ -167,6 +204,7 @@ program
   .option("--limit <n>", "Only summarize the first N groups (useful for trials)", (v) =>
     Number.parseInt(v, 10),
   )
+  .option("--period <id>", "Operate on a defined review period's data")
   .action(
     async (
       repo: string,
@@ -177,6 +215,7 @@ program
         model?: string;
         force?: boolean;
         limit?: number;
+        period?: string;
       },
     ) => {
       const options: CommitGroupOptions = {
@@ -187,6 +226,7 @@ program
         model: opts.model,
         force: opts.force,
         limit: opts.limit,
+        period: opts.period,
       };
       try {
         await commitGroup(options);
@@ -208,14 +248,19 @@ program
   .option("--limit <n>", "Only fold the first N groups (useful for trials)", (v) =>
     Number.parseInt(v, 10),
   )
+  .option("--period <id>", "Operate on a defined review period's data")
   .action(
-    async (repo: string, opts: { url?: string; model?: string; force?: boolean; limit?: number }) => {
+    async (
+      repo: string,
+      opts: { url?: string; model?: string; force?: boolean; limit?: number; period?: string },
+    ) => {
       const options: ReportOptions = {
         repo,
         url: opts.url,
         model: opts.model,
         force: opts.force,
         limit: opts.limit,
+        period: opts.period,
       };
       try {
         await report(options);
@@ -234,30 +279,50 @@ program
   .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
   .option("--model <name>", "Model to use (skips the interactive picker)")
   .option("--force", "Regenerate even if a prepared narrative for the latest report exists")
-  .action(async (repo: string, opts: { url?: string; model?: string; force?: boolean }) => {
-    const options: PrepareOptions = { repo, url: opts.url, model: opts.model, force: opts.force };
-    try {
-      await prepare(options);
-    } catch (err) {
-      console.error(`✖ ${(err as Error).message}`);
-      process.exitCode = 1;
-    }
-  });
-
-// ✅ Command: collect answers to prepared questions → RESUME.<project>.md
-program
-  .command("final")
-  .description("Answer the prepared questions and write RESUME.<project>.md.")
-  .argument("[repo]", "Path to the Git repository", ".")
-  .option("--answers-file <path>", "Pre-written Q&A as JSON (non-interactive)")
-  .option("--output <path>", "Output markdown path (default: ./RESUME.<project>.md)")
-  .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
-  .option("--model <name>", "Model to use (skips the interactive picker)")
-  .option("--force", "Re-answer the questions and overwrite the markdown")
+  .option("--period <id>", "Operate on a defined review period's data")
   .action(
     async (
       repo: string,
-      opts: { answersFile?: string; output?: string; url?: string; model?: string; force?: boolean },
+      opts: { url?: string; model?: string; force?: boolean; period?: string },
+    ) => {
+      const options: PrepareOptions = {
+        repo,
+        url: opts.url,
+        model: opts.model,
+        force: opts.force,
+        period: opts.period,
+      };
+      try {
+        await prepare(options);
+      } catch (err) {
+        console.error(`✖ ${(err as Error).message}`);
+        process.exitCode = 1;
+      }
+    },
+  );
+
+// ✅ Command: collect answers to prepared questions → RECONSTRUCTION.<project>.md
+program
+  .command("final")
+  .description("Answer the prepared questions and write RECONSTRUCTION.<project>.md.")
+  .argument("[repo]", "Path to the Git repository", ".")
+  .option("--answers-file <path>", "Pre-written Q&A as JSON (non-interactive)")
+  .option("--output <path>", "Output markdown path (default: ./RECONSTRUCTION.<project>.md)")
+  .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
+  .option("--model <name>", "Model to use (skips the interactive picker)")
+  .option("--force", "Re-answer the questions and overwrite the markdown")
+  .option("--period <id>", "Operate on a defined review period's data")
+  .action(
+    async (
+      repo: string,
+      opts: {
+        answersFile?: string;
+        output?: string;
+        url?: string;
+        model?: string;
+        force?: boolean;
+        period?: string;
+      },
     ) => {
       const options: FinalOptions = {
         repo,
@@ -266,6 +331,7 @@ program
         url: opts.url,
         model: opts.model,
         force: opts.force,
+        period: opts.period,
       };
       try {
         await final(options);
@@ -277,22 +343,83 @@ program
   );
 
 // ✅ Command: run the whole pipeline unattended (gather inputs upfront)
+// Registered twice: `run` (repo-level) and `run:period` (a year/period review).
+function registerRun(name: string, periodMode: boolean): void {
+  program
+    .command(name)
+    .description(
+      periodMode
+        ? "Run the whole pipeline for a review period (init:period → … → final)."
+        : "Gather all inputs, then run init → evidence → summarize → commit-group → report.",
+    )
+    .argument("[repo]", "Path to the Git repository", ".")
+    .option("--period <id>", "Review period label (e.g. 2022, 2022-H1)")
+    .option("--from <date>", "Period start date, ISO YYYY-MM-DD (inclusive)")
+    .option("--to <date>", "Period end date, ISO YYYY-MM-DD (exclusive)")
+    .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
+    .option("--model <name>", "Model to use for every stage (skips the picker)")
+    .option("--force", "Re-gather inputs and re-run every stage")
+    .action(
+      async (
+        repo: string,
+        opts: {
+          period?: string;
+          from?: string;
+          to?: string;
+          url?: string;
+          model?: string;
+          force?: boolean;
+        },
+      ) => {
+        const options: RunOptions = {
+          repo,
+          period: opts.period,
+          from: opts.from,
+          to: opts.to,
+          periodMode,
+          url: opts.url,
+          model: opts.model,
+          force: opts.force,
+        };
+        try {
+          await run(options);
+        } catch (err) {
+          console.error(`✖ ${(err as Error).message}`);
+          process.exitCode = 1;
+        }
+      },
+    );
+}
+registerRun("run", false);
+registerRun("run:period", true);
+
+// ✅ Command: bundle a repo's workgraph data + config entry into a .tar.gz
 program
-  .command("run")
-  .description("Gather all inputs, then run init → evidence → summarize → commit-group → report.")
+  .command("export")
+  .description("Bundle a repo's workgraph data and config entry into a .tar.gz.")
   .argument("[repo]", "Path to the Git repository", ".")
-  .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
-  .option("--model <name>", "Model to use for every stage (skips the picker)")
-  .option("--force", "Re-gather inputs and re-run every stage")
-  .action(async (repo: string, opts: { url?: string; model?: string; force?: boolean }) => {
-    const options: RunOptions = {
-      repo,
-      url: opts.url,
-      model: opts.model,
-      force: opts.force,
-    };
+  .option("--output <path>", "Output .tar.gz path (default: ./<repo-id>.workgraph.tar.gz)")
+  .action(async (repo: string, opts: { output?: string }) => {
+    const options: ExportOptions = { repo, output: opts.output };
     try {
-      await run(options);
+      await exportRepo(options);
+    } catch (err) {
+      console.error(`✖ ${(err as Error).message}`);
+      process.exitCode = 1;
+    }
+  });
+
+// ✅ Command: restore a bundle made by `export`, adding/updating the config entry
+program
+  .command("import")
+  .description("Restore a workgraph .tar.gz bundle and add/update its config entry.")
+  .argument("<tarball>", "Path to the .tar.gz produced by `export`")
+  .option("--repo <path>", "Re-target the data under a different repo path")
+  .option("--force", "Overwrite existing data for the target repo")
+  .action(async (tarball: string, opts: { repo?: string; force?: boolean }) => {
+    const options: ImportOptions = { tarball, repo: opts.repo, force: opts.force };
+    try {
+      await importRepo(options);
     } catch (err) {
       console.error(`✖ ${(err as Error).message}`);
       process.exitCode = 1;

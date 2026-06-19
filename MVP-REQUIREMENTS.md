@@ -13,10 +13,10 @@ The MVP should answer the following questions:
 4. Can we group nearby commits into **work sessions** and produce a higher-level summary that respects per-commit signals?
 5. Can grouped summaries **remind the user what they worked on and ask the right questions** to reconstruct missing context?
 6. Can a **prepared narrative** distill the full report into a role-aligned story with focused questions?
-7. Can the human **answer the prepared questions** in `final` and produce a confirmed **role narrative** as `RESUME.<project>.md`?
+7. Can the human **answer the prepared questions** in `final` and produce a confirmed **role narrative** as `RECONSTRUCTION.<project>.md`?
 
-This MVP is **not** a public resume generator, portfolio builder, achievement scorer, or interview assistant.
-It is an evaluation prototype for one claim: *Git history can be reconstructed into a useful map of forgotten work, where the system reconstructs and asks, and the human confirms.* The final `RESUME.<project>.md` is a **personal reconstruction document** — grounded in Git evidence and human answers — not an auto-scored achievement claim.
+This MVP is **not** a public profile generator, portfolio builder, achievement scorer, or interview assistant.
+It is an evaluation prototype for one claim: *Git history can be reconstructed into a useful map of forgotten work, where the system reconstructs and asks, and the human confirms.* The final `RECONSTRUCTION.<project>.md` is a **personal reconstruction document** — grounded in Git evidence and human answers — not an auto-scored achievement claim.
 
 ### Core stance: reconstruct and ask, do not judge
 
@@ -155,6 +155,67 @@ The system must **never** use role to inflate impact or imply promotion-worthy a
 
 ⸻
 
+## 0.5 Review periods (`--period`, `init:period`, `run:period`)
+
+A **review period** is a named date window over which the whole pipeline can be run in isolation — for annual or periodic reviews ("what did I do in 2022?"). A period scopes **all** of a repo's data and every stage; it is not a separate kind of analysis, just the same pipeline run against a date-filtered slice of commits, written to its own sub-tree.
+
+### Mechanism — a cross-cutting `--period` flag
+
+Every pipeline command accepts an optional **`--period <id>`** flag (`init`, `evidence`, `summarize`, `commit-group`, `report`, `prepare`, `final`, `run`). Two convenience aliases wrap the common entry points for review workflows:
+
+* **`init:period`** — defines/updates a period and seeds its project context (see below);
+* **`run:period`** — runs the whole pipeline for a period end-to-end.
+
+The aliases are thin wrappers: they force "period mode" (prompting for the period label and dates if not passed) and otherwise behave exactly like `init` / `run` with `--period`. Any individual stage can still be run per-period (e.g. re-fold just the report for 2022 with `report --period 2022`).
+
+### Defining a period
+
+Periods are stored per repository in `~/.workgraph/config.json` under a `periods` map, keyed by a human **label** (also used as a directory name — letters, digits, dot, dash, underscore):
+
+```json
+{
+  "repos": {
+    "/absolute/path/to/repo": {
+      "role": "Senior Developer",
+      "selectedAuthors": ["me@example.com"],
+      "groupThresholdDays": 7,
+      "periods": {
+        "2022": { "from": "2022-01-01", "to": "2023-01-01" },
+        "2022-H1": { "from": "2022-01-01", "to": "2022-07-01" }
+      }
+    }
+  }
+}
+```
+
+* **Dates are ISO `YYYY-MM-DD`.** The range is **half-open `[from, to)`** (from inclusive, to exclusive), so adjacent periods (e.g. `2021` and `2022`) never double-count a commit on the boundary.
+* A period is defined by `init:period` / `run:period` / `init`/`run --period` (which accept `--from <iso>` / `--to <iso>`, or prompt for them). Once stored, downstream stages only need `--period <id>` — they read the window from config. Passing `--period <id>` to a downstream stage when the period is **not defined** is an error that tells the user to define it first.
+
+### On-disk layout — nested under `periods/<id>/`
+
+A period's whole data sub-tree is nested under `periods/<id>/` inside the repo namespace, mirroring the repo-level layout exactly:
+
+```
+~/.workgraph/data/repos/<repo-id>/periods/<period>/project.json
+~/.workgraph/data/repos/<repo-id>/periods/<period>/commits/...
+~/.workgraph/data/repos/<repo-id>/periods/<period>/groups/...
+~/.workgraph/data/repos/<repo-id>/periods/<period>/reports/...
+~/.workgraph/data/repos/<repo-id>/periods/<period>/prepared/...
+~/.workgraph/data/repos/<repo-id>/periods/<period>/finish/...
+```
+
+The `periods/` wrapper (rather than `<repo-id>/<period>/` directly) guarantees a period label can never collide with a sibling subdir name like `commits`. Period data never mixes with the repo's all-time data, and since it lives **inside** `~/.workgraph/data/repos/<repo-id>/`, it travels automatically with `export`/`import` (§14).
+
+### Project context for a period
+
+By default a period **inherits** the repo-level project context: `init:period` copies `<repo-id>/project.json` into `<repo-id>/periods/<period>/project.json` (no LLM call — role/story rarely change between periods). `--force` instead re-runs the two `init` LLM sessions to build a **period-specific** profile. If no repo-level `project.json` exists to inherit, `init:period` errors and asks the user to run the repo-level `init` first (or pass `--force`). Downstream stages load the period's `project.json`, falling back to the repo-level one if absent — so a period pipeline always has grounding.
+
+### Commit filtering
+
+`evidence --period <id>` restricts extraction to commits whose **author timestamp** falls in `[from, to)`; everything downstream operates only on those commits. `final`'s deliverable is written to a suffixed file `RECONSTRUCTION.<project>.<period>.md` so a period review never overwrites the repo's all-time `RECONSTRUCTION.<project>.md`.
+
+⸻
+
 ## 1. Author selection (precondition for `evidence`)
 
 Git history mixes the user's commits with teammates and bots (Renovate, Dependabot, Snyk). Before evidence extraction, the user must declare which author **emails** are their own work, so only those commits are treated as evidence.
@@ -228,7 +289,7 @@ The JSON has **two layers**, kept clearly separated:
 - **Deterministic layer** — computed without any model, always present. This is evidence. Written at export time.
 - **Model layer** — added by a local model in a separate `summarize` step, optional, clearly marked as interpretation. Starts as `null`.
 
-The model layer is produced by a **local model via Ollama** (HTTP API, default `http://127.0.0.1:11434`). The model is chosen interactively from the installed models and the choice is remembered. Generation uses Ollama structured output (a JSON Schema is passed so the response is schema-valid). Each generated layer records its provenance (model name, timestamp, whether the patch was truncated). The **project context block** (§0) is included in every summarize prompt. Summarize is append-only: commits that already have a model layer are skipped unless forced.
+The model layer is produced by a **local model via Ollama** (HTTP API, default `http://127.0.0.1:11434`). The model is chosen interactively from the installed models and the choice is remembered. Generation uses Ollama structured output (a JSON Schema is passed via the `format` parameter). On response, the CLI **extracts** the JSON object from the raw text (handles markdown fences and surrounding prose), **parses** it, and **schema-validates** the result before accepting — retries (up to 3, with backoff) on HTTP/transport, parse, or validation failure. Each generated layer records its provenance (model name, timestamp, whether the patch was truncated). The **project context block** (§0) is included in every summarize prompt. Summarize is append-only: commits that already have a model layer are skipped unless forced.
 
 ### JSON schema
 
@@ -476,7 +537,7 @@ This layer is evidence. It is written at group-creation time, before the LLM cal
 
 #### Model layer (group interpretation) — two LLM sessions
 
-The group model layer is built in **two separate LLM sessions** per group via Ollama (same stack as `summarize`: structured JSON output, provenance, signal-without-reason enforcement). Both sessions include the **project context block** (§0). Splitting the work keeps each call focused and lets the `history` be a faithful *merge* of the per-commit summaries rather than a fresh invention.
+The group model layer is built in **two separate LLM sessions** per group via Ollama (same stack as `summarize`: structured JSON output with extract/parse/schema validation, provenance, signal-without-reason enforcement). Both sessions include the **project context block** (§0). Splitting the work keeps each call focused and lets the `history` be a faithful *merge* of the per-commit summaries rather than a fresh invention.
 
 **Session 1 — classify** (`groupClassifyJsonSchema`, no `summary`):
 
@@ -676,7 +737,7 @@ Questions may be attached to:
 * **group histories** (primary at the current stage)
 * cumulative report (§9)
 * **prepared narrative** (§10; sole input to `final`)
-* **RESUME.<project>.md** (§11; final human-facing deliverable)
+* **RECONSTRUCTION.<project>.md** (§11; final human-facing deliverable)
 * folder-context nodes (deferred)
 * area-context nodes (deferred)
 
@@ -735,7 +796,10 @@ Every intermediate report is written; the **final report** is the last in the ch
     "linesDeleted": 0,
     "importantFolders": [],
     "areas": [],
-    "excludedFiles": []
+    "excludedFiles": [],
+    "historySource": [
+      ["1579390000.json", "1591444361.json"]
+    ]
   },
 
   "model": {
@@ -753,25 +817,34 @@ Every intermediate report is written; the **final report** is the last in the ch
   },
 
   "history": [
-    { "text": "...", "sourceGroups": ["1579390000.json", "1591444361.json"] }
+    { "text": "..." }
   ],
 
-  "mergeCursor": 0
+  "mergeCursor": 0,
+
+  "mergedFrom": {
+    "previousReportId": 1579390000,
+    "previousReportFile": "1579390000.json",
+    "groupFile": "1591444361.json"
+  }
 }
 ```
 
 Differences from a group record:
 
-* **No commit hashes.** Provenance is by group **file name**, not hashes — both at the report level (`sourceGroups`) and per history entry.
+* **No commit hashes.** Provenance is by group **file name**, not hashes. **`sourceGroups`** (report root, next to `deterministic` and `model`) is the cumulative list of every group file folded so far (including routine-only folds). **`deterministic.historySource`** is **parallel to `history`** — same length, same indices (`0 … MAX_HISTORY_ENTRIES − 1`): `history[i]` is the narrative text; `historySource[i]` lists the group files that contributed to that entry. Cumulative provenance stays at the root; per-entry provenance stays in the deterministic layer; `history` carries text only.
 * **Signals stay single** `low/medium/high` (the **max** across folded groups), but **`signalReasons` are arrays** (the merged, deduped reasons from all folded groups).
-* **`history`** (not "summary" — this is a fuller account of what was done) is a **bounded** running list (≤ `MAX_HISTORY_ENTRIES`) of objects `{ text, sourceGroups }`. Each entry carries its own `sourceGroups` — the group files that fed it (set at creation; unioned when compaction condenses entries). A new session's entry is added only when it contributes something not already there; when the list exceeds the cap, **exactly one adjacent pair** is merged via a **rolling cursor** (below).
+* **`history`** (not "summary" — this is a fuller account of what was done) is a **bounded** running list (≤ `MAX_HISTORY_ENTRIES`, i.e. 12) of `{ text }` objects — **text only**. Index `i` in `history` always pairs with index `i` in `deterministic.historySource`. A new session's entry is added only when it contributes something not already there; when the list exceeds the cap, **exactly one adjacent pair** is merged via a **rolling cursor** (below), unioning the corresponding `historySource[i]` and `historySource[i + 1]` rows into one.
 * **`mergeCursor`** (optional, 0-based) — the rolling compaction pointer: the index of the first entry in the next pair to merge. It advances down the list each time compaction fires and wraps to the oldest, so compression is spread evenly across all ages instead of repeatedly re-squashing the oldest blob. Absent on legacy records ⇒ treated as `0`.
+* **`mergedFrom`** (optional) — records **which fold produced this report**: the prior report it built on (`previousReportId` + `previousReportFile`) and the group file folded into it (`groupFile`). Where `sourceGroups` is the cumulative list of every group folded so far, `mergedFrom` names just the **single merge step** that created this file, so each report in the chain discloses its immediate parent report and the one group that was added. Absent on the **seeded** first report (`init(group_1)`) — nothing was merged — and on legacy records.
+
+> **Legacy format:** older report files may still have `{ text, sourceGroups }` on history entries, a transitional nested `deterministic.sourceGroups`, or an offset `historySource` where row `0` was cumulative and rows `1..N` aligned with `history`. The reader accepts all of these; new writes keep cumulative provenance in root-level `sourceGroups` and per-entry provenance in the parallel `deterministic.historySource` array.
 
 ### `merge(report, group)`
 
-**Routine gate (step 1 — one cheap LLM call).** A small classifier session decides whether the group is **ONLY routine upkeep** (dependency bumps, version/release updates, build-config/formatting/CI) versus **substantive** (design, implementation, real refactor, feature, bug fix, security). It reads the group's own `history` + signals + changeTypes (a small prompt) and returns `{ routine }`; when in doubt it answers `false`. A classifier (rather than a deterministic check) is used because per-commit/per-group labels alone don't reliably tell upkeep from real work. If **routine**, the group is folded **deterministically** (accumulate evidence + `sourceGroups`, union `changeTypes`, ensure the single generic maintenance bullet, leave `history` untouched) and the heavier sessions are skipped — so a routine group costs **one** small LLM call instead of three. Only **substantive** groups run the merge/add/compact sessions below.
+**Routine gate (step 1 — one cheap LLM call).** A small classifier session decides whether the group is **ONLY routine upkeep** (dependency bumps, version/release updates, build-config/formatting/CI) versus **substantive** (design, implementation, real refactor, feature, bug fix, security). It reads the group's own `history` + signals + changeTypes (a small prompt) and returns `{ routine }`; when in doubt it answers `false`. A classifier (rather than a deterministic check) is used because per-commit/per-group labels alone don't reliably tell upkeep from real work. If **routine**, the group is folded **deterministically** (accumulate evidence + append the group file to `sourceGroups`, union `changeTypes`, ensure the single generic maintenance bullet, leave `history` and `historySource` untouched) and the heavier sessions are skipped — so a routine group costs **one** small LLM call instead of three. Only **substantive** groups run the merge/add/compact sessions below.
 
-**Deterministic (pure code):** union `changedFiles` / `importantFolders` / `areas` / `excludedFiles`, sum churn, append the group file name to `sourceGroups`.
+**Deterministic (pure code):** union `changedFiles` / `importantFolders` / `areas` / `excludedFiles`, sum churn, append the group file name to `sourceGroups`, maintain the parallel `historySource` rows (same indices as `history`) for compaction, and set `mergedFrom` to the prior report (`previousReportId` / `previousReportFile`) and the folded `groupFile` — both on the routine and the substantive path.
 
 **Signals (pure code):** each `*Signal` = `max(report, group)` on the `low < medium < high` scale.
 
@@ -783,10 +856,10 @@ Differences from a group record:
 * `confidence` — re-assessed for the combined work.
 * `hiContext` / `mediumContext` / `lowContext` — merge duplicate/similar bullets, then **re-rank importance DOWNWARD ONLY** (a minor `hi` bullet may be merged or demoted; nothing is ever promoted), and **bound each tier to ≤ `MAX_CONTEXT_BULLETS`** — when over, drop the least important, keeping the bullets **most relevant to the developer's role** (from the project context). A hard code-side slice backstops the cap.
 
-**History — append + compaction** (bounded so the report scales to large repos). The `history` is a fuller account, not a terse summary; the tiers control **depth of detail**: **HIGH is mandatory** (in detail); **MEDIUM must be mentioned** (briefly); **LOW is optional**.
+**History — append + compaction** (bounded so the report scales to large repos). The `history` is a fuller account, not a terse summary; the tiers control **depth of detail**: **HIGH is mandatory** (in detail); **MEDIUM must be mentioned** (briefly); **LOW is optional**. LLM history sessions return **text only** (`{ needed, text }` or `{ history: [strings] }`); **`sourceGroups` and `historySource` are never model output** — the CLI sets them deterministically when appending or compacting.
 
-1. **Add only if new** (one LLM session): given the running history + current tiers + the new group's `history`, decide whether the new session adds anything not already captured. If yes, append `{ text, sourceGroups: [thisGroup] }`; if not, add nothing. The whole list is **not** rewritten each fold — that linear-rewrite was O(N²) and did not scale.
-2. **Compaction — rolling merge cursor** (one LLM session, only when over the cap): when the list exceeds `MAX_HISTORY_ENTRIES`, merge **exactly the pair at `mergeCursor`** (that entry + its newer neighbour) into one role-prioritized entry, union their `sourceGroups`, then **advance the cursor** down the list (wrapping to the oldest after the last pair). The list returns to ≤ `MAX_HISTORY_ENTRIES`. Because each fold adds at most one entry, exactly one pair is merged per overflow. The pair is always taken from positions `0 … MAX_HISTORY_ENTRIES-2`, so the **newest entry is never merged** — it stays verbatim until the cursor reaches it on a later pass. This spreads compression evenly across all ages, so no single "oldest" blob is repeatedly re-summarized (which would degrade it through lossy re-paraphrasing). Example (cap = 4, cursor starts at `0`):
+1. **Add only if new** (one LLM session): given the running history + current tiers + the new group's `history`, decide whether the new session adds anything not already captured. If yes, append `{ text }` to `history` and `[thisGroup]` to `historySource` at the **same index** (code-side); if not, add nothing. The whole list is **not** rewritten each fold — that linear-rewrite was O(N²) and did not scale.
+2. **Compaction — rolling merge cursor** (one LLM session, only when over the cap): when the list exceeds `MAX_HISTORY_ENTRIES`, merge **exactly the pair at `mergeCursor`** (that entry + its newer neighbour) into one role-prioritized entry, union `historySource[cursor]` and `historySource[cursor + 1]`, then **advance the cursor** down the list (wrapping to the oldest after the last pair). The list returns to ≤ `MAX_HISTORY_ENTRIES`. Because each fold adds at most one entry, exactly one pair is merged per overflow. The pair is always taken from positions `0 … MAX_HISTORY_ENTRIES-2`, so the **newest entry is never merged** — it stays verbatim until the cursor reaches it on a later pass. This spreads compression evenly across all ages, so no single "oldest" blob is repeatedly re-summarized (which would degrade it through lossy re-paraphrasing). Example (cap = 4, cursor starts at `0`):
 
    ```
    [A, B, C, D]            cursor@0
@@ -800,7 +873,7 @@ Differences from a group record:
 
 Because both contexts (≤ `MAX_CONTEXT_BULLETS`/tier) and history (≤ `MAX_HISTORY_ENTRIES`) are bounded, each fold's prompts are bounded — total cost is **O(N · cap)** rather than O(N²).
 
-`init(group_1)` = `merge` against an empty report: signals / context tiers / `changeTypes` copied across, each `signalReasons` value lifted into a single-element array, `history` seeded with `{ text: group.history, sourceGroups: [group_1] }`.
+`init(group_1)` = `merge` against an empty report: signals / context tiers / `changeTypes` copied across, each `signalReasons` value lifted into a single-element array, `history` seeded with `{ text: group.history }`, `sourceGroups` set to `[group_1]`, and `historySource` set to `[[group_1]]` — index `0` in both arrays. The seeded report has **no** `mergedFrom` — nothing was merged into it.
 
 ### Voice & honesty
 
@@ -1017,15 +1090,15 @@ Produce exactly **four** impact bullet points — the **Role Narrative**. Each b
 * **technical, claim-safe tone — not marketing:** write engineer-to-engineer, naming the actual components/protocols/mechanisms and design decisions; ban hype words (spearheaded, revolutionized, robust, seamless, leveraged, game-changing, etc.) and prefer plain verbs (implemented, added, refactored, designed, fixed, migrated);
 * no numeric scores or superlatives ("best", "led the entire org").
 
-### Step 3 — Write `RESUME.<project>.md` (deterministic assembly)
+### Step 3 — Write `RECONSTRUCTION.<project>.md` (deterministic assembly)
 
 Write a markdown file to the **process current working directory** (`process.cwd()`, not the repo path):
 
 ```
-RESUME.<project>.md
+RECONSTRUCTION.<project>.md
 ```
 
-`<project>` is the repository **basename** (e.g. `keycloak-radius-plugin` → `RESUME.keycloak-radius-plugin.md`). A `--output <path>` flag overrides the filename.
+`<project>` is the repository **basename** (e.g. `keycloak-radius-plugin` → `RECONSTRUCTION.keycloak-radius-plugin.md`). A `--output <path>` flag overrides the filename.
 
 #### File structure
 
@@ -1037,6 +1110,10 @@ RESUME.<project>.md
 ## Your IMPACT as {ROLE}
 
 {refined history from step 2a — the unified first-person narrative, with the human's answers woven in}
+
+## Technologies
+
+{cleaned, deduped, class-collapsed technology list from `prepare` (§10) — comma-separated}
 
 ## Impact bullet points (Role Narrative)
 
@@ -1064,6 +1141,35 @@ RESUME.<project>.md
 
 The markdown file is the **MVP's final human-facing deliverable**. Re-running `final` with `--force` overwrites the file and updates the stored Q&A.
 
+### Step 4 — Archive under the repo's finish dir
+
+In addition to the cwd markdown, `final` writes the result into the repo's data namespace so it is linked back into the chain:
+
+```
+~/.workgraph/data/repos/<repo-id>/finish/<preparedId>.md      # copy of the result markdown
+~/.workgraph/data/repos/<repo-id>/finish/<preparedId>.json    # finish record (links to the prepared file)
+```
+
+`<preparedId>` matches the source prepared record's id (and the report it came from). The JSON record:
+
+```json
+{
+  "finishId": 1759696393,
+  "sourcePrepared": "1759696393.json",
+  "sourceReport": "1759696393.json",
+  "project": "<repo-basename>",
+  "role": "Senior Developer",
+  "technologies": [],
+  "history": "...",
+  "narrative": ["...", "...", "...", "..."],
+  "answers": [{ "question": "...", "answer": "..." }],
+  "outputMarkdown": "1759696393.md",
+  "provenance": { "model": "...", "generatedAt": "..." }
+}
+```
+
+Provenance is by file name only (`sourcePrepared` → `prepared/<id>.json` → `reports/<id>.json`); no commit hashes. `--force` overwrites both finish files for that prepared id.
+
 ### Voice & honesty
 
 The Role Narrative bullets are interpretation informed by human answers — they are **confirmed context**, not proof. If an answer is vague, the bullets must stay tentative ("I built X; production usage unconfirmed") rather than upgrading claims.
@@ -1087,7 +1193,7 @@ The MVP is successful if grouped summaries remind the user of forgotten work and
 - useful questions are generated (especially at group level)
 - top areas and forgotten-work candidates look meaningful to the user
 - `prepare` produces a readable unified history and four role-aligned questions from the final report
-- `final` collects human responses to the prepared questions and writes `RESUME.<project>.md` with a four-bullet Role Narrative
+- `final` collects human responses to the prepared questions and writes `RECONSTRUCTION.<project>.md` with a four-bullet Role Narrative
 
 **Strong success criteria:**
 
@@ -1114,7 +1220,7 @@ The MVP is successful if grouped summaries remind the user of forgotten work and
 ## 13. Out of scope for MVP
 
 ```
-public resume / portfolio generation
+public profile / portfolio generation
 PDF/DOCX export
 numeric achievement scoring
 multi-user support
@@ -1126,7 +1232,7 @@ complex graph database
 automatic Jira/GitHub integration
 production-ready plugin system
 ```
-These may be added later. The personal `RESUME.<project>.md` from `final` is **in scope** — it is a confirmed reconstruction artifact, not a public portfolio.
+These may be added later. The personal `RECONSTRUCTION.<project>.md` from `final` is **in scope** — it is a confirmed reconstruction artifact, not a public portfolio.
 
 ⸻
 
@@ -1142,11 +1248,30 @@ dev-workgraph summarize    ./repo   # add per-commit model layer via local Ollam
 dev-workgraph commit-group ./repo   # group commits by day threshold, 2 LLM sessions   [BUILT]
 dev-workgraph report       ./repo   # fold groups into a cumulative narrative report   [BUILT]
 dev-workgraph prepare      ./repo   # distill final report → role-aligned narrative    [BUILT]
-dev-workgraph final        ./repo   # prepared Q&A → Role Narrative → RESUME.<project>.md [BUILT]
+dev-workgraph final        ./repo   # prepared Q&A → Role Narrative → RECONSTRUCTION.<project>.md [BUILT]
 dev-workgraph run          ./repo   # gather inputs upfront, run pipeline to prepare   [BUILT]
+dev-workgraph export       ./repo   # bundle the repo's workgraph data + config → .tar.gz [BUILT]
+dev-workgraph import       <bundle> # restore a bundle; add/update its config entry    [BUILT]
+dev-workgraph init:period  ./repo   # define a review period, inherit project context  [BUILT]
+dev-workgraph run:period   ./repo   # run the whole pipeline for a review period        [BUILT]
 ```
 
-`init` should run once per repository before the first `summarize`. `authors`, `evidence`, and the deterministic part of `commit-group` work **without any model**. `init`, `summarize`, group model layers, `report`, `prepare`, and `final` (Role Narrative step) use the local LLM. **`final` runs at the END of `run`, after `prepare`** — it asks the four prepared questions interactively (they only exist after `prepare`), so it cannot be gathered upfront.
+Every pipeline command also accepts a cross-cutting **`--period <id>`** flag (§0.5) to scope it to a defined review window; `init:period` / `run:period` are convenience aliases that force period mode. Period data lives under `~/.workgraph/data/repos/<repo-id>/periods/<id>/…` and is filtered to commits in `[from, to)`.
+
+`init` should run once per repository before the first `summarize`. `authors`, `evidence`, and the deterministic part of `commit-group` work **without any model**. `init`, `summarize`, group model layers, `report`, `prepare`, and `final` (Role Narrative step) use the local LLM. **`final` runs at the END of `run`, after `prepare`** — it asks the four prepared questions interactively (they only exist after `prepare`), so it cannot be gathered upfront. `export`/`import` are **data-only** (no model): they move a repo's accumulated workgraph data between machines.
+
+### Portability (`export` / `import`)
+
+A repo's analysis lives in two places: the data directory `~/.workgraph/data/repos/<repo-id>/` (commits, groups, reports, prepared, finish, `project.json`) and the repo's entry in `~/.workgraph/config.json` → `repos[<abs-path>]` (selected authors, role, grouping settings) — which lives **outside** the data dir. `export` bundles both into a portable `.tar.gz`:
+
+```
+<repo-id>/…           # the whole data directory
+manifest.json         # { version, repoId, repoPath, exportedAt, config }
+```
+
+`manifest.config` is the repo's `config.json` entry. `export <repo> [--output <path>]` writes `./<repo-id>.workgraph.tar.gz` by default (uses the system `tar`).
+
+`import <bundle.tar.gz> [--repo <path>] [--force]` unpacks the data directory back under `~/.workgraph/data/repos/` and **adds or updates** the repo's `config.json` entry from the manifest. By default it restores to the manifest's original `repoId`/path; `--repo <path>` re-targets the data under a different repo path (recomputing the data-dir id), and `--force` overwrites an existing data directory. Provenance throughout is by file name, never commit hashes.
 
 ### `run` — unattended pipeline
 
@@ -1166,7 +1291,8 @@ Each command seeds its picker from its own slot, falling back through the more g
 
 ### Resilience
 
-- **Retries:** every LLM call (`chatJson`) retries up to **3 attempts** with backoff on HTTP/transport/parse failure; after exhaustion the stage records the item as failed and the pipeline continues.
+- **JSON validation:** every LLM call (`chatJson`) passes a JSON Schema via Ollama's `format` parameter; the response is extracted from raw text (markdown fences tolerated), parsed, and schema-validated before acceptance (`parseAndValidateModelJson` in `src/lib/json-response.ts`).
+- **Retries:** every LLM call retries up to **3 attempts** with backoff on HTTP/transport/parse/**validation** failure; after exhaustion the stage records the item as failed and the pipeline continues.
 - **`report` resume:** each fold writes `reports/<timestampEnd>.json`, so a re-run (without `--force`) loads the longest existing prefix and **continues from the next group** instead of restarting. Adding new groups later extends the chain incrementally.
 
 ### Implementation notes (as built)
@@ -1174,13 +1300,14 @@ Each command seeds its picker from its own slot, falling back through the more g
 - **Stack:** Node.js + TypeScript (ESM), `commander` for the CLI, `inquirer` for prompts. Built with `tsc`.
 - **Project init** — role in `~/.workgraph/config.json` per repo; full project context in `~/.workgraph/data/repos/<repo-id>/project.json`.
 - **Author selection** is by email, persisted per repo in `~/.workgraph/config.json`.
-- **Data layout** is namespaced per repository: `~/.workgraph/data/repos/<repo-id>/{project.json,commits/...,groups/...,reports/...,prepared/...}`.
+- **Data layout** is namespaced per repository: `~/.workgraph/data/repos/<repo-id>/{project.json,commits/...,groups/...,reports/...,prepared/...}`. A **review period** (§0.5) nests the same sub-tree under `periods/<id>/`; all path helpers take an optional `period` argument.
 - **Project context block** — role + `story.preparedContext` + `profile` injected into every LLM prompt in `summarize`, `commit-group`, and `report`.
 - **Noise filter** and **area detection** are deterministic, shared library modules.
-- **Model layer** is generated by a local Ollama model (chosen interactively, remembered) using structured JSON output; the signal-without-reason rule is enforced after generation.
+- **Model layer** is generated by a local Ollama model (chosen interactively, remembered) using structured JSON output with post-response extract/parse/schema validation; the signal-without-reason rule is enforced after generation.
+- **Report provenance** — cumulative group files in root-level `sourceGroups`; per-entry provenance in `deterministic.historySource` parallel to `history` (same length, same indices); legacy formats are read for backward compatibility.
 - `prepare` reads the latest report + `project.json`, runs three `narrativeModel` sessions (compose history, collapse reasons, reframe questions), writes `prepared/<reportId>.json`.
-- `final` reads the latest `prepared/<reportId>.json` + `project.json`, presents four prepared questions, persists Q&A to the prepared record, runs two `narrativeModel` sessions (refine the "Your IMPACT" narrative with the answers, then the four-bullet Role Narrative), writes `RESUME.<project>.md` to **cwd**.
-- `init`, `evidence`, `summarize`, and `commit-group` are **append-only** with a `--force` override; `report` is **resumable**; `prepare` is **idempotent per report** (`--force` to regenerate); `final` overwrites `RESUME.<project>.md` on `--force`.
+- `final` reads the latest `prepared/<reportId>.json` + `project.json`, presents four prepared questions, persists Q&A to the prepared record, runs two `narrativeModel` sessions (refine the "Your IMPACT" narrative with the answers, then the four-bullet Role Narrative), writes `RECONSTRUCTION.<project>.md` to **cwd**, and archives a copy + a linking JSON record under `finish/<preparedId>.{md,json}`.
+- `init`, `evidence`, `summarize`, and `commit-group` are **append-only** with a `--force` override; `report` is **resumable**; `prepare` is **idempotent per report** (`--force` to regenerate); `final` overwrites `RECONSTRUCTION.<project>.md` on `--force`.
 - **`groupThresholdDays`** and **`groupMaxCommits`** (0 = unlimited) are persisted per repo in config; `commit-group` prompts for both on first run (`--days`, `--max-commits` skip the prompts).
 
 ⸻
@@ -1199,12 +1326,12 @@ model summaries/signals  = interpretation (may be wrong, must cite reasons)
 commit groups            = work sessions (deterministic membership + aggregated evidence)
 group histories/signals  = interpretation over a session (may be wrong, must cite reasons)
 groups.tiers + context   = signal-weighted membership (low de-emphasized in group history)
-report                   = cumulative narrative (fold over sessions: merge, dedup, demote-only)
+report                   = cumulative narrative (fold over sessions: merge, dedup, demote-only; history[i] ↔ deterministic.historySource[i])
 prepared narrative       = role-aligned distillation of the final report (human deliverable)
 questions                = missing human context (the primary product; role-aware; 4 in prepared)
 human answers            = recovered context (confirmed by the user in `final`)
 role narrative           = four impact bullets (interpretation grounded in prepare output + answers)
-RESUME.<project>.md      = final personal artifact from `final` (cwd; not auto-scored, not public portfolio)
+RECONSTRUCTION.<project>.md      = final personal artifact from `final` (cwd; not auto-scored, not public portfolio)
 graph (deferred)         = relationships between all of them
 ```
 
@@ -1216,52 +1343,82 @@ The system must **never overclaim impact, ownership, or production usage.** It r
 
 Reason:
 
-Split out a **third model slot, `narrativeModel`** (§14): `prepare` and `final` now use it instead of `reportModel`, so the human-facing narrative + Role Narrative can run on a different model (e.g. one tuned for prose/claim-safety) than the report fold. The picker falls back through `narrativeModel ?? reportModel ?? model`, so existing two-model setups keep working until a narrative model is chosen. `run` now asks for all three models upfront; `check` flags a missing `narrativeModel` too. Model groups are now: `commitModel` (`summarize`, `commit-group`), `reportModel` (`init`, `report`), `narrativeModel` (`prepare`, `final`).
+Two changes. **(1) JSON validation** — every Ollama `chatJson` response is now extracted from raw text (markdown fences tolerated), parsed, and schema-validated before acceptance (`src/lib/json-response.ts`: `parseAndValidateModelJson`); retries cover parse/validation failures too (§3, §14 Resilience). **(2) Report provenance** — root-level `sourceGroups` (cumulative) stays on the report record next to `deterministic` and `model`; per-entry provenance moved to `deterministic.historySource` **parallel to `history`** (same length, same indices: `history[i]` ↔ `historySource[i]`). Per-entry `sourceGroups` on history entries and transitional nested/offset layouts are still readable. Added `src/lib/report-provenance.ts`.
+
+---
+
+### Change history (review periods)
+
+Added **review periods** (§0.5) so the pipeline can run over an annual/periodic slice of history. A cross-cutting **`--period <id>`** flag was added to every pipeline command (`init`, `evidence`, `summarize`, `commit-group`, `report`, `prepare`, `final`, `run`), plus two convenience aliases **`init:period`** and **`run:period`**. Periods are stored per repo in `config.json` under a `periods` map (`{ from, to }`, ISO `YYYY-MM-DD`, half-open `[from, to)`); a period's whole data sub-tree nests under `~/.workgraph/data/repos/<repo-id>/periods/<id>/…` (the `periods/` wrapper prevents label/subdir collisions, and the data travels with `export`/`import`). `evidence --period` filters commits by author timestamp into the window. A period **inherits** the repo-level `project.json` by default (copy, no LLM); `--force` builds a period-specific profile. `final`'s deliverable is suffixed `RECONSTRUCTION.<project>.<period>.md`. New `src/lib/periods.ts` (label/date validation, range resolution, interactive definition); all `config.ts` path helpers and `loadProjectContext` now take an optional `period`; `getCommits` takes an optional `[from, to)` range; CLI `init`/`run` registered via factories for the base + `:period` variants.
+
+---
+
+### Change history (export/import)
+
+Added **`export`** and **`import`** commands (§14, "Portability" subsection) to move a repo's accumulated analysis between machines. `export <repo>` bundles the data directory `~/.workgraph/data/repos/<repo-id>/` plus the repo's `config.json` entry (which lives outside the data dir) into a `<repo-id>.workgraph.tar.gz` (a `manifest.json` carries `{version, repoId, repoPath, exportedAt, config}`; uses the system `tar`). `import <bundle> [--repo <path>] [--force]` unpacks the data dir back and **adds/updates** the repo's config entry from the manifest; `--repo` re-targets to a different repo path (recomputing the data-dir id), `--force` overwrites existing data. Added the `repoDataDir()` helper. Side fix: `~/.workgraph/config.json` was hand-edited into invalid JSON (missing the brace closing `repos` before `ollama`), which `loadConfig()` silently swallowed → all saved settings were being ignored; repaired (backup at `config.json.bak`).
 
 ---
 
 ### Change history #1
 
-Two changes. **(1)** `report` history compaction (§9) now uses a **rolling merge cursor** (`mergeCursor` on the report record): on overflow it merges exactly the adjacent pair at the cursor, then advances the cursor down the list and wraps — so compression is spread evenly across all ages instead of repeatedly re-squashing the oldest blob (which degraded the oldest history through lossy re-paraphrasing). The newest entry is never merged. **(2)** `final` now **refines the "Your IMPACT" narrative with the human's answers** (§11, new Step 2a): a `narrativeModel` session weaves the Q&A into the Git-reconstructed history (invent-nothing; empty answer ⇒ keep reconstruction; claim-safe tone), and the Role Narrative bullets (Step 2b) are built from that refined history so both sections stay consistent. Falls back to the prepared history on model failure; written to markdown only (the prepared record is unchanged).
+`final` now also **archives its result under the repo data namespace** (§11, Step 4): besides the cwd markdown, it writes `~/.workgraph/data/repos/<repo-id>/finish/<preparedId>.md` (a copy) and `finish/<preparedId>.json` — a **`FinishRecord`** that links back to the source `prepared/<id>.json` (`sourcePrepared` + `sourceReport`, no commit hashes) and carries role, technologies, the refined history, the Role Narrative bullets, and the Q&A. Added the `repoFinishDir()` helper. Also documented the previously-undocumented `## Technologies` section in the result markdown.
+
+---
+
+### Change history #1
+
+Renamed the final deliverable file from `RESUME.<project>.md` to **`RECONSTRUCTION.<project>.md`** (§11) and removed the CV/"resume" framing from the spec (the doc no longer describes the output as a resume): "public resume generator" → "public profile generator", "public resume / portfolio generation" → "public profile / portfolio generation". The artifact is the same personal reconstruction document; only the name and framing changed. `final.ts`/`cli.ts` updated (default output path, `--output` help, descriptions). Note: the word "resume" still appears in the spec only as the verb for `report` resume/resumability (unrelated).
 
 ---
 
 ### Change history #2
 
-Renamed the **`export`** command to **`evidence`** (§2): `dev-workgraph evidence` extracts each commit's patch + deterministic evidence layer. The name matches the spec's "deterministic baseline / evidence" terminology. Renamed `export.ts` → `evidence.ts`, `exportCommits()` → `evidence()`, `ExportOptions` → `EvidenceOptions`; updated the `run` pipeline stage (`[2/7] evidence`) and all command-flow references. Historical change-log entries below keep the old `export` name.
+Split out a **third model slot, `narrativeModel`** (§14): `prepare` and `final` now use it instead of `reportModel`, so the human-facing narrative + Role Narrative can run on a different model (e.g. one tuned for prose/claim-safety) than the report fold. The picker falls back through `narrativeModel ?? reportModel ?? model`, so existing two-model setups keep working until a narrative model is chosen. `run` now asks for all three models upfront; `check` flags a missing `narrativeModel` too. Model groups are now: `commitModel` (`summarize`, `commit-group`), `reportModel` (`init`, `report`), `narrativeModel` (`prepare`, `final`).
 
 ---
 
 ### Change history #3
 
-`prepare` now prints a **console preview** after writing its record (§10, Step 6): the unified `history` as one block, then the four numbered `questions`. This makes the upcoming `final` step transparent — the user sees the reconstructed narrative and exactly which questions they will be asked before running `final`.
+Two changes. **(1)** `report` history compaction (§9) now uses a **rolling merge cursor** (`mergeCursor` on the report record): on overflow it merges exactly the adjacent pair at the cursor, then advances the cursor down the list and wraps — so compression is spread evenly across all ages instead of repeatedly re-squashing the oldest blob (which degraded the oldest history through lossy re-paraphrasing). The newest entry is never merged. **(2)** `final` now **refines the "Your IMPACT" narrative with the human's answers** (§11, new Step 2a): a `narrativeModel` session weaves the Q&A into the Git-reconstructed history (invent-nothing; empty answer ⇒ keep reconstruction; claim-safe tone), and the Role Narrative bullets (Step 2b) are built from that refined history so both sections stay consistent. Falls back to the prepared history on model failure; written to markdown only (the prepared record is unchanged).
 
 ---
 
 ### Change history #4
 
-Added a **`check`** command (§14): verifies the Ollama server is reachable and has ≥1 model, else prints OS-specific install help (macOS `brew install ollama`, Linux `curl … install.sh`) + `ollama pull` suggestions, and flags saved `commitModel`/`reportModel` no longer installed. The reusable `ollamaReady()` runs as a **preflight in `run`** (aborts before prompting if Ollama isn't ready). Removed the keycloak/RAD-SEC examples from the prompts (now domain-neutral). Suggested-pull models: `qwen2.5-coder:14b`, `gpt-oss:latest`.
+Renamed the **`export`** command to **`evidence`** (§2): `dev-workgraph evidence` extracts each commit's patch + deterministic evidence layer. The name matches the spec's "deterministic baseline / evidence" terminology. Renamed `export.ts` → `evidence.ts`, `exportCommits()` → `evidence()`, `ExportOptions` → `EvidenceOptions`; updated the `run` pipeline stage (`[2/7] evidence`) and all command-flow references. Historical change-log entries below keep the old `export` name.
 
 ---
 
 ### Change history #5
 
-Tuned the `final` Role Narrative prompt (§11) for a **technical, claim-safe tone**: write engineer-to-engineer with concrete components/protocols/mechanisms, ban marketing/hype words (spearheaded, robust, seamless, leveraged, …), prefer plain verbs (implemented, added, refactored, fixed). No behavior change elsewhere.
+`prepare` now prints a **console preview** after writing its record (§10, Step 6): the unified `history` as one block, then the four numbered `questions`. This makes the upcoming `final` step transparent — the user sees the reconstructed narrative and exactly which questions they will be asked before running `final`.
 
 ---
 
 ### Change history #6
 
-Added a second grouping bound to `commit-group` (§3): **`groupMaxCommits`** (0 = unlimited) caps commits per work-session group, so a new group also starts when the current one reaches the cap — not only on the day-gap. Persisted per repo; prompted on first run (`--max-commits` skips). `run` gathers it upfront alongside the day threshold. Default 20.
+Added a **`check`** command (§14): verifies the Ollama server is reachable and has ≥1 model, else prints OS-specific install help (macOS `brew install ollama`, Linux `curl … install.sh`) + `ollama pull` suggestions, and flags saved `commitModel`/`reportModel` no longer installed. The reusable `ollamaReady()` runs as a **preflight in `run`** (aborts before prompting if Ollama isn't ready). Removed the keycloak/RAD-SEC examples from the prompts (now domain-neutral). Suggested-pull models: `qwen2.5-coder:14b`, `gpt-oss:latest`.
 
 ---
 
 ### Change history #7
 
+Tuned the `final` Role Narrative prompt (§11) for a **technical, claim-safe tone**: write engineer-to-engineer with concrete components/protocols/mechanisms, ban marketing/hype words (spearheaded, robust, seamless, leveraged, …), prefer plain verbs (implemented, added, refactored, fixed). No behavior change elsewhere.
+
+---
+
+### Change history #8
+
+Added a second grouping bound to `commit-group` (§3): **`groupMaxCommits`** (0 = unlimited) caps commits per work-session group, so a new group also starts when the current one reaches the cap — not only on the day-gap. Persisted per repo; prompted on first run (`--max-commits` skips). `run` gathers it upfront alongside the day threshold. Default 20.
+
+---
+
+### Change history #9
+
 Built **`prepare`** (§10) and **`final`** (§11).
 
 - **`prepare`** reads the latest report + `project.json` and runs three `reportModel` sessions — (1) compose one unified first-person `history`, (2) collapse `signalReasons` to **four**, (3) reframe **four** role-aware questions (+ confidence). Signals and `changeTypes` are copied from the report. Writes `data/repos/<repo-id>/prepared/<reportId>.json`; idempotent per report (`--force`). Added to `run` as the final unattended stage.
-- **`final`** (interactive, not in `run`) reads the latest `prepared/<reportId>.json` + `project.json`, collects answers to the four questions (interactive editor, or `--answers-file`), persists `{answers, answeredAt}` in-place, runs one `reportModel` session for a four-bullet **Role Narrative**, and writes **`RESUME.<project>.md`** to the cwd (`--output` overrides). `--force` re-answers/overwrites.
+- **`final`** (interactive, not in `run`) reads the latest `prepared/<reportId>.json` + `project.json`, collects answers to the four questions (interactive editor, or `--answers-file`), persists `{answers, answeredAt}` in-place, runs one `reportModel` session for a four-bullet **Role Narrative**, and writes **`RECONSTRUCTION.<project>.md`** to the cwd (`--output` overrides). `--force` re-answers/overwrites.
 
 Both commands done. `run` now executes the full pipeline `init → export → summarize → commit-group → report → prepare → final` (the unattended stages first, then `final` asks the prepared questions interactively at the end). `final` can still be run on its own.
 
@@ -1269,25 +1426,25 @@ Next: `ask` (deferred), polish.
 
 ---
 
-### Change history #8
+### Change history #10
 
-Added **`answers`** (now **`final`**, §11) as the final pipeline step. Interactive: presents the four prepared questions, persists Q&A to `prepared/<reportId>.json`, runs one `reportModel` session to produce a **Role Narrative** (exactly four impact bullets from `history` + project context + `signalReasons` + answers). Writes **`RESUME.<project>.md`** to **cwd**. Not part of `run`. Updated Goal (Q7), success criteria, out of scope, command flow, core principle.
+Added **`answers`** (now **`final`**, §11) as the final pipeline step. Interactive: presents the four prepared questions, persists Q&A to `prepared/<reportId>.json`, runs one `reportModel` session to produce a **Role Narrative** (exactly four impact bullets from `history` + project context + `signalReasons` + answers). Writes **`RECONSTRUCTION.<project>.md`** to **cwd**. Not part of `run`. Updated Goal (Q7), success criteria, out of scope, command flow, core principle.
 
 ---
 
-### Change history #9
+### Change history #11
 
 Added **`prepare`** (§10): reads the **latest report**, concatenates `history[]` entries (newline-separated), then three `reportModel` LLM sessions — (1) compose a single role-aligned `history` using `project.json` context, (2) collapse `signalReasons` into exactly **four** bullets, (3) reframe exactly **four** role-aware `questions`. Signals and `changeTypes` are copied from the report unchanged. Output: `data/repos/<repo-id>/prepared/<reportId>.json`. Updated Goal (question 6), §8, §11 success criteria, §13 command flow (`prepare` after `report`, `run` includes `prepare`), §14 core principle. Renumbered §10–§13 → §11–§14.
 
 ---
 
-### Change history #10
+### Change history #12
 
 Pushed the **routine rule** upstream to `summarize` (§2) and `commit-group` (§3): a shared `ROUTINE_RULE` now governs every stage — routine upkeep (dependency/version bumps, build/CI/formatting) is **named, not detailed** (no versions, no per-bump list); if work is only routine, say so plainly; if there is substantive work, describe **only** the substantive part. At group level routine stays a single generic `lowContext` bullet (never hi/medium), and a routine-only session's `history` is one short sentence. The report's collapse rule now builds on this shared rule.
 
 ---
 
-### Change history #11
+### Change history #13
 
 Added a **routine gate** to `report` (§8, step 1): a small LLM classifier decides routine-upkeep vs substantive; routine groups are folded **deterministically** (evidence accumulates, one generic maintenance bullet, history untouched) so they cost one cheap LLM call instead of three, while only substantive groups run the merge/add/compact sessions. Added a **routine-maintenance collapse** rule to all three report sessions: upkeep is folded into one generic low-tier item instead of per-release/per-bump entries. `report` now prints **per-fold sub-steps** (`[1/4] check`, `[2/4] merge`, `[3/4] add-if-new`, `[4/4] compact`) so it's clear which LLM session is running.
 
@@ -1295,7 +1452,7 @@ Made `report` **scalable** (§8). The linear fold was O(N²) — every fold re-r
 
 ---
 
-### Change history #12
+### Change history #14
 
 Built **`init`** and the **`run`** orchestrator, plus resilience and a two-model split (§12):
 
@@ -1309,19 +1466,19 @@ Built so far: `init`, `authors`, `export`, `summarize`, `commit-group`, `report`
 
 ---
 
-### Change history #13
+### Change history #15
 
 Renamed the group model's prose field from `summary` to **`history`** (§4, §7): `commit-group`'s second session now produces a fuller first-person `history` (covering BOTH high- and medium-tier work; low only mentioned/omitted), and `report` folds each group's `history` (not a summary) into the cumulative report history. The per-commit `summary` (§3) is unchanged. Strengthened both the group-compose and report-history prompts so the tiers control DEPTH, not inclusion — medium work must never be dropped.
 
 ---
 
-### Change history #14
+### Change history #16
 
 Redefined `report` (§8) as a **cumulative fold over groups**: `report_k = merge(report_{k-1}, group_k)`, every intermediate report kept under `data/repos/<repo-id>/reports/<timestampEnd>.json`. A report links source groups by **file name** (no commit hashes); `deterministic` is unioned; `*Signal` is the **max** across groups while `signalReasons` become **arrays**; `changeTypes`/`questions`/`confidence` and the `hiContext`/`mediumContext`/`lowContext` tiers are recomputed in one LLM merge session that dedups similar bullets and **re-ranks importance downward only** (never promotes). `history` (renamed from "summary" — it is a fuller account, not a terse summary, with the tiers controlling depth: HIGH detailed, MEDIUM lighter, LOW at most a brief mention or omitted) is a running list of `{ text, sourceGroups }` entries: on each fold, the whole list is re-read and rewritten **1:1** to the new contexts in **one** session (so per-entry provenance accumulates by group file name), then a second session appends a new entry only if the incoming session adds something not already covered. Cost is intentionally not optimized (maximize local-LLM use). `report` is **[BUILT]**. §11 and §12 updated.
 
 ---
 
-### Change history #15
+### Change history #17
 
 Reworked `commit-group` (§3, §6) to **two LLM sessions** per group. The `groups` block now holds `commits` plus a **deterministic** tier partition `tiers: { low, medium, hi }` (the commit→tier link stays as evidence; the model no longer re-partitions hashes). The model layer's `hiContext` / `mediumContext` / `lowContext` are now arrays of **context bullets** (not hashes), produced by **session 1 (classify)** along with signals/changeTypes/questions/confidence — merging commits that are close in meaning, adding unrelated ones separately. **Session 2 (compose)** then merges the per-commit summaries into a first-person, multi-paragraph `summary` whose detail follows the tiers (HIGH in full, MEDIUM briefly, LOW just mentioned). Voice switched to first person; area detection simplified to "top-level project folder" (§5). Prompts extracted to `src/lib/prompts.ts`.
 
@@ -1329,7 +1486,7 @@ Built so far: `authors`, `export`, `summarize`, `commit-group`. Next: `report`.
 
 ---
 
-### Change history #16
+### Change history #18
 
 Synced the spec with the implemented CLI. Added §0 "Author selection" (select your own work by email; persisted per repo) as a precondition, with the lesson about confusable near-identical emails. Switched the data layout to per-repository namespacing (`data/repos/<repo-id>/commits/...`) so repos never mix. Documented the model layer as a separate, append-only `summarize` step backed by a local Ollama model with structured JSON output and provenance. Rewrote §11 to the actual command flow, marking what is built vs TODO, and added implementation notes (TypeScript/commander/inquirer, deterministic noise + area modules, `--force` semantics).
 

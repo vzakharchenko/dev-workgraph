@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2025-2026 Vasyl Zakharchenko
 // SPDX-License-Identifier: Apache-2.0
 
+import { parseAndValidateModelJson } from "./json-response.js";
+
 /** Default Ollama endpoint. */
 const DEFAULT_BASE_URL = "http://127.0.0.1:11434";
 
@@ -87,11 +89,7 @@ async function chatJsonOnce(opts: {
 
   const data = (await res.json()) as { message?: { content?: string } };
   const content = data.message?.content ?? "";
-  try {
-    return JSON.parse(content);
-  } catch {
-    throw new Error(`Model returned non-JSON content: ${content.slice(0, 200)}`);
-  }
+  return parseAndValidateModelJson(content, opts.schema);
 }
 
 export async function chatJson(opts: {
@@ -108,10 +106,14 @@ export async function chatJson(opts: {
     } catch (err) {
       lastError = err as Error;
       if (attempt < MAX_ATTEMPTS) {
-        process.stderr.write(`retry ${attempt}/${MAX_ATTEMPTS - 1} (${lastError.message.slice(0, 80)}) `);
+        process.stderr.write(
+          `retry ${attempt}/${MAX_ATTEMPTS - 1} (${lastError.message.slice(0, 80)}) `,
+        );
         await sleep(500 * attempt);
       }
     }
   }
-  throw new Error(`Ollama chat failed after ${MAX_ATTEMPTS} attempts: ${lastError?.message ?? "unknown error"}`);
+  throw new Error(
+    `Ollama chat failed after ${MAX_ATTEMPTS} attempts: ${lastError?.message ?? "unknown error"}`,
+  );
 }

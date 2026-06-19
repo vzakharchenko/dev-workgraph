@@ -7,6 +7,18 @@ import os from "node:os";
 import path from "node:path";
 
 /**
+ * A named review window. Dates are ISO `YYYY-MM-DD`; the range is half-open
+ * `[from, to)` (from inclusive, to exclusive) so adjacent periods never
+ * double-count a commit on the boundary.
+ */
+export interface Period {
+  /** Inclusive start date, ISO `YYYY-MM-DD`. */
+  from: string;
+  /** Exclusive end date, ISO `YYYY-MM-DD`. */
+  to: string;
+}
+
+/**
  * Per-repository configuration persisted by dev-workgraph.
  */
 export interface RepoConfig {
@@ -18,6 +30,8 @@ export interface RepoConfig {
   groupThresholdDays?: number;
   /** Max commits per work-session group (0 = unlimited). */
   groupMaxCommits?: number;
+  /** Named review windows, keyed by a human label (e.g. "2022", "2022-H1"). */
+  periods?: Record<string, Period>;
 }
 
 /**
@@ -49,14 +63,14 @@ const EMPTY_CONFIG: WorkgraphConfig = { repos: {} };
  * Resolves the dev-workgraph home directory.
  * Honors `WORKGRAPH_HOME`, then defaults to `~/.workgraph`.
  */
-export function workgraphHome(): string {
+function workgraphHome(): string {
   return process.env.WORKGRAPH_HOME ?? path.join(os.homedir(), ".workgraph");
 }
 
 /**
  * Absolute path to the on-disk config file (`~/.workgraph/config.json`).
  */
-export function configPath(): string {
+function configPath(): string {
   return path.join(workgraphHome(), "config.json");
 }
 
@@ -66,7 +80,7 @@ export function configPath(): string {
  * share a basename.
  * @param repoPath - Absolute path to the repository (top-level).
  */
-export function repoId(repoPath: string): string {
+function repoId(repoPath: string): string {
   const abs = path.resolve(repoPath);
   const base = path.basename(abs) || "repo";
   const hash = createHash("sha1").update(abs).digest("hex").slice(0, 8);
@@ -74,49 +88,92 @@ export function repoId(repoPath: string): string {
 }
 
 /**
- * Absolute path to a repository's exported-commits directory
- * (`~/.workgraph/data/repos/<repo-id>/commits`). Data is namespaced per repo so
- * commits from different repositories never mix.
+ * Root of a repository's data namespace, optionally scoped to a review period.
+ * Without a period: `~/.workgraph/data/repos/<repo-id>`. With one, the whole
+ * sub-tree is nested under `periods/<period>` so a period review never mixes
+ * with the repo's all-time data — and a period label can never collide with a
+ * sibling subdir name like `commits`.
  * @param repoPath - Absolute path to the repository (top-level).
+ * @param period - Optional period label to scope under.
  */
-export function repoCommitsDir(repoPath: string): string {
-  return path.join(workgraphHome(), "data", "repos", repoId(repoPath), "commits");
+function repoRoot(repoPath: string, period?: string): string {
+  const base = path.join(workgraphHome(), "data", "repos", repoId(repoPath));
+  return period ? path.join(base, "periods", period) : base;
+}
+
+/**
+ * Absolute path to a repository's exported-commits directory
+ * (`~/.workgraph/data/repos/<repo-id>[/periods/<period>]/commits`). Data is
+ * namespaced per repo (and per period) so commits never mix.
+ * @param repoPath - Absolute path to the repository (top-level).
+ * @param period - Optional review period to scope under.
+ */
+export function repoCommitsDir(repoPath: string, period?: string): string {
+  return path.join(repoRoot(repoPath, period), "commits");
 }
 
 /**
  * Absolute path to a repository's work-session groups directory
- * (`~/.workgraph/data/repos/<repo-id>/groups`).
+ * (`~/.workgraph/data/repos/<repo-id>[/periods/<period>]/groups`).
  * @param repoPath - Absolute path to the repository (top-level).
+ * @param period - Optional review period to scope under.
  */
-export function repoGroupsDir(repoPath: string): string {
-  return path.join(workgraphHome(), "data", "repos", repoId(repoPath), "groups");
+export function repoGroupsDir(repoPath: string, period?: string): string {
+  return path.join(repoRoot(repoPath, period), "groups");
 }
 
 /**
  * Absolute path to a repository's cumulative reports directory
- * (`~/.workgraph/data/repos/<repo-id>/reports`).
+ * (`~/.workgraph/data/repos/<repo-id>[/periods/<period>]/reports`).
  * @param repoPath - Absolute path to the repository (top-level).
+ * @param period - Optional review period to scope under.
  */
-export function repoReportsDir(repoPath: string): string {
-  return path.join(workgraphHome(), "data", "repos", repoId(repoPath), "reports");
+export function repoReportsDir(repoPath: string, period?: string): string {
+  return path.join(repoRoot(repoPath, period), "reports");
 }
 
 /**
  * Absolute path to a repository's prepared-narratives directory
- * (`~/.workgraph/data/repos/<repo-id>/prepared`), written by `prepare`.
+ * (`~/.workgraph/data/repos/<repo-id>[/periods/<period>]/prepared`), written by
+ * `prepare`.
  * @param repoPath - Absolute path to the repository (top-level).
+ * @param period - Optional review period to scope under.
  */
-export function repoPreparedDir(repoPath: string): string {
-  return path.join(workgraphHome(), "data", "repos", repoId(repoPath), "prepared");
+export function repoPreparedDir(repoPath: string, period?: string): string {
+  return path.join(repoRoot(repoPath, period), "prepared");
+}
+
+/**
+ * Absolute path to a repository's finish directory
+ * (`~/.workgraph/data/repos/<repo-id>[/periods/<period>]/finish`), written by
+ * `final`: a copy of the result markdown plus a JSON record that links back to
+ * the source prepared file.
+ * @param repoPath - Absolute path to the repository (top-level).
+ * @param period - Optional review period to scope under.
+ */
+export function repoFinishDir(repoPath: string, period?: string): string {
+  return path.join(repoRoot(repoPath, period), "finish");
 }
 
 /**
  * Absolute path to a repository's project context file
- * (`~/.workgraph/data/repos/<repo-id>/project.json`), written by `init`.
+ * (`~/.workgraph/data/repos/<repo-id>[/periods/<period>]/project.json`), written
+ * by `init`.
+ * @param repoPath - Absolute path to the repository (top-level).
+ * @param period - Optional review period to scope under.
+ */
+export function repoProjectPath(repoPath: string, period?: string): string {
+  return path.join(repoRoot(repoPath, period), "project.json");
+}
+
+/**
+ * Absolute path to a repository's whole data directory
+ * (`~/.workgraph/data/repos/<repo-id>`). Its basename is the repo id, and its
+ * parent is the shared repos root — used by `export`/`import` bundling.
  * @param repoPath - Absolute path to the repository (top-level).
  */
-export function repoProjectPath(repoPath: string): string {
-  return path.join(workgraphHome(), "data", "repos", repoId(repoPath), "project.json");
+export function repoDataDir(repoPath: string): string {
+  return path.join(workgraphHome(), "data", "repos", repoId(repoPath));
 }
 
 /**
@@ -138,7 +195,7 @@ export function loadConfig(): WorkgraphConfig {
  * Writes the config back to disk, creating the home directory if needed.
  * @param config - The full configuration object to persist.
  */
-export function saveConfig(config: WorkgraphConfig): void {
+function saveConfig(config: WorkgraphConfig): void {
   const home = workgraphHome();
   fs.mkdirSync(home, { recursive: true });
   fs.writeFileSync(configPath(), `${JSON.stringify(config, null, 2)}\n`, "utf8");
@@ -173,4 +230,25 @@ export function setRepoConfig(repoPath: string, repoConfig: Partial<RepoConfig>)
   const existing = config.repos[repoPath] ?? { selectedAuthors: [] };
   config.repos[repoPath] = { ...existing, ...repoConfig };
   saveConfig(config);
+}
+
+/**
+ * Returns a named review period for a repo, or undefined when it is not defined.
+ * @param repoPath - Absolute path to the repository.
+ * @param id - The period label.
+ */
+export function getPeriod(repoPath: string, id: string): Period | undefined {
+  return getRepoConfig(repoPath)?.periods?.[id];
+}
+
+/**
+ * Defines or updates a named review period for a repo (merging into any
+ * existing `periods` map).
+ * @param repoPath - Absolute path to the repository.
+ * @param id - The period label (used as a directory name).
+ * @param period - The from/to window to store.
+ */
+export function setPeriod(repoPath: string, id: string, period: Period): void {
+  const existing = getRepoConfig(repoPath)?.periods ?? {};
+  setRepoConfig(repoPath, { periods: { ...existing, [id]: period } });
 }

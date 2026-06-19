@@ -1,0 +1,131 @@
+// SPDX-FileCopyrightText: 2025-2026 Vasyl Zakharchenko
+// SPDX-License-Identifier: Apache-2.0
+
+/**
+ * Extracts a JSON object substring from model text (handles fences and prose).
+ * @param content - Raw model message content.
+ */
+function extractJsonObject(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    throw new Error("empty model content");
+  }
+
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenceMatch?.[1] ?? trimmed).trim();
+
+  const start = candidate.indexOf("{");
+  if (start === -1) {
+    throw new Error(`no JSON object in model content: ${content.slice(0, 200)}`);
+  }
+
+  let depth = 0;
+  let inString = false;
+  let isEscaped = false;
+  for (let i = start; i < candidate.length; i += 1) {
+    const ch = candidate[i];
+    if (inString) {
+      if (isEscaped) isEscaped = false;
+      else if (ch === "\\") isEscaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") depth += 1;
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return candidate.slice(start, i + 1);
+    }
+  }
+
+  throw new Error(`unclosed JSON object in model content: ${content.slice(0, 200)}`);
+}
+
+/**
+ * Parses model content as JSON (object). Throws when content is not valid JSON.
+ * @param content - Raw model message content.
+ */
+function parseModelJson(content: string): unknown {
+  const jsonText = extractJsonObject(content);
+  try {
+    return JSON.parse(jsonText);
+  } catch (err) {
+    throw new Error(
+      `invalid JSON from model: ${(err as Error).message}; snippet: ${jsonText.slice(0, 200)}`,
+    );
+  }
+}
+
+/**
+ * Validates a parsed value against the JSON Schema subset used by Ollama `format`.
+ * Throws when the value does not conform.
+ */
+function assertMatchesSchema(value: unknown, schema: Record<string, unknown>, path = "root"): void {
+  const type = schema.type as string | undefined;
+
+  if (type === "object") {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new Error(`expected object at ${path}`);
+    }
+    const obj = value as Record<string, unknown>;
+    for (const key of (schema.required as string[] | undefined) ?? []) {
+      if (!(key in obj)) {
+        throw new Error(`missing required field ${path}.${key}`);
+      }
+    }
+    const props = (schema.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
+    for (const [key, subSchema] of Object.entries(props)) {
+      if (key in obj) {
+        assertMatchesSchema(obj[key], subSchema, `${path}.${key}`);
+      }
+    }
+    return;
+  }
+
+  if (type === "array") {
+    if (!Array.isArray(value)) {
+      throw new Error(`expected array at ${path}`);
+    }
+    const items = schema.items as Record<string, unknown> | undefined;
+    if (items) {
+      for (let i = 0; i < value.length; i += 1) {
+        assertMatchesSchema(value[i], items, `${path}[${i}]`);
+      }
+    }
+    return;
+  }
+
+  if (type === "string") {
+    if (typeof value !== "string") {
+      throw new Error(`expected string at ${path}`);
+    }
+    const allowed = schema.enum as unknown[] | undefined;
+    if (allowed && !allowed.includes(value)) {
+      throw new Error(`invalid enum at ${path}: ${JSON.stringify(value)}`);
+    }
+    return;
+  }
+
+  if (type === "boolean") {
+    if (typeof value !== "boolean") {
+      throw new Error(`expected boolean at ${path}`);
+    }
+  }
+}
+
+/**
+ * Parses and schema-validates model JSON content.
+ * @param content - Raw model message content.
+ * @param schema - JSON Schema passed to Ollama `format`.
+ */
+export function parseAndValidateModelJson(
+  content: string,
+  schema: Record<string, unknown>,
+): unknown {
+  const parsed = parseModelJson(content);
+  assertMatchesSchema(parsed, schema);
+  return parsed;
+}

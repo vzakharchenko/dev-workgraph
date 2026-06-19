@@ -12,6 +12,7 @@ import {
 } from "../lib/config.js";
 import { currentUserEmail, getAuthors, resolveRepo } from "../lib/git.js";
 import { resolveBaseUrl } from "../lib/ollama.js";
+import { resolvePeriodDefinition } from "../lib/periods.js";
 import { resolveModel } from "../lib/select.js";
 import { ollamaReady } from "./check.js";
 import { commitGroup } from "./commit-group.js";
@@ -34,6 +35,14 @@ export interface RunOptions {
   model?: string;
   /** Re-gather every input and re-run every stage with --force. */
   force?: boolean;
+  /** Review-period label to scope the whole pipeline under. */
+  period?: string;
+  /** Period start date, ISO `YYYY-MM-DD` (defines/updates the period). */
+  from?: string;
+  /** Period end date, ISO `YYYY-MM-DD` (defines/updates the period). */
+  to?: string;
+  /** Force period mode even when no `--period` was given (prompts for it). */
+  periodMode?: boolean;
 }
 
 const DEFAULT_THRESHOLD_DAYS = 7;
@@ -73,6 +82,19 @@ export async function run(options: RunOptions): Promise<void> {
 
   console.log("=== dev-workgraph run — gathering inputs ===\n");
 
+  // 0. Optional review period — defines/persists from/to, scopes every stage.
+  let period: string | undefined;
+  if (options.periodMode || options.period || options.from || options.to) {
+    const resolved = await resolvePeriodDefinition({
+      repoPath,
+      id: options.period,
+      from: options.from,
+      to: options.to,
+    });
+    period = resolved.id;
+    console.log(`Review period "${period}": ${resolved.period.from} → ${resolved.period.to}\n`);
+  }
+
   // Preflight: Ollama must be reachable with at least one model before we prompt.
   if (!(await ollamaReady(baseUrl))) {
     throw new Error("Ollama is not ready (see above). Fix it, then re-run.");
@@ -95,15 +117,20 @@ export async function run(options: RunOptions): Promise<void> {
   setOllamaConfig({ baseUrl, commitModel, reportModel, narrativeModel });
 
   const cfg = getRepoConfig(repoPath);
-  const projectExists = fs.existsSync(repoProjectPath(repoPath));
+  const projectExists = fs.existsSync(repoProjectPath(repoPath, period));
 
-  // 2. Role + story (only if init needs to run).
+  // 2. Role + story. A period normally inherits the repo-level context (no
+  // prompt); we only gather role/story when init will actually build a fresh
+  // profile: any non-period init, or a forced period init.
   const needInit = force || !projectExists;
+  const needRoleStory = needInit && (!period || force);
   let role: string | undefined;
   let story: string | undefined;
-  if (needInit) {
+  if (needRoleStory) {
     role = await resolveRole();
     story = await resolveStory();
+  } else if (needInit && period) {
+    console.log(`Period "${period}" will inherit the repo-level project context.`);
   } else {
     console.log("Project already initialized — keeping existing context.");
   }
@@ -147,7 +174,9 @@ export async function run(options: RunOptions): Promise<void> {
       },
     ]);
     maxCommits =
-      Number.isFinite(answer.maxCommits) && answer.maxCommits >= 0 ? answer.maxCommits : DEFAULT_MAX_COMMITS;
+      Number.isFinite(answer.maxCommits) && answer.maxCommits >= 0
+        ? answer.maxCommits
+        : DEFAULT_MAX_COMMITS;
     setRepoConfig(repoPath, { groupMaxCommits: maxCommits });
   } else {
     console.log(`Using saved max commits/group: ${maxCommits || "unlimited"}`);
@@ -158,29 +187,37 @@ export async function run(options: RunOptions): Promise<void> {
 
   if (needInit) {
     console.log("\n[1/7] init");
-    await init({ repo: repoPath, role, story, model: reportModel, url: baseUrl, force });
+    await init({ repo: repoPath, role, story, model: reportModel, url: baseUrl, force, period });
   } else {
     console.log("\n[1/7] init — skipped (already initialized)");
   }
 
   console.log("\n[2/7] evidence");
-  await evidence({ repo: repoPath, email: emails, force });
+  await evidence({ repo: repoPath, email: emails, force, period });
 
   console.log("\n[3/7] summarize");
-  await summarize({ repo: repoPath, model: commitModel, url: baseUrl, force });
+  await summarize({ repo: repoPath, model: commitModel, url: baseUrl, force, period });
 
   console.log("\n[4/7] commit-group");
-  await commitGroup({ repo: repoPath, model: commitModel, url: baseUrl, days, maxCommits, force });
+  await commitGroup({
+    repo: repoPath,
+    model: commitModel,
+    url: baseUrl,
+    days,
+    maxCommits,
+    force,
+    period,
+  });
 
   console.log("\n[5/7] report");
-  await report({ repo: repoPath, model: reportModel, url: baseUrl, force });
+  await report({ repo: repoPath, model: reportModel, url: baseUrl, force, period });
 
   console.log("\n[6/7] prepare");
-  await prepare({ repo: repoPath, model: narrativeModel, url: baseUrl, force });
+  await prepare({ repo: repoPath, model: narrativeModel, url: baseUrl, force, period });
 
   // final is interactive (answers the prepared questions) — it runs last.
   console.log("\n[7/7] final");
-  await final({ repo: repoPath, model: narrativeModel, url: baseUrl, force });
+  await final({ repo: repoPath, model: narrativeModel, url: baseUrl, force, period });
 
   console.log("\n✅ Pipeline complete.");
 }

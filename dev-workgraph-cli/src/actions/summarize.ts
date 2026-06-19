@@ -5,17 +5,17 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, repoCommitsDir, setOllamaConfig } from "../lib/config.js";
 import { resolveRepo } from "../lib/git.js";
-import { type ModelLayer, enforceSignalReasons, modelJsonSchema } from "../lib/model.js";
+import { enforceSignalReasons, type ModelLayer, modelJsonSchema } from "../lib/model.js";
 import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
 import { loadProjectContext } from "../lib/project.js";
-import { resolveModel } from "../lib/select.js";
 import {
-  COMMIT_SUMMARY_SYSTEM,
   buildCommitUserPrompt,
+  COMMIT_SUMMARY_SYSTEM,
   projectContextBlock,
   withProjectContext,
 } from "../lib/prompts.js";
 import type { CommitRecord } from "../lib/records.js";
+import { resolveModel } from "../lib/select.js";
 
 /**
  * Options for the `summarize` command.
@@ -31,6 +31,8 @@ export interface SummarizeOptions {
   force?: boolean;
   /** Only process the first N pending commits (useful for trials). */
   limit?: number;
+  /** Operate on a defined review period's data instead of the repo's all-time data. */
+  period?: string;
 }
 
 /**
@@ -56,14 +58,12 @@ function listCommitJsonFiles(dir: string): string[] {
  */
 export async function summarize(options: SummarizeOptions): Promise<void> {
   const repoPath = resolveRepo(options.repo);
-  const dir = repoCommitsDir(repoPath);
+  const dir = repoCommitsDir(repoPath, options.period);
   const baseUrl = resolveBaseUrl(options.url);
 
   const allFiles = listCommitJsonFiles(dir);
   if (allFiles.length === 0) {
-    console.log(
-      `No exported commits found for ${repoPath}. Run \`dev-workgraph export\` first.`,
-    );
+    console.log(`No exported commits found for ${repoPath}. Run \`dev-workgraph export\` first.`);
     return;
   }
 
@@ -75,7 +75,7 @@ export async function summarize(options: SummarizeOptions): Promise<void> {
   setOllamaConfig({ baseUrl, commitModel: model });
   console.log(`Using model "${model}" at ${baseUrl}\n`);
 
-  const projectBlock = projectContextBlock(loadProjectContext(repoPath));
+  const projectBlock = projectContextBlock(loadProjectContext(repoPath, options.period));
   if (!projectBlock) {
     console.log("⚠️  No project context (run `dev-workgraph init`); summarizing without it.\n");
   }
@@ -112,7 +112,9 @@ export async function summarize(options: SummarizeOptions): Promise<void> {
   let failed = 0;
   for (const [i, item] of work.entries()) {
     const short = item.record.commitHash.slice(0, 8);
-    process.stdout.write(`[${i + 1}/${work.length}] ${short} ${item.record.title.slice(0, 50)} ... `);
+    process.stdout.write(
+      `[${i + 1}/${work.length}] ${short} ${item.record.title.slice(0, 50)} ... `,
+    );
 
     const patchPath = item.file.replace(/\.json$/, ".patch");
     const patch = fs.existsSync(patchPath) ? fs.readFileSync(patchPath, "utf8") : "";

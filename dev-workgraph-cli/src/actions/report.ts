@@ -7,29 +7,28 @@ import { loadConfig, repoGroupsDir, repoReportsDir, setOllamaConfig } from "../l
 import { resolveRepo } from "../lib/git.js";
 import { loadGroupRecords, mergeDeterministic } from "../lib/grouping.js";
 import {
-  type Signal,
   maxSignal,
   mergeTechnologies,
   reportHistoryJsonSchema,
   reportMergeJsonSchema,
   reportNewHistoryJsonSchema,
   routineCheckJsonSchema,
+  type Signal,
 } from "../lib/model.js";
 import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
 import { loadProjectContext } from "../lib/project.js";
-import { resolveModel } from "../lib/select.js";
 import {
-  MAX_CONTEXT_BULLETS,
-  MAX_HISTORY_ENTRIES,
-  REPORT_COMPACT_SYSTEM,
-  REPORT_MERGE_SYSTEM,
-  REPORT_NEW_HISTORY_SYSTEM,
-  ROUTINE_CHECK_SYSTEM,
   buildReportCompactPrompt,
   buildReportMergePrompt,
   buildReportNewHistoryPrompt,
   buildRoutineCheckPrompt,
+  MAX_CONTEXT_BULLETS,
+  MAX_HISTORY_ENTRIES,
   projectContextBlock,
+  REPORT_COMPACT_SYSTEM,
+  REPORT_MERGE_SYSTEM,
+  REPORT_NEW_HISTORY_SYSTEM,
+  ROUTINE_CHECK_SYSTEM,
   withProjectContext,
 } from "../lib/prompts.js";
 import type {
@@ -38,6 +37,13 @@ import type {
   ReportModelLayer,
   ReportRecord,
 } from "../lib/records.js";
+import {
+  buildReportDeterministic,
+  historyTextsOnly,
+  readReportProvenance,
+  stripLegacyProvenance,
+} from "../lib/report-provenance.js";
+import { resolveModel } from "../lib/select.js";
 
 /**
  * Options for the `report` command.
@@ -53,12 +59,17 @@ export interface ReportOptions {
   force?: boolean;
   /** Only fold the first N groups (useful for trials). */
   limit?: number;
+  /** Operate on a defined review period's data instead of the repo's all-time data. */
+  period?: string;
 }
 
 const asStringArray = (value: unknown): string[] =>
-  Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && v.length > 0) : [];
+  Array.isArray(value)
+    ? value.filter((v): v is string => typeof v === "string" && v.length > 0)
+    : [];
 
-const nonEmpty = (value: unknown): string[] => (typeof value === "string" && value.trim() ? [value] : []);
+const nonEmpty = (value: unknown): string[] =>
+  typeof value === "string" && value.trim() ? [value] : [];
 
 const uniq = (values: string[]): string[] => [...new Set(values)];
 
@@ -72,14 +83,28 @@ function ensureMaintenanceBullet(low: string[]): string[] {
   return [...low, MAINTENANCE_BULLET];
 }
 
+function writeReport(reportsDir: string, record: ReportRecord): void {
+  fs.writeFileSync(
+    path.join(reportsDir, `${record.reportId}.json`),
+    `${JSON.stringify(stripLegacyProvenance(record), null, 2)}\n`,
+    "utf8",
+  );
+}
+
 /** Seeds a report from the first group (no merge needed). */
-function initReport(file: string, group: GroupRecord, generatedAt: string, model: string): ReportRecord {
+function initReport(
+  file: string,
+  group: GroupRecord,
+  generatedAt: string,
+  model: string,
+): ReportRecord {
   const g = group.model;
+  const historySources = g?.history ? [[file]] : [];
   return {
     reportId: group.timestampEnd,
-    sourceGroups: [file],
+    sourceGroups: uniq([file]),
     groupCount: 1,
-    deterministic: group.deterministic,
+    deterministic: buildReportDeterministic(group.deterministic, historySources),
     model: {
       changeTypes: g?.changeTypes ?? [],
       technologies: mergeTechnologies(g?.technologies),
@@ -98,7 +123,7 @@ function initReport(file: string, group: GroupRecord, generatedAt: string, model
       lowContext: g?.lowContext ?? [],
       provenance: { model, generatedAt },
     },
-    history: g?.history ? [{ text: g.history, sourceGroups: [file] }] : [],
+    history: g?.history ? [{ text: g.history }] : [],
   };
 }
 
@@ -110,7 +135,7 @@ function initReport(file: string, group: GroupRecord, generatedAt: string, model
  */
 export async function report(options: ReportOptions): Promise<void> {
   const repoPath = resolveRepo(options.repo);
-  const groupsDir = repoGroupsDir(repoPath);
+  const groupsDir = repoGroupsDir(repoPath, options.period);
 
   const groups = loadGroupRecords(groupsDir).filter((g) => g.record.model !== null);
   const skippedNoModel = loadGroupRecords(groupsDir).length - groups.length;
@@ -129,7 +154,7 @@ export async function report(options: ReportOptions): Promise<void> {
   });
   setOllamaConfig({ baseUrl, reportModel: model });
 
-  const reportsDir = repoReportsDir(repoPath);
+  const reportsDir = repoReportsDir(repoPath, options.period);
   const selected = options.limit ? groups.slice(0, options.limit) : groups;
   fs.mkdirSync(reportsDir, { recursive: true });
 
@@ -142,17 +167,23 @@ export async function report(options: ReportOptions): Promise<void> {
     for (let i = 0; i < selected.length; i += 1) {
       const f = path.join(reportsDir, `${selected[i]?.record.timestampEnd}.json`);
       if (!fs.existsSync(f)) break;
-      current = JSON.parse(fs.readFileSync(f, "utf8")) as ReportRecord;
+      const loaded = JSON.parse(fs.readFileSync(f, "utf8")) as ReportRecord;
+      current = {
+        ...loaded,
+        history: historyTextsOnly(loaded.history),
+      };
       startIndex = i + 1;
     }
   }
 
   if (startIndex >= selected.length && current) {
-    console.log(`Report already complete (${path.join(reportsDir, `${current.reportId}.json`)}). Use --force to rebuild.`);
+    console.log(
+      `Report already complete (${path.join(reportsDir, `${current.reportId}.json`)}). Use --force to rebuild.`,
+    );
     return;
   }
 
-  const projectBlock = projectContextBlock(loadProjectContext(repoPath));
+  const projectBlock = projectContextBlock(loadProjectContext(repoPath, options.period));
   if (!projectBlock) {
     console.log("⚠️  No project context (run `dev-workgraph init`); folding without it.");
   }
@@ -174,11 +205,7 @@ export async function report(options: ReportOptions): Promise<void> {
       current = await foldGroup(current, file, record, baseUrl, model, generatedAt, projectBlock);
     }
 
-    fs.writeFileSync(
-      path.join(reportsDir, `${current.reportId}.json`),
-      `${JSON.stringify(current, null, 2)}\n`,
-      "utf8",
-    );
+    writeReport(reportsDir, current);
     console.log(`   → ${current.reportId}.json (${current.history.length} history entries)`);
   }
 
@@ -198,6 +225,15 @@ async function foldGroup(
   projectBlock: string,
 ): Promise<ReportRecord> {
   const g = group.model;
+  const prevProvenance = readReportProvenance(prev);
+  const sourceGroups = [...prevProvenance.sourceGroups, file];
+  let historySources = prevProvenance.historySources.map((row) => [...row]);
+
+  const mergedFrom = {
+    previousReportId: prev.reportId,
+    previousReportFile: `${prev.reportId}.json`,
+    groupFile: file,
+  };
   const routineSystem = withProjectContext(projectBlock, ROUTINE_CHECK_SYSTEM);
   const mergeSystem = withProjectContext(projectBlock, REPORT_MERGE_SYSTEM);
   const newSystem = withProjectContext(projectBlock, REPORT_NEW_HISTORY_SYSTEM);
@@ -205,9 +241,12 @@ async function foldGroup(
   const cap = (items: string[]): string[] => items.slice(0, MAX_CONTEXT_BULLETS);
 
   // Deterministic + signal levels (pure code).
-  const deterministic = mergeDeterministic(prev.deterministic, group.deterministic);
+  const mergedDeterministic = mergeDeterministic(prev.deterministic, group.deterministic);
   const technicalSignal = maxSignal(prev.model.technicalSignal, g?.technicalSignal ?? "low");
-  const architectureSignal = maxSignal(prev.model.architectureSignal, g?.architectureSignal ?? "low");
+  const architectureSignal = maxSignal(
+    prev.model.architectureSignal,
+    g?.architectureSignal ?? "low",
+  );
   const securitySignal = maxSignal(prev.model.securitySignal, g?.securitySignal ?? "low");
 
   // Step 1 — routine gate (LLM): does this session carry ONLY routine upkeep? If so, fold it
@@ -226,9 +265,9 @@ async function foldGroup(
     console.log("routine — folded without further LLM");
     return {
       reportId: group.timestampEnd,
-      sourceGroups: [...prev.sourceGroups, file],
+      sourceGroups: uniq(sourceGroups),
       groupCount: prev.groupCount + 1,
-      deterministic,
+      deterministic: buildReportDeterministic(mergedDeterministic, historySources),
       model: {
         ...prev.model,
         technicalSignal,
@@ -239,8 +278,9 @@ async function foldGroup(
         lowContext: cap(ensureMaintenanceBullet(prev.model.lowContext)),
         provenance: { model, generatedAt },
       },
-      history: prev.history.map((h) => ({ text: h.text, sourceGroups: [...h.sourceGroups] })),
+      history: prev.history.map((h) => ({ text: h.text })),
       mergeCursor: prev.mergeCursor,
+      mergedFrom,
     };
   }
   console.log("substantive");
@@ -281,13 +321,9 @@ async function foldGroup(
     provenance: { model, generatedAt },
   };
 
-  // History grows by APPENDING the new session only when it adds something not already covered.
-  // (No per-fold rewrite of the whole list — that was the O(N²) cost.) Provenance stays as set
-  // at creation; compaction (below) unions it when condensing.
-  let history: ReportHistoryEntry[] = prev.history.map((h) => ({
-    text: h.text,
-    sourceGroups: [...h.sourceGroups],
-  }));
+  // History text grows via LLM only when the new session adds something not already covered.
+  // Provenance rows are maintained deterministically in parallel (historySources).
+  let history: ReportHistoryEntry[] = prev.history.map((h) => ({ text: h.text }));
 
   const candidate = g?.history ?? "";
   if (candidate) {
@@ -305,7 +341,8 @@ async function foldGroup(
     })) as { needed?: boolean; text?: string };
 
     if (verdict.needed && verdict.text?.trim()) {
-      history.push({ text: verdict.text.trim(), sourceGroups: [file] });
+      history.push({ text: verdict.text.trim() });
+      historySources.push([file]);
       console.log("added");
     } else {
       console.log("nothing new");
@@ -329,7 +366,9 @@ async function foldGroup(
 
     const a = history[cursor];
     const b = history[cursor + 1];
-    if (a && b) {
+    const aSources = historySources[cursor];
+    const bSources = historySources[cursor + 1];
+    if (a && b && aSources && bSources) {
       process.stdout.write(`   [4/4] compact pair @${cursor}+${cursor + 1} → 1 ... `);
       const condensed = (await chatJson({
         baseUrl,
@@ -342,11 +381,12 @@ async function foldGroup(
       const condensedTexts = asStringArray(condensed.history);
       const mergedText =
         condensedTexts.length > 0 ? condensedTexts.join(" ") : `${a.text} ${b.text}`;
-      const mergedEntry: ReportHistoryEntry = {
-        text: mergedText,
-        sourceGroups: uniq([...a.sourceGroups, ...b.sourceGroups]),
-      };
-      history = [...history.slice(0, cursor), mergedEntry, ...history.slice(cursor + 2)];
+      history = [...history.slice(0, cursor), { text: mergedText }, ...history.slice(cursor + 2)];
+      historySources = [
+        ...historySources.slice(0, cursor),
+        uniq([...aSources, ...bSources]),
+        ...historySources.slice(cursor + 2),
+      ];
 
       // Advance the cursor; wrap to the oldest once it passes the last pair.
       cursor = cursor + 1 > lastPairStart ? 0 : cursor + 1;
@@ -356,11 +396,12 @@ async function foldGroup(
 
   return {
     reportId: group.timestampEnd,
-    sourceGroups: [...prev.sourceGroups, file],
+    sourceGroups: uniq(sourceGroups),
     groupCount: prev.groupCount + 1,
-    deterministic,
+    deterministic: buildReportDeterministic(mergedDeterministic, historySources),
     model: newModel,
     history,
     mergeCursor: cursor,
+    mergedFrom,
   };
 }

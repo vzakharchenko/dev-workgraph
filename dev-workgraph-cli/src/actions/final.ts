@@ -4,20 +4,20 @@
 import fs from "node:fs";
 import path from "node:path";
 import inquirer from "inquirer";
-import { loadConfig, repoPreparedDir, setOllamaConfig } from "../lib/config.js";
+import { loadConfig, repoFinishDir, repoPreparedDir, setOllamaConfig } from "../lib/config.js";
 import { resolveRepo } from "../lib/git.js";
 import { groupHistoryJsonSchema, roleNarrativeJsonSchema } from "../lib/model.js";
 import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
 import { loadProjectContext } from "../lib/project.js";
 import {
-  IMPACT_NARRATIVE_SYSTEM,
-  ROLE_NARRATIVE_SYSTEM,
   buildImpactNarrativePrompt,
   buildRoleNarrativePrompt,
+  IMPACT_NARRATIVE_SYSTEM,
   projectContextBlock,
+  ROLE_NARRATIVE_SYSTEM,
   withProjectContext,
 } from "../lib/prompts.js";
-import type { PreparedRecord } from "../lib/records.js";
+import type { FinishRecord, PreparedRecord } from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
 
 /**
@@ -28,7 +28,7 @@ export interface FinalOptions {
   repo: string;
   /** Pre-written Q&A as JSON (non-interactive). */
   answersFile?: string;
-  /** Output markdown path (default: ./RESUME.<project>.md). */
+  /** Output markdown path (default: ./RECONSTRUCTION.<project>.md). */
   output?: string;
   /** Ollama base URL override. */
   url?: string;
@@ -36,6 +36,8 @@ export interface FinalOptions {
   model?: string;
   /** Re-collect answers and overwrite the markdown file. */
   force?: boolean;
+  /** Operate on a defined review period's data instead of the repo's all-time data. */
+  period?: string;
 }
 
 interface QA {
@@ -44,7 +46,9 @@ interface QA {
 }
 
 const asStringArray = (value: unknown): string[] =>
-  Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && v.length > 0) : [];
+  Array.isArray(value)
+    ? value.filter((v): v is string => typeof v === "string" && v.length > 0)
+    : [];
 
 /** Returns the latest prepared record with its file path, or null. */
 function latestPrepared(dir: string): { file: string; record: PreparedRecord } | null {
@@ -55,18 +59,20 @@ function latestPrepared(dir: string): { file: string; record: PreparedRecord } |
     .sort((a, b) => Number.parseInt(b, 10) - Number.parseInt(a, 10));
   const file = files[0];
   if (!file) return null;
-  return { file, record: JSON.parse(fs.readFileSync(path.join(dir, file), "utf8")) as PreparedRecord };
+  return {
+    file,
+    record: JSON.parse(fs.readFileSync(path.join(dir, file), "utf8")) as PreparedRecord,
+  };
 }
 
 /** Loads Q&A from a JSON file (accepts an array or `{ answers: [...] }`). */
 function readAnswersFile(p: string, questions: string[]): QA[] {
   const parsed = JSON.parse(fs.readFileSync(p, "utf8")) as unknown;
   const arr = Array.isArray(parsed) ? parsed : ((parsed as { answers?: unknown }).answers ?? []);
-  const pairs = (arr as { question?: string; answer?: string }[]).map((x, i) => ({
+  return (arr as { question?: string; answer?: string }[]).map((x, i) => ({
     question: x.question ?? questions[i] ?? `Question ${i + 1}`,
     answer: x.answer ?? "",
   }));
-  return pairs;
 }
 
 /** Collects answers interactively, one question at a time (multi-line editor). */
@@ -87,23 +93,25 @@ async function collectAnswers(questions: string[]): Promise<QA[]> {
 
 /**
  * Closes the loop: collect human answers to the prepared questions, produce a
- * Role Narrative, and write RESUME.<project>.md to the current directory.
+ * Role Narrative, and write RECONSTRUCTION.<project>.md to the current directory.
  * @param options - Resolved command options.
  */
 export async function final(options: FinalOptions): Promise<void> {
   const repoPath = resolveRepo(options.repo);
 
-  const project = loadProjectContext(repoPath);
+  const project = loadProjectContext(repoPath, options.period);
   if (!project) {
     console.error("✖ No project context. Run `dev-workgraph init` first.");
     process.exitCode = 1;
     return;
   }
 
-  const preparedDir = repoPreparedDir(repoPath);
+  const preparedDir = repoPreparedDir(repoPath, options.period);
   const latest = latestPrepared(preparedDir);
   if (!latest) {
-    console.log(`No prepared narrative found for ${repoPath}. Run \`dev-workgraph prepare\` first.`);
+    console.log(
+      `No prepared narrative found for ${repoPath}. Run \`dev-workgraph prepare\` first.`,
+    );
     return;
   }
   const prepared = latest.record;
@@ -162,7 +170,7 @@ export async function final(options: FinalOptions): Promise<void> {
   const narrative = asStringArray(result.narrative).slice(0, 4);
   console.log(`ok (${narrative.length} bullets)`);
 
-  // Step 3 — assemble RESUME.<project>.md in the current working directory.
+  // Step 3 — assemble RECONSTRUCTION.<project>.md in the current working directory.
   const projectName = path.basename(repoPath);
   const role = project.role;
   const p = project.profile;
@@ -191,9 +199,38 @@ export async function final(options: FinalOptions): Promise<void> {
     ...qa.flatMap((x) => [`**Q:** ${x.question}`, `**A:** ${x.answer || "(no answer)"}`, ""]),
   ].join("\n");
 
+  // Period results get a suffixed filename so a year review never overwrites the
+  // repo's all-time RECONSTRUCTION.<project>.md.
+  const defaultName = options.period
+    ? `RECONSTRUCTION.${projectName}.${options.period}.md`
+    : `RECONSTRUCTION.${projectName}.md`;
   const outPath = options.output
     ? path.resolve(options.output)
-    : path.join(process.cwd(), `RESUME.${projectName}.md`);
+    : path.join(process.cwd(), defaultName);
   fs.writeFileSync(outPath, `${md}\n`, "utf8");
   console.log(`\n✅ Wrote ${outPath}`);
+
+  // Step 4 — archive the result under the repo's finish dir: a copy of the
+  // markdown plus a JSON record that links back to the source prepared file.
+  const finishDir = repoFinishDir(repoPath, options.period);
+  fs.mkdirSync(finishDir, { recursive: true });
+  const finishMdPath = path.join(finishDir, `${prepared.preparedId}.md`);
+  const finishJsonPath = path.join(finishDir, `${prepared.preparedId}.json`);
+  fs.writeFileSync(finishMdPath, `${md}\n`, "utf8");
+
+  const finishRecord: FinishRecord = {
+    finishId: prepared.preparedId,
+    sourcePrepared: latest.file,
+    sourceReport: prepared.sourceReport,
+    project: projectName,
+    role,
+    technologies: prepared.model.technologies,
+    history: impactHistory,
+    narrative,
+    answers: qa,
+    outputMarkdown: path.basename(finishMdPath),
+    provenance: { model, generatedAt: new Date().toISOString() },
+  };
+  fs.writeFileSync(finishJsonPath, `${JSON.stringify(finishRecord, null, 2)}\n`, "utf8");
+  console.log(`✅ Archived to ${finishDir}`);
 }

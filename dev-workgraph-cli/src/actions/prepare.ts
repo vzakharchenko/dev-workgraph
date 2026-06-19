@@ -6,24 +6,24 @@ import path from "node:path";
 import { loadConfig, repoPreparedDir, repoReportsDir, setOllamaConfig } from "../lib/config.js";
 import { resolveRepo } from "../lib/git.js";
 import {
-  type Signal,
   groupHistoryJsonSchema,
   mergeTechnologies,
   prepareQuestionsJsonSchema,
   prepareReasonsJsonSchema,
   prepareTechnologiesJsonSchema,
+  type Signal,
 } from "../lib/model.js";
 import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
 import { loadProjectContext } from "../lib/project.js";
 import {
-  PREPARE_HISTORY_SYSTEM,
-  PREPARE_QUESTIONS_SYSTEM,
-  PREPARE_REASONS_SYSTEM,
-  PREPARE_TECH_SYSTEM,
   buildPrepareHistoryPrompt,
   buildPrepareQuestionsPrompt,
   buildPrepareReasonsPrompt,
   buildPrepareTechPrompt,
+  PREPARE_HISTORY_SYSTEM,
+  PREPARE_QUESTIONS_SYSTEM,
+  PREPARE_REASONS_SYSTEM,
+  PREPARE_TECH_SYSTEM,
   projectContextBlock,
   withProjectContext,
 } from "../lib/prompts.js";
@@ -42,10 +42,14 @@ export interface PrepareOptions {
   model?: string;
   /** Regenerate even if a prepared narrative for the latest report exists. */
   force?: boolean;
+  /** Operate on a defined review period's data instead of the repo's all-time data. */
+  period?: string;
 }
 
 const asStringArray = (value: unknown): string[] =>
-  Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && v.length > 0) : [];
+  Array.isArray(value)
+    ? value.filter((v): v is string => typeof v === "string" && v.length > 0)
+    : [];
 
 /** Returns the latest report (highest reportId) with its file name, or null. */
 function latestReport(reportsDir: string): { file: string; record: ReportRecord } | null {
@@ -56,7 +60,10 @@ function latestReport(reportsDir: string): { file: string; record: ReportRecord 
     .sort((a, b) => Number.parseInt(b, 10) - Number.parseInt(a, 10));
   const file = files[0];
   if (!file) return null;
-  return { file, record: JSON.parse(fs.readFileSync(path.join(reportsDir, file), "utf8")) as ReportRecord };
+  return {
+    file,
+    record: JSON.parse(fs.readFileSync(path.join(reportsDir, file), "utf8")) as ReportRecord,
+  };
 }
 
 /**
@@ -66,21 +73,21 @@ function latestReport(reportsDir: string): { file: string; record: ReportRecord 
 export async function prepare(options: PrepareOptions): Promise<void> {
   const repoPath = resolveRepo(options.repo);
 
-  const project = loadProjectContext(repoPath);
+  const project = loadProjectContext(repoPath, options.period);
   if (!project) {
     console.error("✖ No project context. Run `dev-workgraph init` first.");
     process.exitCode = 1;
     return;
   }
 
-  const latest = latestReport(repoReportsDir(repoPath));
+  const latest = latestReport(repoReportsDir(repoPath, options.period));
   if (!latest) {
     console.log(`No report found for ${repoPath}. Run \`dev-workgraph report\` first.`);
     return;
   }
   const report = latest.record;
 
-  const preparedDir = repoPreparedDir(repoPath);
+  const preparedDir = repoPreparedDir(repoPath, options.period);
   const preparedFile = path.join(preparedDir, `${report.reportId}.json`);
   if (!options.force && fs.existsSync(preparedFile)) {
     console.log(`Prepared narrative already exists (${preparedFile}). Use --force to regenerate.`);
@@ -98,7 +105,9 @@ export async function prepare(options: PrepareOptions): Promise<void> {
   const projectBlock = projectContextBlock(project);
   const generatedAt = new Date().toISOString();
   const m = report.model;
-  console.log(`Preparing narrative from ${latest.file} (${report.groupCount} groups) with "${model}"\n`);
+  console.log(
+    `Preparing narrative from ${latest.file} (${report.groupCount} groups) with "${model}"\n`,
+  );
 
   // Step 1 — concatenate report history (deterministic).
   const rawHistory = report.history.map((h) => h.text).join("\n");
@@ -111,7 +120,11 @@ export async function prepare(options: PrepareOptions): Promise<void> {
     system: withProjectContext(projectBlock, PREPARE_HISTORY_SYSTEM),
     user: buildPrepareHistoryPrompt(
       rawHistory,
-      { technical: m.technicalSignal, architecture: m.architectureSignal, security: m.securitySignal },
+      {
+        technical: m.technicalSignal,
+        architecture: m.architectureSignal,
+        security: m.securitySignal,
+      },
       m.changeTypes,
     ),
     schema: groupHistoryJsonSchema(),
@@ -192,7 +205,9 @@ export async function prepare(options: PrepareOptions): Promise<void> {
   if (questions.length === 0) {
     console.log("(none)");
   } else {
-    questions.forEach((q, i) => console.log(`${i + 1}. ${q}`));
+    questions.forEach((q, i) => {
+      console.log(`${i + 1}. ${q}`);
+    });
   }
   console.log("──────────────────────────────────────────────────────────");
 

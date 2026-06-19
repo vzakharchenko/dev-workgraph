@@ -48,6 +48,34 @@ export interface PreparedRecord {
 }
 
 /**
+ * The finish artifact on disk (written by `final` to
+ * `~/.workgraph/data/repos/<repo-id>/finish/`): the assembled result plus a link
+ * back to the source prepared record. Sits alongside a copy of the result markdown.
+ */
+export interface FinishRecord {
+  finishId: number;
+  /** Prepared file this result was built from (no commit hashes). */
+  sourcePrepared: string;
+  /** The report the prepared record was distilled from (traceability). */
+  sourceReport: string;
+  /** Repository basename. */
+  project: string;
+  role: string;
+  technologies: string[];
+  /** The refined "Your IMPACT" first-person narrative. */
+  history: string;
+  /** The four Role Narrative impact bullets. */
+  narrative: string[];
+  answers: { question: string; answer: string }[];
+  /** File name of the result markdown written next to this record. */
+  outputMarkdown: string;
+  provenance: {
+    model: string;
+    generatedAt: string;
+  };
+}
+
+/**
  * Project context captured by `init`, grounding every later LLM call.
  * Stored at `~/.workgraph/data/repos/<repo-id>/project.json`.
  */
@@ -116,7 +144,7 @@ export interface GroupTiers {
 /**
  * The `groups` block: all member hashes plus their deterministic tier partition.
  */
-export interface GroupsBlock {
+interface GroupsBlock {
   commits: string[];
   tiers: GroupTiers;
 }
@@ -127,7 +155,7 @@ export interface GroupsBlock {
  * `summary`, plus three tiers of **context bullets** (not commit hashes):
  * `hiContext` captures the substantial work, `lowContext` the routine background.
  */
-export interface GroupModelLayer extends Omit<ModelLayer, "summary"> {
+interface GroupModelLayer extends Omit<ModelLayer, "summary"> {
   history: string;
   hiContext: string[];
   mediumContext: string[];
@@ -148,14 +176,22 @@ export interface GroupRecord {
 }
 
 /**
- * One running history entry inside a cumulative report, with provenance: the
- * group files that created or rewrote it. This is a fuller account of what was
- * done, not a terse summary.
+ * One running history entry inside a cumulative report. Provenance (which group
+ * files fed the entry) lives in `deterministic.historySource`, not here — the
+ * model layer carries text only.
  */
 export interface ReportHistoryEntry {
   text: string;
-  /** Group file names that contributed to this entry, e.g. ["1579390000.json"]. */
-  sourceGroups: string[];
+}
+
+/**
+ * Report-specific deterministic evidence: file/churn rollup plus per-entry
+ * provenance. `historySource` is parallel to `history` — same length, same
+ * indices: `historySource[i]` lists the group files that contributed to
+ * `history[i]` (≤ `MAX_HISTORY_ENTRIES`).
+ */
+export interface ReportDeterministicLayer extends DeterministicLayer {
+  historySource: string[][];
 }
 
 /**
@@ -192,11 +228,12 @@ export interface ReportModelLayer {
  */
 export interface ReportRecord {
   reportId: number;
+  /** Every group file folded into this report (cumulative, including routine-only folds). */
   sourceGroups: string[];
   groupCount: number;
-  deterministic: DeterministicLayer;
+  deterministic: ReportDeterministicLayer;
   model: ReportModelLayer;
-  /** Running history of distinct work (with provenance), rewritten as the report grows. */
+  /** Running history of distinct work (text only; provenance in deterministic.historySource). */
   history: ReportHistoryEntry[];
   /**
    * Rolling compaction cursor: 0-based index of the first entry in the next pair
@@ -206,4 +243,17 @@ export interface ReportRecord {
    * legacy records ⇒ treated as 0.
    */
   mergeCursor?: number;
+  /**
+   * The fold that produced this report: the prior report it built on and the
+   * group file folded into it. Absent on a seeded (first) report — nothing was
+   * merged.
+   */
+  mergedFrom?: {
+    /** reportId of the prior report this fold built on. */
+    previousReportId: number;
+    /** File name of the prior report, e.g. "1579390000.json". */
+    previousReportFile: string;
+    /** Group file folded into the prior report, e.g. "1579390500.json". */
+    groupFile: string;
+  };
 }

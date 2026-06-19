@@ -12,12 +12,22 @@ import {
   setOllamaConfig,
   setRepoConfig,
 } from "../lib/config.js";
-import {resolveRepo} from "../lib/git.js";
-import {aggregateDeterministic, groupByGap, loadCommitRecords, partitionTiers,} from "../lib/grouping.js";
-import {enforceSignalReasons, groupClassifyJsonSchema, groupHistoryJsonSchema, mergeTechnologies, type ModelLayer,} from "../lib/model.js";
-import {chatJson, resolveBaseUrl} from "../lib/ollama.js";
+import { resolveRepo } from "../lib/git.js";
+import {
+  aggregateDeterministic,
+  groupByGap,
+  loadCommitRecords,
+  partitionTiers,
+} from "../lib/grouping.js";
+import {
+  enforceSignalReasons,
+  groupClassifyJsonSchema,
+  groupHistoryJsonSchema,
+  type ModelLayer,
+  mergeTechnologies,
+} from "../lib/model.js";
+import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
 import { loadProjectContext } from "../lib/project.js";
-import { resolveModel } from "../lib/select.js";
 import {
   buildGroupClassifyPrompt,
   buildGroupComposePrompt,
@@ -27,11 +37,14 @@ import {
   projectContextBlock,
   withProjectContext,
 } from "../lib/prompts.js";
-import type {CommitRecord, GroupRecord} from "../lib/records.js";
+import type { CommitRecord, GroupRecord } from "../lib/records.js";
+import { resolveModel } from "../lib/select.js";
 
 /** Coerces an LLM-provided value into an array of non-empty strings. */
 const asStringArray = (value: unknown): string[] =>
-  Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && v.length > 0) : [];
+  Array.isArray(value)
+    ? value.filter((v): v is string => typeof v === "string" && v.length > 0)
+    : [];
 
 const DEFAULT_THRESHOLD_DAYS = 7;
 const DEFAULT_MAX_COMMITS = 20;
@@ -54,6 +67,8 @@ export interface CommitGroupOptions {
   force?: boolean;
   /** Only process the first N groups that need summarizing (useful for trials). */
   limit?: number;
+  /** Operate on a defined review period's data instead of the repo's all-time data. */
+  period?: string;
 }
 
 /**
@@ -137,7 +152,7 @@ function buildGroupRecord(members: CommitRecord[]): GroupRecord {
  */
 export async function commitGroup(options: CommitGroupOptions): Promise<void> {
   const repoPath = resolveRepo(options.repo);
-  const commits = loadCommitRecords(repoCommitsDir(repoPath));
+  const commits = loadCommitRecords(repoCommitsDir(repoPath, options.period));
   if (commits.length === 0) {
     console.log(`No exported commits found for ${repoPath}. Run \`dev-workgraph export\` first.`);
     return;
@@ -153,7 +168,7 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
   });
   setOllamaConfig({ baseUrl, commitModel: model });
 
-  const groupsDir = repoGroupsDir(repoPath);
+  const groupsDir = repoGroupsDir(repoPath, options.period);
   fs.mkdirSync(groupsDir, { recursive: true });
 
   const sessions = groupByGap(commits, thresholdDays, maxCommits);
@@ -163,7 +178,7 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
   );
   console.log(`Using model "${model}" at ${baseUrl}\n`);
 
-  const projectBlock = projectContextBlock(loadProjectContext(repoPath));
+  const projectBlock = projectContextBlock(loadProjectContext(repoPath, options.period));
   if (!projectBlock) {
     console.log("⚠️  No project context (run `dev-workgraph init`); grouping without it.\n");
   }

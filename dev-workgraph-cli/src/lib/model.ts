@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /** Allowed coarse signal levels. No numeric scores (MVP §2). */
-export const SIGNALS = ["low", "medium", "high"] as const;
+const SIGNALS = ["low", "medium", "high"] as const;
 export type Signal = (typeof SIGNALS)[number];
 
 /** Returns the higher of two signal levels on the low < medium < high scale. */
@@ -11,7 +11,7 @@ export function maxSignal(a: Signal, b: Signal): Signal {
 }
 
 /** Allowed change-type tags (MVP §2). */
-export const CHANGE_TYPES = [
+const CHANGE_TYPES = [
   "feature",
   "bugfix",
   "refactoring",
@@ -262,7 +262,7 @@ export function routineCheckJsonSchema(): Record<string, unknown> {
   };
 }
 
-/** JSON Schema for the "rewrite all running history entries" session. */
+/** JSON Schema for the report history compaction session (text strings only). */
 export function reportHistoryJsonSchema(): Record<string, unknown> {
   return {
     type: "object",
@@ -271,7 +271,7 @@ export function reportHistoryJsonSchema(): Record<string, unknown> {
   };
 }
 
-/** JSON Schema for the "add the new session's history entry if it adds anything" session. */
+/** JSON Schema for add-if-new: `{ needed, text }` only — provenance is code-side. */
 export function reportNewHistoryJsonSchema(): Record<string, unknown> {
   return {
     type: "object",

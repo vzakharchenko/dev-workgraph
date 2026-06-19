@@ -8,15 +8,16 @@ import { loadConfig, repoProjectPath, setOllamaConfig, setRepoConfig } from "../
 import { resolveRepo } from "../lib/git.js";
 import { projectProfileJsonSchema, storyPrepareJsonSchema } from "../lib/model.js";
 import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
+import { resolvePeriodDefinition } from "../lib/periods.js";
 import { ROLES } from "../lib/project.js";
 import {
-  PROJECT_PROFILE_SYSTEM,
-  STORY_PREPARE_SYSTEM,
   buildProjectProfilePrompt,
   buildStoryPreparePrompt,
+  PROJECT_PROFILE_SYSTEM,
+  STORY_PREPARE_SYSTEM,
 } from "../lib/prompts.js";
-import { resolveModel } from "../lib/select.js";
 import type { ProjectContext, ProjectProfile } from "../lib/records.js";
+import { resolveModel } from "../lib/select.js";
 
 /**
  * Options for the `init` command.
@@ -34,10 +35,20 @@ export interface InitOptions {
   model?: string;
   /** Re-run both LLM sessions and overwrite an existing project.json. */
   force?: boolean;
+  /** Review-period label to scope this init under. */
+  period?: string;
+  /** Period start date, ISO `YYYY-MM-DD` (defines/updates the period). */
+  from?: string;
+  /** Period end date, ISO `YYYY-MM-DD` (defines/updates the period). */
+  to?: string;
+  /** Force period mode even when no `--period` was given (prompts for it). */
+  periodMode?: boolean;
 }
 
 const asStringArray = (value: unknown): string[] =>
-  Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && v.length > 0) : [];
+  Array.isArray(value)
+    ? value.filter((v): v is string => typeof v === "string" && v.length > 0)
+    : [];
 
 /** Resolves the role: flag (validated) or interactive picker. */
 export async function resolveRole(flagRole?: string): Promise<string> {
@@ -74,10 +85,39 @@ export async function resolveStory(flagStory?: string): Promise<string> {
  */
 export async function init(options: InitOptions): Promise<void> {
   const repoPath = resolveRepo(options.repo);
-  const file = repoProjectPath(repoPath);
+
+  // Resolve the optional review period (defines/persists from/to in config).
+  let period: string | undefined;
+  if (options.periodMode || options.period || options.from || options.to) {
+    const resolved = await resolvePeriodDefinition({
+      repoPath,
+      id: options.period,
+      from: options.from,
+      to: options.to,
+    });
+    period = resolved.id;
+    console.log(`Period "${period}": ${resolved.period.from} → ${resolved.period.to}`);
+  }
+
+  const file = repoProjectPath(repoPath, period);
 
   if (!options.force && fs.existsSync(file)) {
     console.log(`Project already initialized (${file}). Use --force to redo.`);
+    return;
+  }
+
+  // Period default: inherit the repo-level context instead of re-running the LLM.
+  // `--force` falls through to build a period-specific profile below.
+  if (period && !options.force) {
+    const base = repoProjectPath(repoPath);
+    if (!fs.existsSync(base)) {
+      throw new Error(
+        "No repo-level project context to inherit. Run `dev-workgraph init` (without --period) first, or pass --force to build a period-specific profile.",
+      );
+    }
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.copyFileSync(base, file);
+    console.log(`\n✅ Period "${period}" inherited project context\n   ${base}\n   → ${file}`);
     return;
   }
 

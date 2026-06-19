@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /** Area assigned to files that live at the repository root. */
-export const ROOT_AREA = "(root)";
+const ROOT_AREA = "(root)";
 
 /**
  * Maps a changed file to its project area: the top-level project folder it

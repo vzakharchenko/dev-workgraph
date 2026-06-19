@@ -1,24 +1,6 @@
 // SPDX-FileCopyrightText: 2025-2026 Vasyl Zakharchenko
 // SPDX-License-Identifier: Apache-2.0
 
-/**
- * Human-readable list of the noise patterns this filter recognizes.
- * Kept for disclosure in reports (MVP requires excluded files to be visible).
- */
-export const NOISE_PATTERNS = [
-  "node_modules/**",
-  "dist/**",
-  "build/**",
-  "target/**",
-  "coverage/**",
-  ".next/**",
-  "*.min.js",
-  "*.map",
-  "package-lock.json",
-  "yarn.lock",
-  "pnpm-lock.yaml",
-] as const;
-
 /** Directory names that mark generated/vendored content anywhere in the path. */
 const NOISE_DIRS = new Set(["node_modules", "dist", "build", "target", "coverage", ".next"]);
 
@@ -38,6 +20,4 @@ export function isNoise(file: string): boolean {
   if (NOISE_FILES.has(base)) return true;
   if (base.endsWith(".min.js")) return true;
   return base.endsWith(".map");
-
-
 }

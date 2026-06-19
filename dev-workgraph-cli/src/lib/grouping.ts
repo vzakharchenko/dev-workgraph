@@ -3,13 +3,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type {
-  CommitRecord,
-  DeterministicLayer,
-  GroupRecord,
-  GroupTiers,
-  Tier,
-} from "./records.js";
+import type { CommitRecord, DeterministicLayer, GroupRecord, GroupTiers, Tier } from "./records.js";
 
 const SECONDS_PER_DAY = 86400;
 
@@ -86,7 +80,10 @@ export function loadGroupRecords(groupsDir: string): { file: string; record: Gro
  * @param a - First layer.
  * @param b - Second layer.
  */
-export function mergeDeterministic(a: DeterministicLayer, b: DeterministicLayer): DeterministicLayer {
+export function mergeDeterministic(
+  a: DeterministicLayer,
+  b: DeterministicLayer,
+): DeterministicLayer {
   return {
     changedFiles: {
       added: uniqSorted([...a.changedFiles.added, ...b.changedFiles.added]),
