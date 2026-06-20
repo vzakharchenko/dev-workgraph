@@ -39,7 +39,9 @@
     "final:repo:notes": "node dist/cli.js run '../../Forge-Secure-Notes-for-Jira'",
     "run:vzakharchenko": "node dist/cli.js run '/Users/vasylzakharchenko/tempo/cl-bi-connectors' --force",
     "run:forge-sql-orm": "node dist/cli.js run '../../forge-sql-orm'",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "knip": "knip"
   },
   "dependencies": {
@@ -51,6 +53,8 @@
     "@types/node": "^22.19.21",
     "knip": "^6.17.1",
     "tsx": "^4.19.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "@vitest/coverage-v8": "^3.2.4",
+    "vitest": "^3.2.4"
   }
 }
