@@ -768,22 +768,30 @@ export const ROLE_NARRATIVE_SYSTEM = [
  * @param history - The prepared unified history.
  * @param reasons - The four collapsed signal reasons.
  * @param qa - The human's question-answer pairs.
+ * @param recalledContext - Optional `deepen` input: non-code context the developer recalled
+ *   this round (team, decisions, constraints, handoffs — not in Git). Shapes narrative
+ *   refinement; not proof of production impact unless stated in answers or this text.
+ *   Omitted for initial `final`.
  */
 export function buildRoleNarrativePrompt(
   history: string,
   reasons: string[],
   qa: { question: string; answer: string }[],
+  recalledContext?: string,
 ): string {
-  return [
-    "Prepared history:",
-    history || "(none)",
+  const blocks = ["Prepared history:", history || "(none)"];
+  if (recalledContext?.trim()) {
+    blocks.push("", "Recalled context from this deepen round (non-code):", recalledContext.trim());
+  }
+  blocks.push(
     "",
     "Signal reasons:",
     bulletList(reasons),
     "",
     "My answers to the open questions:",
     qa.map((p) => `Q: ${p.question}\nA: ${p.answer || "(no answer)"}`).join("\n\n") || "(none)",
-  ].join("\n");
+  );
+  return blocks.join("\n");
 }
 
 // `final` step: refine the prepared history into the "Your IMPACT" prose, now that
@@ -834,16 +842,141 @@ export const IMPACT_NARRATIVE_SYSTEM = [
  * Builds the `final` "Your IMPACT" refinement prompt.
  * @param history - The prepared unified history (reconstructed from Git).
  * @param qa - The human's question-answer pairs.
+ * @param recalledContext - Optional `deepen` input: non-code context the developer recalled
+ *   this round (team, decisions, constraints, handoffs — not in Git). Woven into IMPACT
+ *   where relevant without overclaiming. Omitted for initial `final`.
  */
 export function buildImpactNarrativePrompt(
   history: string,
   qa: { question: string; answer: string }[],
+  recalledContext?: string,
 ): string {
-  return [
-    "Prepared history (reconstructed from Git evidence):",
-    history || "(none)",
+  const blocks = ["Prepared history (reconstructed from Git evidence):", history || "(none)"];
+  if (recalledContext?.trim()) {
+    blocks.push(
+      "",
+      "Recalled context from this deepen round (non-code — weave in where relevant; do not overclaim):",
+      recalledContext.trim(),
+    );
+  }
+  blocks.push(
     "",
     "My answers to the open questions:",
     qa.map((p) => `Q: ${p.question}\nA: ${p.answer || "(no answer)"}`).join("\n\n") || "(none)",
+  );
+  return blocks.join("\n");
+}
+
+/**
+ * Merges prepare baseline history with the prior final's refined history — input stack for `deepen`.
+ */
+export function combinePreparedAndPriorHistory(
+  preparedHistory: string,
+  priorFinalHistory: string,
+): string {
+  const prepared = preparedHistory.trim();
+  const prior = priorFinalHistory.trim();
+  const blocks: string[] = [];
+  if (prepared) {
+    blocks.push("Baseline from prepare:", prepared);
+  }
+  if (prior) {
+    if (blocks.length > 0) blocks.push("");
+    blocks.push("Refined after prior final:", prior);
+  }
+  return blocks.join("\n").trim() || "(none)";
+}
+
+/**
+ * Builds the `deepen` IMPACT refinement prompt (prepare baseline + prior final history + all Q&A).
+ * @param preparedHistory - Unified history from the prepared record (Git-side baseline).
+ * @param priorFinalHistory - Refined history from the finish record being extended.
+ * @param qa - Cumulative question-answer pairs (prior rounds + this deepen round).
+ * @param recalledContext - Non-code context recalled this deepen round; shapes refinement,
+ *   not proof of production impact unless the developer stated that explicitly.
+ */
+export function buildDeepenImpactNarrativePrompt(
+  preparedHistory: string,
+  priorFinalHistory: string,
+  qa: { question: string; answer: string }[],
+  recalledContext?: string,
+): string {
+  const blocks = [
+    "History (prepare baseline, then prior final):",
+    combinePreparedAndPriorHistory(preparedHistory, priorFinalHistory),
+  ];
+  if (recalledContext?.trim()) {
+    blocks.push(
+      "",
+      "Recalled context from this deepen round (non-code — weave in where relevant; do not overclaim):",
+      recalledContext.trim(),
+    );
+  }
+  blocks.push(
+    "",
+    "My answers to the open questions:",
+    qa.map((p) => `Q: ${p.question}\nA: ${p.answer || "(no answer)"}`).join("\n\n") || "(none)",
+  );
+  return blocks.join("\n");
+}
+
+// `deepen`: four follow-up questions that must not repeat a prior round.
+export const DEEPEN_QUESTIONS_SYSTEM = [
+  "You produce EXACTLY FOUR NEW role-aware follow-up questions that recover human context Git",
+  "cannot show. First person framing for the developer ('I'). Return JSON",
+  '{ "questions": ["..." x4], "confidence": "low|medium|high" }.',
+  "You are given PROJECT CONTEXT (role + story + profile from project.json), newly recalled",
+  "human context (non-code memories about the project), combined history (prepare baseline plus",
+  "prior final refinement), the report's questions, signal reasons, and every question already",
+  "asked with its answer.",
+  "Use the recalled context to ask sharper questions about what it opens up — but do NOT treat",
+  "it as proof of production impact unless the developer stated that explicitly.",
+  "Write four questions about gaps STILL not covered after prior Q&A and the recalled context —",
+  "do NOT repeat, rephrase, or narrow the same angle as any prior question.",
+  "Target what remains unknown: production use, ownership vs maintenance, customer/product driver,",
+  "security boundary, handoff, constraints, or outcomes not yet stated.",
+  "Frame for the role in PROJECT CONTEXT. confidence = confidence in the narrative so far.",
+].join("\n");
+
+/**
+ * Builds the `deepen` follow-up-questions user prompt.
+ * @param preparedHistory - Unified history from the prepared record.
+ * @param priorFinalHistory - Refined history from the latest finish archive.
+ * @param reasons - Four collapsed signal reasons from the prepared record.
+ * @param reportQuestions - Report-level questions (context only; must not be repeated).
+ * @param priorQuestions - Prepared questions from the initial round (must not be repeated).
+ * @param priorQa - All Q&A pairs from prior finish rounds.
+ * @param recalledContext - Non-code context recalled this deepen round; used to shape sharper
+ *   follow-up questions, not treated as proven fact or production impact by default.
+ */
+export function buildDeepenQuestionsPrompt(
+  preparedHistory: string,
+  priorFinalHistory: string,
+  reasons: string[],
+  reportQuestions: string[],
+  priorQuestions: string[],
+  priorQa: { question: string; answer: string }[],
+  recalledContext: string,
+): string {
+  return [
+    "Newly recalled context (non-code — use to shape questions, not as proven fact):",
+    recalledContext.trim() || "(none provided)",
+    "",
+    "Combined history (prepare baseline, then prior final):",
+    combinePreparedAndPriorHistory(preparedHistory, priorFinalHistory),
+    "",
+    "Signal reasons (4):",
+    bulletList(reasons),
+    "",
+    "Report questions (for context — do not repeat):",
+    bulletList(reportQuestions),
+    "",
+    "Prepared questions already asked (do not repeat):",
+    bulletList(priorQuestions),
+    "",
+    "Prior Q&A (do not re-ask these angles):",
+    priorQa.length > 0
+      ? priorQa.map((p) => `Q: ${p.question}\nA: ${p.answer || "(no answer)"}`).join("\n\n")
+      : "(none)",
   ].join("\n");
 }

@@ -4,12 +4,14 @@ import path from "node:path";
 import {
   repoCommitsDir,
   repoGroupsDir,
+  repoFinishDir,
   repoPreparedDir,
   repoProjectPath,
   repoReportsDir,
 } from "../../src/lib/config.js";
 import type {
   CommitRecord,
+  FinishRecord,
   GroupRecord,
   PreparedRecord,
   ProjectContext,
@@ -135,6 +137,41 @@ export function seedPrepared(repoPath: string, reportFile: string, period?: stri
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${record.preparedId}.json`);
   fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
+  return file;
+}
+
+export function seedFinish(
+  repoPath: string,
+  preparedFile: string,
+  overrides: Partial<FinishRecord> = {},
+  period?: string,
+): string {
+  const record: FinishRecord = {
+    finishId: 1_700_000_000,
+    sourcePrepared: preparedFile,
+    sourceReport: "1700000000.json",
+    round: 1,
+    version: 1,
+    project: path.basename(repoPath),
+    role: "Senior Developer",
+    technologies: ["TypeScript"],
+    history: "I implemented the feature in staging.",
+    narrative: ["Bullet one", "Bullet two", "Bullet three", "Bullet four"],
+    answers: [
+      { question: "Was it production?", answer: "Staging only." },
+      { question: "Who designed it?", answer: "I did." },
+      { question: "Any security impact?", answer: "No." },
+      { question: "Customer driven?", answer: "Internal." },
+    ],
+    outputMarkdown: "1700000000.md",
+    provenance: { model: "test-model", generatedAt: "2026-01-01T00:00:00Z" },
+    ...overrides,
+  };
+  const dir = repoFinishDir(repoPath, period);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${record.finishId}.json`);
+  fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
+  fs.writeFileSync(path.join(dir, `${record.finishId}.md`), "# finish\n");
   return file;
 }
 

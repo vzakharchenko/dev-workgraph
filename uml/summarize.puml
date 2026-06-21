@@ -1,0 +1,508 @@
+@startuml summarize-overview
+!theme plain
+skinparam shadowing false
+skinparam ArrowColor #555555
+
+title dev-workgraph — **summarize** (§3)\nPer-commit **model layer** via Ollama **commitModel**
+
+legend top left
+  |= Tag |= Meaning |
+  | **(D) input** | From **evidence** — not modified |
+  | **(M:c) model** | Interpretation — may be wrong |
+  | **(D) post** | CLI post-processing after LLM |
+  | **(H) init** | project.json grounding |
+endlegend
+
+rectangle "**Precondition**" #FFF8E1 {
+  card "**evidence** done\ncommits/<ts>/<hash>.patch + .json\nmodel = null" as EVID
+  card "**init** (recommended)\nproject.json" as INIT
+}
+
+rectangle "**summarize (M:c)**" #FFF3E0 {
+  card "Read patch + deterministic\nfrom existing .json" as IN
+  card "Ollama chatJson\n1 session per commit" as LLM
+  card "**model layer** written\ninto same .json" as OUT
+}
+
+EVID --> IN
+INIT ..> LLM : project context block\n-> system prompt
+IN --> LLM
+LLM --> OUT
+
+note bottom of OUT
+  **Per commit the model layer adds:**
+  • **signals** evaluated (technical / architecture / security)
+  • **questions[]** formed (role-aware)
+  • summary, changeTypes, technologies, confidence
+  ----
+  **Append-only:** skips commits with model already set
+  unless **--force**. Failed commits keep model: null.
+  **--limit N** for trials. **--period** scopes data dir.
+end note
+
+@enduml
+
+
+@startuml summarize-command
+!theme plain
+skinparam shadowing false
+skinparam ActivityBorderColor #888888
+skinparam NoteBackgroundColor #FFF3E0
+
+title **summarize** — Full command flow
+
+start
+
+:Resolve repo → repo-id;\ncommits dir = commits/ or periods/<id>/commits/;
+
+:List all commits/**/*.json;
+
+if (None found?) then (yes)
+  #Pink:Run **evidence** first;
+  stop
+else (no)
+endif
+
+:Pick **commitModel** (Ollama);\n--model overrides;\nsaved in config.ollama.commitModel;
+
+:loadProjectContext(repo [, period]);
+note right
+  Prefer periods/<id>/project.json,
+  fallback to repo-level project.json
+end note
+
+if (project.json missing?) then (yes)
+  #FFF9C4:⚠️ Warn;\nempty project context block;
+else (no)
+  :Build projectContextBlock → prepend to system;
+endif
+
+:system = projectContextBlock + COMMIT_SUMMARY_SYSTEM;
+
+:Build **pending** list;
+note right
+  Skip if record.model set (unless --force)
+  Optional --limit N on pending slice
+end note
+
+if (pending empty?) then (yes)
+  stop
+else (no)
+endif
+
+partition "Per commit" {
+  :Read .json record + sibling .patch;
+
+  :buildCommitUserPrompt(record, patch);
+  note right
+    Truncate patch at **16000 chars** if needed
+    → provenance.patchTruncated
+  end note
+
+  repeat
+    :Ollama POST /api/chat\nformat = modelJsonSchema();
+    :extract JSON from response\n(parse fences / prose);
+    :schema-validate parsed object;
+  repeat while (fail?) is (yes)
+  ->no;
+  note right: Up to **3 attempts** with backoff\n(HTTP, parse, validation)
+
+  if (All attempts failed?) then (yes)
+    :Log failed;\n**model stays null**;
+  else (success)
+    :Evaluate **signals** + **questions[]**\nfrom model JSON output;
+    :**enforceSignalReasons** (D post);
+    :Attach **provenance** (D post):\nmodel, generatedAt, patchTruncated;
+    :Write model into .json;\n**deterministic unchanged**;
+  endif
+}
+
+#LightGreen:✅ Summarized N, failed M;
+
+stop
+
+@enduml
+
+
+@startuml summarize-model-layer
+!theme plain
+skinparam shadowing false
+skinparam classBackgroundColor #FAFAFA
+
+title **ModelLayer** — complete schema (§3)\nWritten into commits/<ts>/<hash>.json · interpretation, not evidence
+
+class "CommitRecord\n(after summarize)" as CR {
+  commitHash, timestamp, title, author
+  deterministic : DeterministicLayer **(D, unchanged)**
+  model : ModelLayer **(M:c)**
+}
+
+class "ModelLayer\n**(M:c) — from Ollama**" as MOD #FFF3E0 {
+  ..
+  **Narrative**
+  --
+  **summary** : string
+  Plain-language WHAT the diff changed.
+  NOT importance, impact, or production use.
+  PATCH is source of truth, not commit message.
+  ROUTINE_RULE: deps/CI/format → name plainly,
+  no version numbers; substantive only if mixed.
+  --
+  **changeTypes[]** : enum tags
+  feature | bugfix | refactoring | security
+  | infrastructure | testing | configuration
+  | developer-tooling | architecture
+  | documentation | deployment
+  (zero or more)
+  --
+  **technologies[]** : string[]
+  Languages, frameworks, tools, protocols
+  **visible in the patch only** — no guessing.
+  --
+  ..
+  **Signals** (low | medium | high only)
+  --
+  **technicalSignal**
+  Technical depth / complexity of the change
+  --
+  **architectureSignal**
+  Effect on structure, boundaries, modules,
+  system design
+  --
+  **securitySignal**
+  Authn, authz, identity, data protection,
+  permissions, platform security
+  --
+  **signalReasons** { technical, architecture, security }
+  One-line justification **grounded in patch**.
+  Required when signal ≠ low.
+  --
+  ..
+  **Missing context (primary output)**
+  --
+  **questions[]** : string[]
+  What a human must answer — Git cannot know.
+  Framed by **role** (via project context).
+  Do not repeat story/README facts.
+  Unknowns go here, never inferred in summary.
+  --
+  **confidence** : low | medium | high
+  Model's confidence in its own summary
+}
+
+class "provenance\n**(D) — CLI attaches**" as PROV #E3F2FD {
+  model : Ollama model name used
+  generatedAt : ISO timestamp
+  patchTruncated : boolean
+}
+
+MOD *-- PROV
+
+note right of MOD
+  **Not produced by the model** — added after generation.
+  On validation failure after 3 retries: entire model layer omitted.
+end note
+
+CR *-- MOD
+
+@enduml
+
+
+@startuml summarize-prompts
+!theme plain
+skinparam shadowing false
+
+title **summarize** — Prompt assembly\n(system + user -> model JSON)
+
+package "**System prompt**" #FFFDE7 {
+  component "projectContextBlock\n(from init, optional)" as CTX
+  component "COMMIT_SUMMARY_SYSTEM" as SYS
+}
+
+package "**User prompt**\nbuildCommitUserPrompt (D inputs)" #E8F5E9 {
+  component "Metadata" as META
+  component "Patch body" as PATCH
+}
+
+package "**Ollama output**" as OUT #FFF3E0 {
+  component "commitModel" as LLM
+  [ModelLayer JSON\nschema-validated]
+}
+
+note right of CTX
+  Developer role
+  profile.summary, domains, stack, themes
+  story.preparedContext
+  Frame questions for role
+  Avoid questions background already answers
+  NEVER inflate impact because of context
+end note
+
+note right of SYS
+  Patch = SOURCE OF TRUTH (not commit message)
+  summary / technologies / signals / questions rules
+  No team / they / we — one developer's commit
+  No production / ownership / business impact claims
+  ROUTINE_RULE (shared across pipeline)
+end note
+
+note right of META
+  Commit message — CONTEXT ONLY, may be wrong
+  Areas touched (from deterministic)
+  Files added / modified / deleted / renamed
+  Churn +lines / -lines
+end note
+
+note right of PATCH
+  diff block (max 16000 chars)
+  deterministic layer is read-only input —
+  summarize never rewrites changedFiles, areas, churn
+end note
+
+CTX --> SYS : withProjectContext()
+SYS --> LLM
+META --> LLM
+PATCH --> LLM
+
+LLM --> OUT
+
+@enduml
+
+
+@startuml summarize-init-context
+!theme plain
+skinparam shadowing false
+
+title How **init** shapes the **model layer** (not deterministic)
+
+map "Role -> question emphasis (ROLE_QUESTION_EMPHASIS)" as ROLES {
+  Principal Developer => system-wide trade-offs, cross-team boundaries,\nlong-term architectural consequences, org-scale production adoption
+  Staff Developer => design ownership across subsystems,\nplatform direction, integration with adjacent systems
+  Senior Developer => feature/design ownership, customer or product driver,\nreplacing manual processes, mentoring or review scope
+  Junior Developer => assigned vs self-directed work, learning context,\nscope of autonomy, who reviewed or unblocked
+}
+
+rectangle "init → project.json" as PJ #FFF8E1
+rectangle "Influences via system prompt" as INF #FFFDE7 {
+  card "**summary** — interpret patch\nknowing what project is" as S
+  card "**questions[]** — role-aware gaps\n(skip story/README facts)" as Q
+  card "**NOT** used to inflate signals\nor claim impact" as X
+}
+
+PJ --> INF
+ROLES ..> Q
+
+note bottom
+  Without init: warn + summarize with empty context block.
+  Role shapes **which gaps to ask about**, not how impressive work sounds.
+end note
+
+@enduml
+
+
+@startuml summarize-signals
+!theme plain
+skinparam shadowing false
+skinparam NoteBackgroundColor #FFF3E0
+
+title **Signals** — generation, validation, downstream use
+
+rectangle "Model produces (M:c)" as GEN {
+  card "technicalSignal" as TS
+  card "architectureSignal" as AS
+  card "securitySignal" as SS
+  card "signalReasons.{technical,\narchitecture, security}" as SR
+}
+
+rectangle "**enforceSignalReasons (D post)**" as ENF #E3F2FD {
+  card "If signal ≠ low AND reason empty\n→ demote signal to **low**" as R
+}
+
+rectangle "Downstream (deterministic)" as DOWN #E8F5E9 {
+  card "**tierOf(commit)**\nfor commit-group groups.tiers" as TIER
+}
+
+GEN --> ENF
+ENF --> DOWN
+
+note as N1
+  **Scale:** low < medium < high only — **no numeric scores**
+  Non-low **must** cite patch in signalReasons
+  model: null → tier **low**
+end note
+
+note as N2
+  **tierOf rules:**
+  • **hi** — at least one signal is high
+  • **medium** — at least one medium, none high
+  • **low** — all low, OR model is null
+  Used by commit-group to weight session history depth
+end note
+
+@enduml
+
+
+@startuml summarize-questions
+!theme plain
+skinparam shadowing false
+skinparam NoteBackgroundColor #FCE4EC
+
+title **questions[]** — primary model output at commit level (§3, §8)
+
+rectangle "**Purpose**" as P {
+  card "Recover context Git **cannot** store:\nownership, intent, production use, customer driver"
+}
+
+rectangle "**Prompt rules (COMMIT_SUMMARY_SYSTEM)**" as RULES {
+  card "Never claim unknowns in summary — put in questions"
+  card "Message vs patch mismatch → question the gap"
+  card "Role emphasis from projectContextBlock"
+  card "Skip facts already in preparedContext / profile"
+}
+
+rectangle "**Typical probes**" as EX {
+  card "Used in production or experimental?"
+  card "Your own design or maintenance of someone else's?"
+  card "Customer-driven or internal tooling?"
+  card "Part of a security boundary?"
+  card "Replacing a manual process?"
+}
+
+rectangle "**Downstream**" as DOWN #E3F2FD {
+  card "commit-group — session questions\n(merge + reframe)"
+  card "report — dedupe across folds"
+  card "prepare — collapse to 4 questions"
+  card "final — human answers → RECONSTRUCTION.md"
+}
+
+P --> RULES
+RULES --> EX
+EX --> DOWN
+
+note bottom
+  **Most important field** in the model layer at this stage.
+  Summaries describe *what* changed; questions ask *what Git cannot know*.
+end note
+
+@enduml
+
+
+@startuml summarize-sequence
+!theme plain
+skinparam shadowing false
+
+title Sequence — **summarize** per commit
+
+actor "Developer" as DEV
+database "commits/<ts>/\n.json + .patch" as DISK
+database "project.json" as PJ
+participant "**summarize**" as SUM
+participant "Ollama\ncommitModel" as LLM
+
+DEV -> SUM : dev-workgraph summarize ./repo\n[--period] [--force] [--limit N]
+
+SUM -> DISK : list .json files
+SUM -> PJ : loadProjectContext()
+alt missing
+  SUM --> DEV : ⚠️ no project context
+end
+
+loop each pending commit
+  SUM -> DISK : read record + patch
+  SUM -> SUM : system = context + COMMIT_SUMMARY_SYSTEM\nuser = buildCommitUserPrompt()
+
+  SUM -> LLM : chatJson(schema=modelJsonSchema)
+  note right of LLM
+    Retries ×3 on HTTP / parse / validation
+    Extract JSON from fences or prose
+  end note
+
+  alt success
+    LLM --> SUM : ModelLayer fields
+    SUM -> SUM : enforceSignalReasons()\n+ provenance
+    SUM -> DISK : update .json (model filled)\ndeterministic untouched
+  else failure
+    SUM --> DEV : failed — model stays null
+  end
+end
+
+SUM --> DEV : ✅ summarized N, failed M
+
+@enduml
+
+
+@startuml summarize-example
+!theme plain
+skinparam shadowing false
+
+title Example — commit record **after summarize** (§3)
+
+object "commits/1717428123/b0648088.json" as REC #FFF3E0 {
+  commitHash = "b0648088"
+  title = "Production build and deployment automation"
+  ..
+  **deterministic (D — from evidence)**
+  changedFiles.added = [assembly/production.xml, backend/build.sh, …]
+  linesAdded = 214 · linesDeleted = 18
+  areas = [backend, build-and-deploy]
+  excludedFiles = [backend/package-lock.json]
+  ..
+  **model (M:c — from summarize)**
+  summary = "Added Maven build profiles, ZIP assembly, …"
+  changeTypes = [infrastructure, deployment, developer-tooling]
+  technologies = [Maven, Node.js, …]
+  technicalSignal = medium
+  architectureSignal = medium
+  securitySignal = low
+  signalReasons.technical = "Introduces build tooling across Maven and Node…"
+  signalReasons.architecture = "Defines deployment boundary and packaging…"
+  signalReasons.security = "No auth/identity code touched."
+  questions = [
+    "Was this used for real production deployment, or experimental?",
+    "Did this replace a manual deployment process?",
+    "Was this your own work or a shared team effort?"
+  ]
+  confidence = medium
+  provenance.model = "qwen2.5-coder:14b"
+  provenance.patchTruncated = false
+}
+
+note bottom of REC
+  deterministic = evidence (trustworthy)
+  model = interpretation (may be wrong; cite patch in signals)
+  questions = missing human context (primary product seed)
+end note
+
+@enduml
+
+
+@startuml summarize-trust-boundary
+!theme plain
+skinparam shadowing false
+
+title **summarize** — what stays **(D)** vs what the **model** adds
+
+legend left
+  **Stays unchanged (from evidence)**
+  ----
+  deterministic.* (files, churn, areas, excludedFiles)
+  .patch file on disk
+  commitHash, timestamp, title, author
+  ----
+  **Added by summarize (M:c)**
+  ----
+  summary, changeTypes[], technologies[]
+  technical / architecture / security signals
+  signalReasons (patch-grounded)
+  questions[] (role-aware)
+  confidence
+  provenance (CLI)
+endlegend
+
+note bottom
+  Init context affects **prompt only** — never rewrites deterministic fields.
+  ROUTINE upkeep: named plainly in summary, not detailed (no version numbers).
+  Production / ownership / impact: **never inferred** — only asked in questions.
+end note
+
+@enduml

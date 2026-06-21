@@ -1,0 +1,348 @@
+@startuml dev-workgraph-pipeline
+!theme plain
+skinparam shadowing false
+skinparam ArrowColor #555555
+skinparam ActivityBorderColor #888888
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #F9A825
+
+title dev-workgraph MVP — Pipeline\n(reconstruct forgotten work from Git; ask, do not judge)
+
+legend top left
+  |= Tag |= Meaning |
+  | **(D)** | Deterministic — evidence, no LLM |
+  | **(M:c)** | Ollama **commitModel** |
+  | **(M:r)** | Ollama **reportModel** |
+  | **(M:n)** | Ollama **narrativeModel** |
+  | **(H)** | Interactive human input |
+  | **--period** | Optional review window; data under periods/<id>/ |
+endlegend
+
+start
+
+partition "Preflight" {
+  :(D) **check**\nVerify Ollama is reachable\nand required models are installed;
+}
+
+partition "Preconditions (per repository)" {
+  :(D) **authors**\nScan git log; select your author emails;
+  note right
+    **config.json**
+    selectedAuthors[]
+  end note
+
+  :(M:r) **init**\nCapture role + project story;\nread README if present;
+  note right
+    2 LLM sessions → **project.json**
+    • story.preparedContext (role-adjusted)
+    • profile (summary, domains, stack, themes)
+    **Project context block** injected into
+    all later LLM prompts (summarize … final, deepen)
+  end note
+}
+
+partition "Evidence (§2–3)" {
+  :(D) **evidence**\nExtract commits by selected authors;\ngit show → patch + deterministic JSON;
+  note right
+    **commits/**<ts>/<hash>.patch
+    **commits/**<ts>/<hash>.json
+    deterministic layer only at export time
+    (files, churn, areas, excludedFiles)
+  end note
+
+  :(M:c) **summarize**\nAdd per-commit model layer;
+  note right
+    summary, changeTypes, signals + reasons
+    **questions** (role-aware)
+    append-only; model starts null
+  end note
+}
+
+partition "Work sessions (§4, §7)" {
+  :(D) **commit-group** — membership\nChronological walk; split on\ngroupThresholdDays OR groupMaxCommits;
+  :(D) **commit-group** — aggregate\nUnion deterministic fields;\npartition groups.tiers (low/medium/hi);
+  :(M:c) **commit-group** — classify\nSignals, changeTypes, context bullets, questions;
+  :(M:c) **commit-group** — compose\nFirst-person session **history**;
+  note right
+    **groups/**<timestampEnd>.json
+    deterministic + model layers
+  end note
+}
+
+partition "Cumulative report (§9)" {
+  :(M:r) **report** — fold groups oldest → newest\nreport_k = merge(report_{k-1}, group_k);
+  note right
+    **Routine gate** (cheap LLM): upkeep-only groups
+    fold deterministically (1 call, skip heavy merge)
+    **Substantive groups**: merge model + add-if-new history
+    + rolling compaction (mergeCursor, cap ≤ 12 entries)
+    **reports/**<timestampEnd>.json
+    resumable: continues from longest existing prefix
+  end note
+}
+
+partition "Prepared narrative (§10)" {
+  :(M:n) **prepare**\nDistill final report → role-aligned story;
+  note right
+    1. (D) concat report history → rawHistory
+    2. (M:n) compose unified **history**
+    3. (D) copy signals + changeTypes
+    4. (M:n) collapse signalReasons → 4 strings
+    5. (M:n) reframe **4 questions**
+    6. (D) console preview
+    **prepared/**<reportId>.json
+  end note
+}
+
+partition "Final deliverable (§11)" {
+  :(H) **final** — collect answers\nPresent 4 prepared questions;\npersist Q&A to prepared record;
+  :(M:n) **final** — refine IMPACT\nWeave answers into prepared history;
+  :(M:n) **final** — Role Narrative\n4 claim-safe impact bullets;
+  :(D) **final** — write markdown\nAssemble RECONSTRUCTION.<project>.md;
+  note right
+    **cwd:** RECONSTRUCTION.<project>.md
+    (or .<period>.md with --period)
+    **archive:** finish/<preparedId>.{md,json}
+    **version: 1**
+  end note
+}
+
+partition "Narrative extension (§11.5) — optional, not in run" {
+  :(H) **deepen** — recalled context\nNon-code context Git cannot show;\n--context-file optional;
+  :(M:n) **deepen** — 4 new questions\nMust not repeat prior Q&A;\nuses combined history baseline;
+  :(H) **deepen** — collect 4 new answers\ncumulative answers[] (8, 12, …);
+  :(M:n) **deepen** — refine IMPACT\nprepare history + prior finish history\n+ all Q&A + recalled context;
+  :(M:n) **deepen** — Role Narrative\nsame inputs as IMPACT refine;
+  :(D) **deepen** — versioned markdown\nAppend-only finish archive;
+  note right
+    **Inputs:** latest finish → prepared → report\n(no direct groups/commits/evidence)
+    **combined history:**
+    prepared.model.history +
+    prior finish.history
+    **cwd:** RECONSTRUCTION.<project>.v2.md (vN)
+    (or .<period>.vN.md)
+    **archive:** finish/<preparedId>.vN.{md,json}
+    **sourcePreviousFinish** → prior version
+    v1 never overwritten
+  end note
+}
+
+stop
+
+@enduml
+
+
+@startuml dev-workgraph-run-orchestrator
+!theme plain
+skinparam shadowing false
+
+title dev-workgraph — **run** / **run:period** orchestrator
+
+participant "CLI" as CLI
+participant "check" as CHECK
+participant "init" as INIT
+participant "evidence" as EVID
+participant "summarize" as SUM
+participant "commit-group" as CG
+participant "report" as REP
+participant "prepare" as PRE
+participant "final" as FIN
+participant "Human" as H
+
+CLI -> CHECK : preflight (abort if Ollama not ready)
+CLI -> CLI : gather upfront inputs\n(3 models, role+story, authors, group thresholds)\nunless already saved / --force
+
+alt run:period / --period <id>
+  CLI -> CLI : scope all stages to periods/<id>/\ncommits filtered to [from, to)
+end
+
+CLI -> INIT : init [--period]
+CLI -> EVID : evidence [--period]
+CLI -> SUM : summarize [--period]
+CLI -> CG : commit-group [--period]
+CLI -> REP : report [--period]
+CLI -> PRE : prepare [--period]
+
+note over INIT, PRE
+  Unattended stages skip work already done
+  (append-only / resumable report / idempotent prepare)
+end note
+
+CLI -> FIN : final [--period]
+FIN -> H : 4 prepared questions (interactive)
+H --> FIN : answers
+FIN -> CLI : RECONSTRUCTION.<project>.md + finish/ v1
+
+note over FIN
+  **deepen** (§11.5) is **not** part of run —
+  run separately after final when the user
+  remembers more non-code context
+end note
+
+@enduml
+
+
+@startuml dev-workgraph-deepen
+!theme plain
+skinparam shadowing false
+
+title dev-workgraph — **deepen** / **deepen --period** (§11.5)\nExtend latest finish; append-only versioning
+
+participant "CLI" as CLI
+database "finish/ (latest vN)" as FIN
+database "prepared/" as PREP
+database "project.json" as PJ
+participant "deepen" as DEP
+participant "Human" as H
+participant "Ollama\nnarrativeModel" as LLM
+database "finish/ vN+1" as FIN2
+database "cwd RECONSTRUCTION.*.vN+1.md" as MD
+
+CLI -> DEP : deepen ./repo [--period] [--force]
+
+DEP -> FIN : latestFinish() — highest version
+DEP -> PREP : via sourcePrepared
+DEP -> PJ : project context block
+
+DEP -> H : recalled context (editor)\n--context-file optional
+H --> DEP : non-code context
+
+DEP -> DEP : combine history\nprepare.model.history +\nprior finish.history
+
+DEP -> LLM : 4 new follow-up questions\n(prior Q&A + recalled context)
+LLM --> DEP : newQuestions x4
+
+DEP -> H : 4 new questions (interactive)\n--answers-file optional
+H --> DEP : new answers
+
+DEP -> DEP : allQa = prior answers + new
+
+DEP -> LLM : refine IMPACT\n(combined history + allQa + recalled)
+LLM --> DEP : impactHistory
+
+DEP -> LLM : Role Narrative x4\n(impactHistory + signalReasons + allQa)
+LLM --> DEP : narrative x4
+
+DEP -> MD : RECONSTRUCTION.<project>.vN+1.md
+DEP -> FIN2 : finish/<preparedId>.vN+1.{md,json}\nsourcePreviousFinish, recalledContext,\ncumulative answers[]
+
+note over FIN, FIN2
+  Never overwrites v1 or prior versions.
+  Skip if next version exists unless --force.
+end note
+
+@enduml
+
+
+@startuml dev-workgraph-data-layout
+!theme plain
+skinparam shadowing false
+skinparam componentStyle rectangle
+
+title dev-workgraph — On-disk data layout (~/.workgraph)
+
+package "config.json (outside data dir)" {
+  [repos.<abs-path>.role]
+  [repos.<abs-path>.selectedAuthors]
+  [repos.<abs-path>.groupThresholdDays]
+  [repos.<abs-path>.groupMaxCommits]
+  [repos.<abs-path>.periods.<id> {from, to}]
+  [ollama.commitModel / reportModel / narrativeModel]
+}
+
+folder "data/repos/<repo-id>/" as REPO {
+  file "project.json" as PJ
+  folder "commits/<ts>/" as COMM {
+    file "<hash>.patch"
+    file "<hash>.json"
+  }
+  folder "groups/" as GRP {
+    file "<timestampEnd>.json"
+  }
+  folder "reports/" as RPT {
+    file "<timestampEnd>.json"
+  }
+  folder "prepared/" as PREP {
+    file "<reportId>.json\n(+ answers after final)"
+  }
+  folder "finish/" as FIN {
+    file "<preparedId>.md + .json\n(version 1, from final)"
+    file "<preparedId>.v2.md + .v2.json\n(deepen append-only)"
+    file "<preparedId>.vN…"
+  }
+  folder "periods/<period>/" as PER {
+    note bottom
+      Mirrors repo layout:
+      project.json, commits/, groups/,
+      reports/, prepared/, finish/
+    end note
+  }
+}
+
+PJ --> COMM : project context for LLM
+COMM --> GRP : per-commit JSONs
+GRP --> RPT : fold chain
+RPT --> PREP : latest report
+PREP --> FIN : prepared + Q&A
+FIN --> FIN : deepen → v2, v3, …\n(sourcePreviousFinish chain)
+
+note bottom of REPO
+  **export** bundles data/repos/<repo-id>/ + config entry → .tar.gz
+  **import** restores bundle; **export/import** are data-only (no LLM)
+end note
+
+@enduml
+
+
+@startuml dev-workgraph-evidence-principle
+!theme plain
+skinparam shadowing false
+
+title dev-workgraph — Evidence vs interpretation vs missing context (§15)
+
+rectangle "Human-provided (starting context)" #E3F2FD {
+  card "project story (raw)" as RAW
+  card "prepared story context" as PREP
+  card "project profile" as PROF
+  card "recalled context\n(deepen, §11.5)" as REC
+}
+
+rectangle "Evidence (trustworthy)" #E8F5E9 {
+  card "commits + patches" as PATCH
+  card "deterministic JSON\n(files, churn, areas, tiers)" as DET
+}
+
+rectangle "Interpretation (may be wrong;\nmust cite signal reasons)" #FFF3E0 {
+  card "commit / group / report\nmodel summaries & signals" as MOD
+  card "prepared narrative\n+ Role Narrative bullets" as NAR
+}
+
+rectangle "Primary product" #FCE4EC {
+  card "**questions** → human **answers**" as Q
+  card "**RECONSTRUCTION.<project>.md**" as OUT
+  card "**RECONSTRUCTION.<project>.vN.md**\n(deepen, append-only)" as OUTV
+}
+
+RAW --> PREP
+RAW --> PROF
+PATCH --> DET
+DET --> MOD
+MOD --> NAR
+MOD --> Q
+Q --> OUT
+REC --> Q : deepen: 4 new Q\n+ cumulative answers
+REC --> NAR
+Q --> OUTV : deepen refines\nIMPACT + Role Narrative
+PREP --> MOD
+PROF --> MOD
+NAR --> OUT
+NAR --> OUTV
+
+note bottom of OUT
+  Never overclaim impact, ownership, or production usage.
+  System reconstructs **what** changed and **where**;
+  human confirms **why** and **whether it mattered**.
+  **deepen** extends the same loop after final (v2+).
+end note
+
+@enduml

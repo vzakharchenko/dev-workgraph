@@ -1,0 +1,391 @@
+@startuml prepare-overview
+!theme plain
+skinparam shadowing false
+skinparam ArrowColor #555555
+
+title dev-workgraph — **prepare** (§10)\nDistill **latest report** into role-aligned prepared narrative
+
+legend top left
+  |= Tag |= Meaning |
+  | **(D)** | Deterministic — no LLM |
+  | **(M:n)** | Ollama **narrativeModel** |
+  | **(H) init** | project.json required |
+endlegend
+
+rectangle "**Preconditions**" #FFF8E1 {
+  card "**init** -> project.json\n(required)" as INIT
+  card "**report** -> reports/<id>.json\n(latest / highest reportId)" as REP
+}
+
+rectangle "**Not read by prepare**" #ECEFF1 {
+  card "groups/" as G #CCCCCC
+  card "commits/" as C #CCCCCC
+  card "evidence" as E #CCCCCC
+}
+
+rectangle "**prepare (M:n + D)**" #FFF3E0 {
+  card "Multi-entry report history\n-> one unified history" as H
+  card "Report questions -> 4 role-aware" as Q
+  card "signalReasons arrays -> 4 flat strings" as R
+  card "technologies cleaned (max 5)" as T
+}
+
+rectangle "**Output**" #E8F5E9 {
+  card "prepared/<reportId>.json" as OUT
+  card "Console preview:\nhistory + 4 questions" as PREV
+}
+
+INIT --> H
+REP --> H
+REP --> Q
+REP --> R
+REP --> T
+H --> OUT
+Q --> OUT
+R --> OUT
+T --> OUT
+OUT --> PREV
+
+G .. H : not loaded
+C .. H
+E .. H
+
+note bottom of REP
+  Takes **only the final report** in the chain —
+  not intermediate report files, not groups directly.
+  Cumulative work is already inside that report.
+end note
+
+note bottom of OUT
+  **Idempotent per report:** skip if prepared/<reportId>.json
+  exists unless --force. Sole input to **final**.
+end note
+
+@enduml
+
+
+@startuml prepare-command
+!theme plain
+skinparam shadowing false
+skinparam ActivityBorderColor #888888
+skinparam NoteBackgroundColor #FFF3E0
+
+title **prepare** — Full command flow
+
+start
+
+:Require **project.json** (init);\nLoad latest **reports/<reportId>.json**;
+
+if (No report?) then (yes)
+  #Pink:Run **report** first;
+  stop
+else (no)
+endif
+
+if (prepared/<reportId>.json exists\nAND NOT --force?) then (yes)
+  :Skip (idempotent);
+  stop
+else (no)
+endif
+
+:Pick **narrativeModel** (Ollama);
+
+:Build project context block from init;
+
+partition "**Step 0 (D)** — rawHistory" {
+  :Join report.history[].text\nnewline-separated;\n(not stored as final output);
+}
+
+partition "**[1/4] Compose history (M:n)**" {
+  :Input: rawHistory + report signals + changeTypes\n+ project context;
+  :Output: **one unified history** string;\nrole-aligned flowing prose;
+}
+
+partition "**[2/4] Clean technologies (M:n)**" {
+  if (report.model.technologies non-empty?) then (yes)
+    :Dedupe, collapse class hierarchy;\ncap at **5** most significant;
+  else (no)
+    :Skip;
+  endif
+}
+
+partition "**[3/4] Collapse reasons (M:n)**" {
+  :Input: report signalReasons arrays\n+ composed history;
+  :Output: **exactly 4** flat signalReasons strings;\nmerge near-dups, drop upkeep noise;
+}
+
+partition "**[4/4] Reframe questions (M:n)**" {
+  :Input: composed history + 4 reasons\n+ report.questions + project context;
+  :Output: **exactly 4** role-aware questions;\nre-assess **confidence**;
+}
+
+partition "**Copy from report (D)**" {
+  :changeTypes, *Signal levels\nunchanged from report.model;
+}
+
+:Write prepared/<reportId>.json;
+
+:Console preview: unified history,\ntechnologies, numbered questions;
+
+#LightGreen:Ready for **final**;
+
+stop
+
+@enduml
+
+
+@startuml prepare-report-link
+!theme plain
+skinparam shadowing false
+
+title **prepare** <- **report** — what is taken from the final report
+
+rectangle "**Latest report only**" #FFF8E1 {
+  card "reports/<reportId>.json\n(highest reportId)" as R
+}
+
+rectangle "**Used from report**" #E3F2FD {
+  component "history[] — all entry texts\n-> rawHistory (D concat)" as RH
+  component "model.technical/architecture/security Signal\n(copied D)" as SIG
+  component "model.changeTypes (copied D)" as CT
+  component "model.signalReasons arrays\n-> collapsed to 4 (M:n)" as SR
+  component "model.questions\n-> reframed to 4 (M:n)" as RQ
+  component "model.technologies\n-> cleaned max 5 (M:n)" as RT
+  component "model.confidence\n(re-assessed in step 4)" as CONF
+  component "groupCount, reportId" as META
+}
+
+rectangle "**Dropped / not carried forward**" #ECEFF1 {
+  card "report.deterministic" as D #CCCCCC
+  card "historySource graph" as HS #CCCCCC
+  card "hi/medium/lowContext tiers" as CTX #CCCCCC
+  card "mergeCursor, mergedFrom" as MC #CCCCCC
+  card "sourceGroups list" as SG #CCCCCC
+}
+
+rectangle "**Transformation**" #FFF3E0 {
+  card "history[] (many entries)\n-> **one** history string" as ONE
+  card "questions (many)\n-> **four** for final Q&A" as FOUR
+}
+
+R --> RH
+R --> SIG
+R --> CT
+R --> SR
+R --> RQ
+R --> RT
+R --> META
+RH --> ONE
+RQ --> FOUR
+
+note bottom of ONE
+  Report history stays bounded (mergeCursor compact).
+  Prepare **rewrites** all entries into one coherent
+  role-aligned narrative — not a mechanical join.
+end note
+
+note bottom of D
+  Prepared record has **no deterministic layer** —
+  interpretation for human review only.
+  Provenance: sourceReport file name (no commit hashes).
+end note
+
+@enduml
+
+
+@startuml prepare-steps-detail
+!theme plain
+skinparam shadowing false
+skinparam NoteBackgroundColor #FFFDE7
+
+title **prepare** — processing steps in detail
+
+rectangle "**Inputs**" as IN {
+  card "project.json\n(role, story, profile)" as PJ #FFF8E1
+  card "latest report.model + history[]" as REP #E3F2FD
+}
+
+rectangle "**Step 0 (D)**" as S0 #E8F5E9 {
+  card "rawHistory = join(history[].text, newline)"
+}
+
+rectangle "**[1/4] History (M:n)**" as S1 #FFF3E0 {
+  card "Single first-person **history**"
+  card "Role + story aligned"
+  card "De-emphasize routine upkeep"
+  card "No overclaiming"
+}
+
+rectangle "**[2/4] Technologies (M:n)**" as S2 #FFF3E0 {
+  card "Dedupe + canonical names"
+  card "Collapse class hierarchy\n(e.g. JS under TS)"
+  card "Max **5** significant items"
+}
+
+rectangle "**[3/4] signalReasons (M:n)**" as S3 #FFF3E0 {
+  card "3 arrays -> **4 flat strings**"
+  card "Merge near-duplicates"
+  card "Drop minor upkeep reasons"
+  card "Grounded in composed history"
+}
+
+rectangle "**[4/4] questions (M:n)**" as S4 #FFF3E0 {
+  card "Report questions -> **exactly 4**"
+  card "Role-aware; skip story/README facts"
+  card "Target what Git cannot know"
+  card "**confidence** re-assessed"
+}
+
+rectangle "**Copy (D)**" as SC #E8F5E9 {
+  card "changeTypes + *Signal levels\nfrom report unchanged"
+}
+
+rectangle "**Output PreparedRecord**" as OUT #E1F5FE {
+  card "prepared/<reportId>.json"
+}
+
+PJ --> S1
+PJ --> S3
+PJ --> S4
+REP --> S0
+S0 --> S1
+REP --> S2
+S1 --> S3
+S3 --> S4
+REP --> SC
+S1 --> OUT
+S2 --> OUT
+S3 --> OUT
+S4 --> OUT
+SC --> OUT
+
+@enduml
+
+
+@startuml prepare-record
+!theme plain
+skinparam shadowing false
+skinparam classBackgroundColor #FAFAFA
+
+title **PreparedRecord** — schema (§10)
+
+class "PreparedRecord" as PR #E1F5FE {
+  preparedId = report.reportId
+  sourceReport — file name e.g. "1759696393.json"
+  groupCount — from report
+  model : PreparedModelLayer
+}
+
+class "PreparedModelLayer (M:n + D copy)" as MOD #FFF3E0 {
+  **history** — single unified narrative (step 1)
+  **technologies** — max 5 cleaned (step 2)
+  **signalReasons** — exactly 4 strings (step 3)
+  **questions** — exactly 4 strings (step 4)
+  **confidence** — re-assessed (step 4)
+  --
+  **changeTypes** — copied from report (D)
+  technicalSignal / architectureSignal / securitySignal — copied (D)
+  --
+  provenance { model, generatedAt, sourceReport }
+}
+
+class "Not present (vs report)" as ABS #ECEFF1 {
+  no deterministic layer
+  no historySource / sourceGroups
+  no hiContext / mediumContext / lowContext
+  no mergeCursor
+}
+
+PR *-- MOD
+PR .. ABS
+
+note bottom of MOD
+  After write: **answers** block added later by **final**
+  (interactive Q&A persisted in-place).
+end note
+
+@enduml
+
+
+@startuml prepare-to-final
+!theme plain
+skinparam shadowing false
+
+title **prepare** -> **final** — human-facing handoff
+
+rectangle "**prepare output**" #FFF3E0 {
+  card "prepared/<reportId>.json" as P
+  card "model.history — Git reconstruction" as H
+  card "model.questions x4" as Q
+}
+
+rectangle "**Console preview (D)**" as PREV #FFFDE7 {
+  card "Print unified history"
+  card "Print numbered 4 questions"
+}
+
+rectangle "**final (next step)**" #FCE4EC {
+  card "Present 4 questions interactively"
+  card "Persist answers to prepared record"
+  card "Refine history with answers (M:n)"
+  card "Role Narrative 4 bullets (M:n)"
+  card "RECONSTRUCTION.<project>.md"
+}
+
+P --> PREV
+PREV ..> Q : user sees before final
+P --> H
+P --> Q
+Q --> final
+
+note bottom
+  prepare makes **final** transparent — user knows
+  exactly which questions will be asked.
+  final reads **only** prepared + project.json,
+  not report or groups directly.
+end note
+
+@enduml
+
+
+@startuml prepare-sequence
+!theme plain
+skinparam shadowing false
+
+title Sequence — **prepare**
+
+actor "Developer" as DEV
+database "project.json" as PJ
+database "reports/<reportId>.json" as RPT
+participant "**prepare**" as PRE
+participant "Ollama\nnarrativeModel" as LLM
+database "prepared/<reportId>.json" as OUT
+
+DEV -> PRE : prepare ./repo [--force]
+
+PRE -> PJ : loadProjectContext()\n(required)
+PRE -> RPT : latestReport()\nhighest reportId
+
+PRE -> PRE : rawHistory = join history[].text (D)
+
+PRE -> LLM : [1/4] compose unified history
+LLM --> PRE : history string
+
+alt technologies present
+  PRE -> LLM : [2/4] clean technologies
+  LLM --> PRE : max 5 technologies
+end
+
+PRE -> LLM : [3/4] collapse signalReasons -> 4
+LLM --> PRE : signalReasons[4]
+
+PRE -> LLM : [4/4] reframe questions + confidence
+LLM --> PRE : questions[4], confidence
+
+PRE -> PRE : copy changeTypes + signals from report (D)
+
+PRE -> OUT : write PreparedRecord
+
+PRE --> DEV : console preview\n(history + questions)
+
+@enduml

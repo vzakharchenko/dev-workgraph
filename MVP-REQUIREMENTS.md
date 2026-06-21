@@ -14,6 +14,7 @@ The MVP should answer the following questions:
 5. Can grouped summaries **remind the user what they worked on and ask the right questions** to reconstruct missing context?
 6. Can a **prepared narrative** distill the full report into a role-aligned story with focused questions?
 7. Can the human **answer the prepared questions** in `final` and produce a confirmed **role narrative** as `RECONSTRUCTION.<project>.md`?
+8. Can **`deepen`** extend that reconstruction after the user remembers more non-code context — four new questions, richer Q&A, and a **versioned** finish archive without overwriting the prior `final`?
 
 This MVP is **not** a public profile generator, portfolio builder, achievement scorer, or interview assistant.
 It is an evaluation prototype for one claim: *Git history can be reconstructed into a useful map of forgotten work, where the system reconstructs and asks, and the human confirms.* The final `RECONSTRUCTION.<project>.md` is a **personal reconstruction document** — grounded in Git evidence and human answers — not an auto-scored achievement claim.
@@ -161,7 +162,7 @@ A **review period** is a named date window over which the whole pipeline can be 
 
 ### Mechanism — a cross-cutting `--period` flag
 
-Every pipeline command accepts an optional **`--period <id>`** flag (`init`, `evidence`, `summarize`, `commit-group`, `report`, `prepare`, `final`, `run`). Two convenience aliases wrap the common entry points for review workflows:
+Every pipeline command accepts an optional **`--period <id>`** flag (`init`, `evidence`, `summarize`, `commit-group`, `report`, `prepare`, `final`, `deepen`, `run`). Two convenience aliases wrap the common entry points for review workflows:
 
 * **`init:period`** — defines/updates a period and seeds its project context (see below);
 * **`run:period`** — runs the whole pipeline for a period end-to-end.
@@ -212,7 +213,7 @@ By default a period **inherits** the repo-level project context: `init:period` c
 
 ### Commit filtering
 
-`evidence --period <id>` restricts extraction to commits whose **author timestamp** falls in `[from, to)`; everything downstream operates only on those commits. `final`'s deliverable is written to a suffixed file `RECONSTRUCTION.<project>.<period>.md` so a period review never overwrites the repo's all-time `RECONSTRUCTION.<project>.md`.
+`evidence --period <id>` restricts extraction to commits whose **author timestamp** falls in `[from, to)`; everything downstream operates only on those commits. `final`'s deliverable is written to a suffixed file `RECONSTRUCTION.<project>.<period>.md` so a period review never overwrites the repo's all-time `RECONSTRUCTION.<project>.md`. **`deepen`** writes versioned siblings under the same period suffix (`RECONSTRUCTION.<project>.<period>.v2.md`, …; finish archive under `periods/<id>/finish/`).
 
 ⸻
 
@@ -736,8 +737,8 @@ Questions may be attached to:
 * commit summaries
 * **group histories** (primary at the current stage)
 * cumulative report (§9)
-* **prepared narrative** (§10; sole input to `final`)
-* **RECONSTRUCTION.<project>.md** (§11; final human-facing deliverable)
+* **prepared narrative** (§10; sole input to `final` / traceability for `deepen`)
+* **RECONSTRUCTION.<project>.md** (§11; final human-facing deliverable; versioned by `deepen`, §11.5)
 * folder-context nodes (deferred)
 * area-context nodes (deferred)
 
@@ -752,7 +753,7 @@ Did this affect multiple tenants or realms?
 Was this your own design, your implementation, or maintenance of someone else's work?
 ```
 
-The MVP must support **answering** questions via the `final` command (§11), because the loop "system asks → user answers → context is recovered" is the actual product. A question with no path to an answer is incomplete.
+The MVP must support **answering** questions via the `final` command (§11), because the loop "system asks → user answers → context is recovered" is the actual product. A question with no path to an answer is incomplete. **`deepen`** (§11.5) extends that loop when the user remembers additional non-code context after `final`.
 
 ⸻
 
@@ -1155,6 +1156,7 @@ In addition to the cwd markdown, `final` writes the result into the repo's data 
 ```json
 {
   "finishId": 1759696393,
+  "version": 1,
   "sourcePrepared": "1759696393.json",
   "sourceReport": "1759696393.json",
   "project": "<repo-basename>",
@@ -1168,11 +1170,145 @@ In addition to the cwd markdown, `final` writes the result into the repo's data 
 }
 ```
 
-Provenance is by file name only (`sourcePrepared` → `prepared/<id>.json` → `reports/<id>.json`); no commit hashes. `--force` overwrites both finish files for that prepared id.
+Provenance is by file name only (`sourcePrepared` → `prepared/<id>.json` → `reports/<id>.json`); no commit hashes. **`version`** is `1` for the initial `final`. Re-running `final` with `--force` overwrites this v1 pair (`<preparedId>.json` / `.md`) and the cwd markdown. Later **`deepen`** (§11.5) appends versioned siblings (`<preparedId>.v2.json`, …) without touching v1.
 
 ### Voice & honesty
 
 The Role Narrative bullets are interpretation informed by human answers — they are **confirmed context**, not proof. If an answer is vague, the bullets must stay tentative ("I built X; production usage unconfirmed") rather than upgrading claims.
+
+⸻
+
+## 11.5 Narrative extension (`deepen`)
+
+Optional step **after `final`**. It does **not** re-run `report` or `prepare`. It extends the latest finish archive with **four new follow-up questions**, human answers, a refined **Your IMPACT** narrative, and an updated Role Narrative — producing a **new versioned** finish record and markdown **without overwriting** the prior `final`.
+
+`deepen` is **interactive** (recalled context + four new Q&A). It is **not** part of `run`.
+
+### Inputs (via provenance chain)
+
+1. **Latest finish archive** — `~/.workgraph/data/repos/<repo-id>/finish/<preparedId>.json` (or `<preparedId>.vN.json` if a prior `deepen` exists). The loader picks the record with the highest **`version`** cursor.
+2. **Prepared record** — loaded via `finish.sourcePrepared` → `prepared/<reportId>.json` (for `model.history`, `signalReasons`, prepared questions).
+3. **Report** — loaded via `finish.sourceReport` → `reports/<reportId>.json` (for `model.questions` as context only).
+4. **Project context** — `project.json` (role, `story.preparedContext`, `profile`) in every LLM system prompt.
+
+`deepen` does **not** read groups, commits, or evidence files directly — only through the finish → prepared → report file chain (same provenance as `final`).
+
+### Combined history baseline
+
+Before any LLM step, history is assembled as **two layers in one text block**:
+
+```
+Baseline from prepare:
+{prepared.model.history}
+
+Refined after prior final:
+{priorFinish.history}
+```
+
+This combined block feeds **follow-up question generation**. **Refine IMPACT** uses the same two layers plus **all** Q&A (prior answers from the finish record **plus** the four new answers) and the newly recalled context.
+
+### Step 1 — Recalled context (interactive, no model)
+
+Prompt the user (multi-line editor) for **non-code context** they remembered about working on the project — team decisions, constraints, handoffs, pivots, meetings, why something mattered; **not** visible in Git. Optional `--context-file <path>` supplies plain text non-interactively.
+
+This is **starting context**, not proof. It shapes the four new questions and the refined narrative but must not inflate impact unless the user stated it explicitly.
+
+### Step 2 — Four new follow-up questions (one LLM session, `narrativeModel`)
+
+Given:
+
+* **project context block** (§0);
+* **recalled context** from step 1;
+* **combined history** (prepare baseline + prior final history);
+* report `model.questions`, prepared `model.questions`, and **all prior Q&A** from the finish record;
+* prepared `signalReasons`.
+
+Produce exactly **four new** role-aware questions that:
+
+* target gaps **still** not covered after prior Q&A and the recalled context;
+* do **not** repeat, rephrase, or narrow the same angle as any prior question;
+* follow the same role-aware rules as `prepare` (§8, §10).
+
+### Step 3 — Collect answers to the four new questions (interactive, no model)
+
+Same UX as `final` step 1 (multi-line editor per question). `--answers-file <path>` accepts JSON for the **four new** Q&A only (non-interactive).
+
+**All Q&A** for downstream steps = prior finish `answers[]` **concatenated with** the four new pairs (8 after the first `deepen`, 12 after the second, …).
+
+### Step 4a — Refine "Your IMPACT" (one LLM session, `narrativeModel`)
+
+Same rules as `final` step 2a, but the user prompt includes:
+
+* combined history (prepare + prior final);
+* **all** Q&A (prior + new);
+* **recalled context** from step 1.
+
+On failure, fall back to the combined history baseline.
+
+### Step 4b — Role Narrative (one LLM session, `narrativeModel`)
+
+Same rules as `final` step 2b: four bullets from refined history + `signalReasons` + **all** Q&A + project context (+ recalled context in the user prompt).
+
+### Step 5 — Write versioned markdown (deterministic assembly)
+
+Same sections as `final`, plus **`## Recalled context (this deepen round)`** when step 1 was non-empty. All Q&A pairs (prior + new) appear under **Possible questions**.
+
+**Default cwd output** (does not overwrite v1):
+
+| Finish `version` | Markdown in cwd |
+|------------------|-----------------|
+| `2` | `RECONSTRUCTION.<project>.v2.md` |
+| `3` | `RECONSTRUCTION.<project>.v3.md` |
+| … | … |
+
+With `--period`: `RECONSTRUCTION.<project>.<period>.v2.md`, etc. `--output <path>` overrides.
+
+### Step 6 — Versioned finish archive (append-only)
+
+**Never overwrites** the prior finish file. The next version uses the same **`finishId`** (prepared/report id) with a version suffix:
+
+```
+~/.workgraph/data/repos/<repo-id>/finish/<preparedId>.json       # version 1 (`final`)
+~/.workgraph/data/repos/<repo-id>/finish/<preparedId>.md
+~/.workgraph/data/repos/<repo-id>/finish/<preparedId>.v2.json  # first `deepen`
+~/.workgraph/data/repos/<repo-id>/finish/<preparedId>.v2.md
+~/.workgraph/data/repos/<repo-id>/finish/<preparedId>.v3.json  # second `deepen`
+…
+```
+
+#### Finish record (version ≥ 2)
+
+Same fields as §11 step 4, plus:
+
+```json
+{
+  "finishId": 1759696393,
+  "version": 2,
+  "sourcePrepared": "1759696393.json",
+  "sourceReport": "1759696393.json",
+  "sourcePreviousFinish": "1759696393.json",
+  "recalledContext": "After the security review we pivoted the rollout plan…",
+  "project": "<repo-basename>",
+  "role": "Senior Developer",
+  "technologies": [],
+  "history": "...",
+  "narrative": ["...", "...", "...", "..."],
+  "answers": [{ "question": "…", "answer": "…" }],
+  "outputMarkdown": "1759696393.v2.md",
+  "provenance": { "model": "...", "generatedAt": "..." }
+}
+```
+
+* **`version`** — monotonic cursor (`1` = initial `final`; each `deepen` increments).
+* **`sourcePreviousFinish`** — file name of the finish record this version extended.
+* **`recalledContext`** — non-code context from step 1 (omitted if empty).
+* **`answers`** — **cumulative** (all rounds); after first `deepen`, length is 8.
+
+Re-running `deepen` against the **latest** finish produces the next version (`v3`, …). If the next version file already exists for the current latest, skip unless `--force`.
+
+### Voice & honesty
+
+Same as `final`. Recalled context and new answers are **confirmed context**, not proof of production impact.
 
 ⸻
 
@@ -1194,6 +1330,7 @@ The MVP is successful if grouped summaries remind the user of forgotten work and
 - top areas and forgotten-work candidates look meaningful to the user
 - `prepare` produces a readable unified history and four role-aligned questions from the final report
 - `final` collects human responses to the prepared questions and writes `RECONSTRUCTION.<project>.md` with a four-bullet Role Narrative
+- `deepen` extends the latest finish with recalled non-code context, four new questions, cumulative Q&A, and a versioned finish archive (`*.v2.json`, …) without overwriting v1
 
 **Strong success criteria:**
 
@@ -1232,7 +1369,7 @@ complex graph database
 automatic Jira/GitHub integration
 production-ready plugin system
 ```
-These may be added later. The personal `RECONSTRUCTION.<project>.md` from `final` is **in scope** — it is a confirmed reconstruction artifact, not a public portfolio.
+These may be added later. The personal `RECONSTRUCTION.<project>.md` from `final` (and versioned `.v2.md`, … from `deepen`) is **in scope** — confirmed reconstruction artifacts, not a public portfolio.
 
 ⸻
 
@@ -1249,6 +1386,7 @@ dev-workgraph commit-group ./repo   # group commits by day threshold, 2 LLM sess
 dev-workgraph report       ./repo   # fold groups into a cumulative narrative report   [BUILT]
 dev-workgraph prepare      ./repo   # distill final report → role-aligned narrative    [BUILT]
 dev-workgraph final        ./repo   # prepared Q&A → Role Narrative → RECONSTRUCTION.<project>.md [BUILT]
+dev-workgraph deepen       ./repo   # extend latest finish: recalled context + 4 new Q&A → v2+ [BUILT]
 dev-workgraph run          ./repo   # gather inputs upfront, run pipeline to prepare   [BUILT]
 dev-workgraph export       ./repo   # bundle the repo's workgraph data + config → .tar.gz [BUILT]
 dev-workgraph import       <bundle> # restore a bundle; add/update its config entry    [BUILT]
@@ -1277,7 +1415,7 @@ manifest.json         # { version, repoId, repoPath, exportedAt, config }
 
 `check` is a standalone preflight: it verifies the Ollama server is reachable and has at least one model, and otherwise prints OS-specific install help (macOS: `brew install ollama`; Linux: `curl -fsSL https://ollama.com/install.sh | sh`) plus `ollama pull` suggestions; it also flags any saved `commitModel`/`reportModel`/`narrativeModel` that is no longer installed. `run` invokes the same check as a **preflight** and aborts before prompting if Ollama is not ready.
 
-`run` is an orchestrator that **gathers every upfront input first** (after the Ollama preflight), then executes `init → evidence → summarize → commit-group → report → prepare` without further prompts, and finishes with **`final`** which asks the four prepared questions interactively. Upfront it asks only for what is missing (unless `--force` re-gathers all): the three models (below), developer role + project story (if `project.json` is absent), author identities (if none saved), and the group-threshold days (if not saved). Each unattended stage runs with those values passed as flags. Stages skip work that is already done (append-only / resume), so `run` is safe to re-run; on re-run `final` reuses saved answers unless `--force`. `final` can also be run on its own at any time.
+`run` is an orchestrator that **gathers every upfront input first** (after the Ollama preflight), then executes `init → evidence → summarize → commit-group → report → prepare` without further prompts, and finishes with **`final`** which asks the four prepared questions interactively. Upfront it asks only for what is missing (unless `--force` re-gathers all): the three models (below), developer role + project story (if `project.json` is absent), author identities (if none saved), and the group-threshold days (if not saved). Each unattended stage runs with those values passed as flags. Stages skip work that is already done (append-only / resume), so `run` is safe to re-run; on re-run `final` reuses saved answers unless `--force`. `final` can also be run on its own at any time. **`deepen`** is a separate post-`final` step (§11.5) — not invoked by `run`.
 
 ### Three models (commit-level vs report-level vs narrative)
 
@@ -1285,7 +1423,7 @@ The local model is chosen and remembered **per stage group**, in `~/.workgraph/c
 
 - **`commitModel`** — used by `summarize` and `commit-group` (per-commit and per-session work).
 - **`reportModel`** — used by `init` and `report` (project-level / cumulative reasoning).
-- **`narrativeModel`** — used by `prepare` and `final` (distilling the report into the human-facing narrative + Role Narrative).
+- **`narrativeModel`** — used by `prepare`, `final`, and **`deepen`** (distilling the report into the human-facing narrative + Role Narrative + follow-up rounds).
 
 Each command seeds its picker from its own slot, falling back through the more general slots — `narrativeModel ?? reportModel ?? model` for the narrative stages, `commitModel ?? model` for commit stages — so an existing two-model setup keeps working until a separate narrative model is chosen. `--model` forces a single model for that command. `run` asks for all three upfront. This lets a fast model handle commit-level volume, a stronger model fold the report, and (optionally) a different model — tuned for prose/claim-safety — write the final narrative.
 
@@ -1306,8 +1444,9 @@ Each command seeds its picker from its own slot, falling back through the more g
 - **Model layer** is generated by a local Ollama model (chosen interactively, remembered) using structured JSON output with post-response extract/parse/schema validation; the signal-without-reason rule is enforced after generation.
 - **Report provenance** — cumulative group files in root-level `sourceGroups`; per-entry provenance in `deterministic.historySource` parallel to `history` (same length, same indices); legacy formats are read for backward compatibility.
 - `prepare` reads the latest report + `project.json`, runs three `narrativeModel` sessions (compose history, collapse reasons, reframe questions), writes `prepared/<reportId>.json`.
-- `final` reads the latest `prepared/<reportId>.json` + `project.json`, presents four prepared questions, persists Q&A to the prepared record, runs two `narrativeModel` sessions (refine the "Your IMPACT" narrative with the answers, then the four-bullet Role Narrative), writes `RECONSTRUCTION.<project>.md` to **cwd**, and archives a copy + a linking JSON record under `finish/<preparedId>.{md,json}`.
-- `init`, `evidence`, `summarize`, and `commit-group` are **append-only** with a `--force` override; `report` is **resumable**; `prepare` is **idempotent per report** (`--force` to regenerate); `final` overwrites `RECONSTRUCTION.<project>.md` on `--force`.
+- `final` reads the latest `prepared/<reportId>.json` + `project.json`, presents four prepared questions, persists Q&A to the prepared record, runs two `narrativeModel` sessions (refine the "Your IMPACT" narrative with the answers, then the four-bullet Role Narrative), writes `RECONSTRUCTION.<project>.md` to **cwd**, and archives a copy + a linking JSON record under `finish/<preparedId>.{md,json}` (`version: 1`).
+- **`deepen`** reads the **latest** finish (highest `version`), follows `sourcePrepared` / `sourceReport`, collects **recalled non-code context**, generates four new questions (`narrativeModel`), collects four new answers, refines IMPACT + Role Narrative over **combined history** (prepare baseline + prior final history) and **cumulative Q&A**, writes `RECONSTRUCTION.<project>.vN.md` to cwd, and appends `finish/<preparedId>.vN.{md,json}` without overwriting prior versions. Not part of `run`.
+- `init`, `evidence`, `summarize`, and `commit-group` are **append-only** with a `--force` override; `report` is **resumable**; `prepare` is **idempotent per report** (`--force` to regenerate); `final` overwrites v1 on `--force`; `deepen` is **append-only per version** (`--force` to create the next version when the next file already exists).
 - **`groupThresholdDays`** and **`groupMaxCommits`** (0 = unlimited) are persisted per repo in config; `commit-group` prompts for both on first run (`--days`, `--max-commits` skip the prompts).
 
 ⸻
@@ -1329,9 +1468,11 @@ groups.tiers + context   = signal-weighted membership (low de-emphasized in grou
 report                   = cumulative narrative (fold over sessions: merge, dedup, demote-only; history[i] ↔ deterministic.historySource[i])
 prepared narrative       = role-aligned distillation of the final report (human deliverable)
 questions                = missing human context (the primary product; role-aware; 4 in prepared)
-human answers            = recovered context (confirmed by the user in `final`)
+human answers            = recovered context (confirmed by the user in `final`; cumulative in `deepen`)
 role narrative           = four impact bullets (interpretation grounded in prepare output + answers)
-RECONSTRUCTION.<project>.md      = final personal artifact from `final` (cwd; not auto-scored, not public portfolio)
+RECONSTRUCTION.<project>.md      = final personal artifact from `final` (cwd; v1)
+RECONSTRUCTION.<project>.vN.md   = deepened artifact from `deepen` (append-only versions)
+finish archive           = versioned JSON + md under finish/ (provenance chain; `version` cursor)
 graph (deferred)         = relationships between all of them
 ```
 
@@ -1343,11 +1484,17 @@ The system must **never overclaim impact, ownership, or production usage.** It r
 
 Reason:
 
-Two changes. **(1) JSON validation** — every Ollama `chatJson` response is now extracted from raw text (markdown fences tolerated), parsed, and schema-validated before acceptance (`src/lib/json-response.ts`: `parseAndValidateModelJson`); retries cover parse/validation failures too (§3, §14 Resilience). **(2) Report provenance** — root-level `sourceGroups` (cumulative) stays on the report record next to `deterministic` and `model`; per-entry provenance moved to `deterministic.historySource` **parallel to `history`** (same length, same indices: `history[i]` ↔ `historySource[i]`). Per-entry `sourceGroups` on history entries and transitional nested/offset layouts are still readable. Added `src/lib/report-provenance.ts`.
+Added **`deepen`** (§11.5): optional post-`final` extension that loads the latest finish → prepared → report chain, collects **recalled non-code context**, generates **four new** role-aware questions (`narrativeModel`), merges answers into a **cumulative** Q&A list (8, 12, …), refines IMPACT from **combined history** (prepare baseline + prior final history) + all Q&A, writes **versioned** `RECONSTRUCTION.<project>.vN.md` and `finish/<preparedId>.vN.{md,json}` without overwriting v1. Implemented in `src/actions/deepen.ts`, `src/lib/finish-load.ts`, and deepen prompts in `src/lib/prompts.ts`.
 
 ---
 
-### Change history (review periods)
+### Change history (deepen)
+
+Documented and built **`deepen`** (§11.5, Goal Q8): after `final`, extend the reconstruction with recalled non-code context, four new follow-up questions, cumulative Q&A, refined IMPACT + Role Narrative, and **append-only** finish versioning (`<preparedId>.json` → `<preparedId>.v2.json`, …). History input = `prepared.model.history` + prior `finish.history`. CLI flags: `--context-file`, `--answers-file`, `--force`, `--period`. Not part of `run`. Updated §8, §11 finish `version`, §12 success criteria, §14 command flow + `narrativeModel` scope, §15 core principle.
+
+---
+
+### Change history (report provenance)
 
 Added **review periods** (§0.5) so the pipeline can run over an annual/periodic slice of history. A cross-cutting **`--period <id>`** flag was added to every pipeline command (`init`, `evidence`, `summarize`, `commit-group`, `report`, `prepare`, `final`, `run`), plus two convenience aliases **`init:period`** and **`run:period`**. Periods are stored per repo in `config.json` under a `periods` map (`{ from, to }`, ISO `YYYY-MM-DD`, half-open `[from, to)`); a period's whole data sub-tree nests under `~/.workgraph/data/repos/<repo-id>/periods/<id>/…` (the `periods/` wrapper prevents label/subdir collisions, and the data travels with `export`/`import`). `evidence --period` filters commits by author timestamp into the window. A period **inherits** the repo-level `project.json` by default (copy, no LLM); `--force` builds a period-specific profile. `final`'s deliverable is suffixed `RECONSTRUCTION.<project>.<period>.md`. New `src/lib/periods.ts` (label/date validation, range resolution, interactive definition); all `config.ts` path helpers and `loadProjectContext` now take an optional `period`; `getCommits` takes an optional `[from, to)` range; CLI `init`/`run` registered via factories for the base + `:period` variants.
 

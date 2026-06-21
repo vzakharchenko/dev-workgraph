@@ -21,6 +21,7 @@ describe("cli", () => {
       "report",
       "prepare",
       "final",
+      "deepen",
       "run",
       "export",
       "import",

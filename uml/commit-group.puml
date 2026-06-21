@@ -1,0 +1,416 @@
+@startuml commit-group-overview
+!theme plain
+skinparam shadowing false
+skinparam ArrowColor #555555
+
+title dev-workgraph — **commit-group** (§4, §7)\nWork sessions: deterministic grouping + 2 LLM sessions (**commitModel**)
+
+legend top left
+  |= Tag |= Meaning |
+  | **(D)** | Deterministic — evidence / pure code |
+  | **(M:c)** | Ollama **commitModel** (same slot as summarize) |
+  | **evidence** | Does **not** run here — only its data inside commit .json |
+endlegend
+
+rectangle "**Upstream (not invoked)**" #ECEFF1 {
+  card "**evidence**\n.patches on disk" as EVID #CCCCCC
+  note bottom of EVID
+    commit-group never reads .patch files
+    and never calls evidence
+  end note
+}
+
+rectangle "**Required input — commit .json**" #E3F2FD {
+  card "from **evidence** (D)\ncommit.deterministic" as DET
+  card "from **summarize** (M:c)\ncommit.model" as CM
+}
+
+rectangle "**commit-group**" #FFF3E0 {
+  card "(D) group membership\n+ aggregate deterministic\n+ partition tiers" as DSTEP
+  card "(M:c) session 1 classify\nsignals + questions + context bullets" as C1
+  card "(M:c) session 2 compose\nfirst-person history" as C2
+  card "groups/<timestampEnd>.json" as GOUT
+}
+
+rectangle "**summarize**" #FFF8E1 {
+  card "per-commit model layer\nsignals, questions, summary" as SUM
+}
+
+SUM --> CM : **feeds commit-group**
+DET --> DSTEP : aggregated from members
+CM --> DSTEP : **tierOf** per commit\n(HIGH / MEDIUM / LOW)
+CM --> C1 : member summaries,\nsignals, questions as input
+CM --> C2 : per-tier summaries\nto merge into history
+DSTEP --> C1
+C1 --> C2
+C2 --> GOUT
+
+EVID .. DET : wrote earlier\n(not read directly)
+
+@enduml
+
+
+@startuml commit-group-summarize-link
+!theme plain
+skinparam shadowing false
+
+title **commit-group** and **summarize** — what is reused vs recalculated
+
+package "**summarize output (per commit)**" #FFF8E1 {
+  component "model.summary" as S
+  component "model signals\n(technical / architecture / security)" as SIG
+  component "model.signalReasons" as SR
+  component "model.questions" as Q
+  component "model.changeTypes" as CT
+}
+
+package "**commit-group reads (no .patch, no evidence cmd)**" #E3F2FD {
+  component "commit.deterministic\n(from evidence in .json)" as DET
+  component "All model fields above" as READ
+}
+
+package "**commit-group (D) — always recomputed on run**" #E8F5E9 {
+  component "groupByGap membership" as MEM
+  component "aggregateDeterministic" as AGG
+  component "groups.tiers via tierOf(commit.model)" as TIER
+}
+
+package "**commit-group (M:c) — session-level rebuild**" #FFF3E0 {
+  component "Session signals re-evaluated\n(at least max of members)" as GSIG
+  component "Session questions synthesized\n(merge, dedupe, reframe)" as GQ
+  component "hiContext / mediumContext / lowContext" as CTX
+  component "history — merge of commit summaries" as HIST
+}
+
+S --> READ
+SIG --> READ
+Q --> READ
+
+READ --> TIER
+READ --> GSIG
+READ --> GQ
+DET --> AGG
+SIG --> TIER
+
+note bottom of TIER
+  **tierOf** uses summarize signals only:
+  hi = any high · medium = any medium, none high
+  low = all low OR model is null
+end note
+
+note bottom of GQ
+  Classify session **rebuilds** session questions from
+  member commit questions + session context — not a
+  simple string concat; role-aware via project context.
+end note
+
+note bottom of GSIG
+  On **--force** or retry after summarize update:
+  tiers, session signals, questions, history all
+  recomputed from current commit.model values.
+end note
+
+@enduml
+
+
+@startuml commit-group-command
+!theme plain
+skinparam shadowing false
+skinparam ActivityBorderColor #888888
+skinparam NoteBackgroundColor #FFF3E0
+
+title **commit-group** — Full command flow
+
+start
+
+:loadCommitRecords(commits/);\nread **.json only** — no .patch, no evidence;
+
+if (No commits?) then (yes)
+  #Pink:Run **evidence** first;
+  stop
+else (no)
+endif
+
+:Resolve **groupThresholdDays** + **groupMaxCommits**\n(prompt or --days / --max-commits);
+
+:groupByGap(commits, days, max)\n**oldest first**;
+
+:Pick **commitModel** (same slot as summarize);
+
+:loadProjectContext -> classify + compose system prompts;
+
+partition "Per work session (oldest group first)" {
+  :buildGroupRecord(members) **(D)**;
+  note right
+    groups.commits[] ordered hashes
+    groups.tiers = partitionTiers(members)
+    deterministic = aggregateDeterministic(members)
+    model = null (until LLM)
+  end note
+
+  if (group file exists with model\nAND NOT --force?) then (yes)
+    :Skip LLM (append-only);
+  else (no)
+    partition "**Session 1 — classify (M:c)**" {
+      :Input: aggregated deterministic,\ntier-annotated members (summary + signals\n+ per-commit questions as context),\ngroups.tiers reference;
+      :Output: session **signals** + signalReasons,\n**questions[]**, changeTypes, confidence,\nhiContext / mediumContext / lowContext;
+      :enforceSignalReasons;
+    }
+
+    partition "**Session 2 — compose (M:c)**" {
+      :Input: classify result +\nper-commit summaries by tier;
+      :Output: **history** only\n(first-person merge);
+    }
+
+    :technologies = mergeTechnologies(members)\n**(D)** union of commit models;
+    :Write groups/<timestampEnd>.json;
+  endif
+}
+
+#LightGreen:Done;
+
+floating note left
+  On model failure: save group with model=null\n(deterministic + tiers kept) for retry.
+  **--force** re-runs grouping + both LLM sessions
+  even when model already present.
+  Re-**summarize** commits first -> new per-commit
+  signals/questions -> commit-group **--force**
+  recalculates tiers + session signals + questions.
+end note
+
+stop
+
+@enduml
+
+
+@startuml commit-group-deterministic
+!theme plain
+skinparam shadowing false
+skinparam ActivityBorderColor #888888
+skinparam NoteBackgroundColor #E8F5E9
+
+title **commit-group** — Deterministic steps (D)\nNo evidence command · uses commit .json from disk
+
+start
+
+:Load all commit records from commits/**/*.json;
+
+note right
+  Each record contains:
+  • deterministic (written by **evidence**)
+  • model (written by **summarize**, may be null)
+end note
+
+partition "1. Group membership — groupByGap" {
+  :Walk chronologically;
+  if (gap > groupThresholdDays\nOR group size >= groupMaxCommits?) then (yes)
+    :Close group, start new;
+  else (no)
+    :Same session;
+  endif
+  note right: Single-commit groups are valid
+}
+
+partition "2. groups.commits (D)" {
+  :Ordered list of member hashes;
+}
+
+partition "3. groups.tiers — partitionTiers (D)" {
+  :For each member: **tierOf(commit)**;
+  note right
+    Uses **summarize** signals only:
+    hi / medium / low
+    model null -> low tier
+  end note
+  :Every hash in exactly one tier bucket;
+}
+
+partition "4. aggregateDeterministic (D)" {
+  :Union changedFiles per status;
+  :Sum linesAdded / linesDeleted;
+  :Union folders, areas, excludedFiles;
+  note right
+    Same rules as evidence, merged across members.
+    **Does not** re-read Git or patches.
+  end note
+}
+
+:Write deterministic layer to group JSON\nbefore any LLM call;
+
+stop
+
+@enduml
+
+
+@startuml commit-group-model-layer
+!theme plain
+skinparam shadowing false
+skinparam classBackgroundColor #FAFAFA
+
+title **GroupModelLayer** — two LLM sessions (M:c)
+
+class "GroupRecord" as GR {
+  groupId, timestampStart, timestampEnd, commitCount
+  groups { commits[], tiers { low, medium, hi } }
+  deterministic : DeterministicLayer **(D)**
+  model : GroupModelLayer | null
+}
+
+class "Session 1 — classify" as C1 #FFF3E0 {
+  **Rebuilt session signals**
+  technicalSignal / architectureSignal / securitySignal
+  signalReasons (patch-grounded, session scope)
+  --
+  **questions[]** — session-level
+  synthesized from member gaps
+  (not simple concat of commit questions)
+  --
+  changeTypes[], confidence
+  hiContext[] / mediumContext[] / lowContext[]
+  (meaning-merged bullets, not commit hashes)
+}
+
+class "Session 2 — compose" as C2 #FFF3E0 {
+  **history** : string
+  First-person merge of commit summaries
+  HIGH = full detail · MEDIUM = brief
+  LOW = optional mention
+}
+
+class "CLI (D post)" as CLI #E3F2FD {
+  technologies[] = mergeTechnologies(members)
+  provenance { model, generatedAt, patchTruncated }
+}
+
+GR *-- C1
+C1 --> C2 : classify feeds compose
+C2 --> CLI
+CLI --> GR
+
+note right of C1
+  Input from **summarize**:
+  per-commit summary, signals, questions
+  + deterministic tiers reference
+end note
+
+note bottom of GR
+  **evidence** does not participate in model steps.
+  Member **patches never loaded**.
+end note
+
+@enduml
+
+
+@startuml commit-group-rerun
+!theme plain
+skinparam shadowing false
+
+title Update / **--force** — recalculation chain
+
+actor "Developer" as DEV
+
+rectangle "**1. Re-summarize commits**" #FFF8E1 {
+  card "summarize --force" as S
+  card "Per commit:\nnew signals + questions\n+ summary" as SC
+}
+
+rectangle "**2. Re-group sessions**" #FFF3E0 {
+  card "commit-group --force" as G
+  card "(D) Rebuild membership\n(if threshold changed)" as GM
+  card "(D) **Recompute groups.tiers**\nfrom new commit signals" as GT
+  card "(M:c) classify:\n**new session signals**\n**new session questions[]**" as GC
+  card "(M:c) compose:\nnew history" as GH
+}
+
+DEV --> S
+S --> SC
+SC --> G
+G --> GM
+GM --> GT
+GT --> GC
+GC --> GH
+
+note bottom
+  Order matters: update commit models first,
+  then commit-group --force so tiers and session
+  signals/questions reflect the new per-commit layer.
+  evidence re-run only needed if Git export changed;
+  commit-group still does not call evidence.
+end note
+
+@enduml
+
+
+@startuml commit-group-sequence
+!theme plain
+skinparam shadowing false
+
+title Sequence — **commit-group** (summarize in, evidence out)
+
+actor "Developer" as DEV
+database "commits/*.json\n(D from evidence +\nM:c from summarize)" as COMM
+database "project.json" as PJ
+participant "**commit-group**" as CG
+participant "Ollama\ncommitModel" as LLM
+database "groups/<ts>.json" as GRP
+
+DEV -> CG : commit-group ./repo [--force]
+
+CG -> COMM : loadCommitRecords()\n**.json only**
+
+note over COMM
+  evidence .patch files **not read**
+  evidence command **not called**
+end note
+
+CG -> CG : groupByGap + buildGroupRecord (D)\naggregateDeterministic\npartitionTiers from commit.model signals
+
+CG -> PJ : loadProjectContext()
+
+CG -> LLM : **Session 1 classify**\nmember summaries + signals + questions
+LLM --> CG : session signals, questions[], context tiers
+
+CG -> LLM : **Session 2 compose**\nsummaries by tier + classify result
+LLM --> CG : history
+
+CG -> CG : mergeTechnologies (D)\n+ provenance
+
+CG -> GRP : write group JSON
+
+CG --> DEV : summarized / skipped / failed counts
+
+@enduml
+
+
+@startuml commit-group-example
+!theme plain
+skinparam shadowing false
+
+title Example — group record after **commit-group**
+
+object "groups/1717428123.json" as G #FFF3E0 {
+  groupId = 1717428123
+  commitCount = 3
+  ..
+  **groups (D)**
+  commits[] = 3 hashes
+  tiers.hi / medium / low from **summarize** signals
+  ..
+  **deterministic (D)**
+  union of member deterministic layers
+  ..
+  **model (M:c)**
+  history = first-person session narrative
+  technicalSignal / architectureSignal / securitySignal
+  signalReasons + **questions[]** (session-level)
+  hiContext / mediumContext / lowContext
+  technologies = union from member commits (D)
+}
+
+note bottom of G
+  Per-commit questions (summarize) -> classify synthesizes
+  session questions. Per-commit signals -> tiers (D) +
+  session signals re-evaluated (M:c).
+end note
+
+@enduml

@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import inquirer from "inquirer";
 import { loadConfig, repoFinishDir, repoPreparedDir, setOllamaConfig } from "../lib/config.js";
+import { defaultReconstructionName } from "../lib/finish-load.js";
 import { resolveRepo } from "../lib/git.js";
 import { groupHistoryJsonSchema, roleNarrativeJsonSchema } from "../lib/model.js";
 import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
@@ -199,14 +200,9 @@ export async function final(options: FinalOptions): Promise<void> {
     ...qa.flatMap((x) => [`**Q:** ${x.question}`, `**A:** ${x.answer || "(no answer)"}`, ""]),
   ].join("\n");
 
-  // Period results get a suffixed filename so a year review never overwrites the
-  // repo's all-time RECONSTRUCTION.<project>.md.
-  const defaultName = options.period
-    ? `RECONSTRUCTION.${projectName}.${options.period}.md`
-    : `RECONSTRUCTION.${projectName}.md`;
   const outPath = options.output
     ? path.resolve(options.output)
-    : path.join(process.cwd(), defaultName);
+    : path.join(process.cwd(), defaultReconstructionName(repoPath, options.period));
   fs.writeFileSync(outPath, `${md}\n`, "utf8");
   console.log(`\n✅ Wrote ${outPath}`);
 
@@ -222,6 +218,8 @@ export async function final(options: FinalOptions): Promise<void> {
     finishId: prepared.preparedId,
     sourcePrepared: latest.file,
     sourceReport: prepared.sourceReport,
+    version: 1,
+    round: 1,
     project: projectName,
     role,
     technologies: prepared.model.technologies,

@@ -1,0 +1,489 @@
+@startuml preconditions-overview
+!theme plain
+skinparam shadowing false
+skinparam ArrowColor #555555
+
+title dev-workgraph — Preconditions: overview & dependencies
+
+legend top left
+  **Preflight** runs before `run` (optional standalone: `check`)
+  **Per-repo preconditions** must be satisfied before pipeline stages
+endlegend
+
+rectangle "Preflight (global)" #E3F2FD {
+  card "**check**" as CHECK
+}
+
+rectangle "Per repository" #FFF8E1 {
+  card "**authors**" as AUTH
+  card "**init**" as INIT
+  card "**init:period**" as INITP
+}
+
+rectangle "Downstream stages" #E8F5E9 {
+  card "evidence" as EVID
+  card "summarize" as SUM
+  card "commit-group" as CG
+  card "report" as REP
+  card "prepare" as PRE
+  card "final" as FIN
+}
+
+CHECK -down-> INIT : **run** preflight\n(abort if Ollama not ready)
+
+AUTH -down-> EVID : **required**\nonly selected emails extracted
+INIT -down-> SUM : **required** for full\nproject context in LLM
+INIT -down-> CG
+INIT -down-> REP
+INIT -down-> PRE
+INIT -down-> FIN
+
+INITP .up.> INIT : inherits repo-level\nproject.json by default
+INITP -down-> SUM : same as init,\nscoped to periods/<id>/
+
+note bottom of AUTH
+  May run **without init**
+  (evidence works, but no role/story grounding yet)
+end note
+
+note bottom of INIT
+  May run **without authors**
+  (but evidence still needs authors before export)
+end note
+
+note as NCTX
+  **Project context block** (from init → project.json)
+  injected into every LLM call after init:
+  • role
+  • story.preparedContext
+  • profile (summary, domains, apparentStack, keyThemes)
+  Missing project.json → CLI warns, continues with empty context
+end note
+INIT .. NCTX
+
+@enduml
+
+
+@startuml preconditions-check
+!theme plain
+skinparam shadowing false
+skinparam ActivityBorderColor #888888
+skinparam NoteBackgroundColor #E3F2FD
+
+title **check** — Ollama preflight (§14)
+
+start
+
+:Resolve Ollama base URL\n(default http://127.0.0.1:11434,\noverride with --url);
+
+:GET /api/tags → list installed models;
+
+if (Ollama reachable?) then (no)
+  if (ollama binary on PATH?) then (yes)
+    :Print: start server\n`ollama serve`;
+  else (no)
+    :Print OS-specific install help;
+    note right
+      **macOS:** brew install ollama
+      **Linux:** curl … install.sh | sh
+      **Then:** ollama pull <model>
+      Suggested: qwen2.5-coder:14b, gpt-oss:latest
+    end note
+  endif
+  #Pink:Exit code 1;
+  stop
+else (yes)
+endif
+
+if (≥ 1 model installed?) then (no)
+  #Pink:Print pull suggestions;\nExit code 1;
+  stop
+else (yes)
+  :Print installed model list;
+endif
+
+:Read ~/.workgraph/config.json → ollama slots;
+
+partition "Validate saved preferences" {
+  :Check **commitModel**;
+  :Check **reportModel**;
+  :Check **narrativeModel**;
+  if (Any saved model NOT in installed list?) then (yes)
+    #Pink:Warn + suggest `ollama pull`;\nExit code 1;
+    stop
+  else (no)
+  endif
+}
+
+#LightGreen:✅ Ready;
+note right
+  **Standalone:** `dev-workgraph check`
+  **In run:** `ollamaReady()` preflight — aborts
+  before gathering inputs if not ready
+end note
+
+stop
+
+@enduml
+
+
+@startuml preconditions-authors
+!theme plain
+skinparam shadowing false
+skinparam ActivityBorderColor #888888
+skinparam NoteBackgroundColor #FFF8E1
+
+title **authors** — Author selection (§1)\nPrecondition for **evidence**
+
+start
+
+:Resolve repository path\n(relative → absolute);
+
+:`git log --all --no-merges`\nAggregate authors **by email** + commit counts;
+
+if (No commits?) then (yes)
+  :Print "No commits found";
+  stop
+else (no)
+endif
+
+if (--json flag?) then (yes)
+  :Print { repo, authors[] };\nNo save;
+  stop
+else (no)
+endif
+
+partition "Default pre-selection" {
+  :Load saved selectedAuthors[]\nfrom config.json (if any);
+  :Add git user.email from repo config\nif it appears in author list;
+  note right
+    Lesson from real runs: near-identical emails
+    (vzaharchenko@… vs vzakharchenko@…)
+    are easy to confuse — picker shows commit counts
+  end note
+}
+
+if (--email <addr>… flag?) then (yes)
+  :Match against known authors;\nWarn on unknown emails;
+  if (Any matched?) then (no)
+    stop
+  else (yes)
+  endif
+else (no)
+  :Interactive **checkbox** prompt\n"Select identities that are YOUR work";
+  note right
+    Each choice:
+    Name <email>  (N commits)
+  end note
+  if (Nothing selected?) then (yes)
+    stop
+  else (no)
+  endif
+endif
+
+:Persist to **~/.workgraph/config.json**;
+note right
+  repos["/abs/path/to/repo"].selectedAuthors = [
+    "me@example.com", …
+  ]
+end note
+
+#LightGreen:✅ Authors saved;
+
+note bottom
+  **Without authors:** evidence cannot know which commits are yours
+  **Bots filtered by user choice:** Renovate, Dependabot, Snyk, teammates
+  **May run without init** — independent precondition
+end note
+
+stop
+
+@enduml
+
+
+@startuml preconditions-init
+!theme plain
+skinparam shadowing false
+skinparam ActivityBorderColor #888888
+skinparam NoteBackgroundColor #FFFDE7
+
+title **init** — Project initialization (§0)\nPrecondition for **summarize**, **commit-group**, **report**, **prepare**, **final**
+
+start
+
+:Resolve repository path;
+
+if (--period / init:period mode?) then (yes)
+  :Resolve period label + [from, to)\nPersist in config.json → periods.<id>;
+  note right
+    ISO YYYY-MM-DD, half-open **[from, to)**
+    Label: letters, digits, . _ -
+  end note
+  -> period_branch;
+else (no)
+endif
+
+:Target file:\n~/.workgraph/data/repos/<repo-id>/project.json\n(or periods/<id>/project.json);
+
+if (project.json exists\nAND NOT --force?) then (yes)
+  :Skip (idempotent);\n"Use --force to redo";
+  stop
+else (no)
+endif
+
+label period_branch
+if (period mode\nAND NOT --force?) then (yes)
+  if (repo-level project.json exists?) then (no)
+    #Pink:Error: run repo-level init first\nor pass --force;
+    stop
+  else (yes)
+    :**Copy** repo-level → periods/<id>/project.json\n(no LLM);
+    #LightGreen:✅ Period inherited context;
+    stop
+  endif
+else (no — full init)
+endif
+
+partition "Interactive inputs (H)" {
+  :**Developer role** — select or --role;
+  note right
+    Principal Developer
+    Staff Developer
+    Senior Developer
+    Junior Developer
+  end note
+  :Persist role → config.json;
+
+  :**Project story** — editor or --story;
+  note right
+    Free-form, multi-line:
+    • what the project is
+    • how it started
+    • pivots / milestones
+    Raw human context — not evidence
+  end note
+}
+
+partition "Automatic inputs (D)" {
+  :Read **README.md** from repo root\n(if missing → continue, not an error);
+}
+
+:Pick **reportModel** (Ollama)\n--model overrides;\nsaved in config.ollama.reportModel;
+
+partition "LLM session 1 — Prepare story (M:r)" {
+  :Input: role + raw story;
+  :Output: **story.preparedContext**;
+  note right
+    Role-adjusted reframing:
+    • Principal → system boundaries, cross-cutting decisions
+    • Staff → subsystem ownership, platform direction
+    • Senior → feature ownership, product driver
+    • Junior → assigned vs self-directed, learning scope
+    Raw story kept unchanged
+  end note
+}
+
+partition "LLM session 2 — Project profile (M:r)" {
+  :Input: role + preparedContext + README;
+  :Structured JSON output;
+  :Output: **profile**;
+  note right
+    • summary — what project appears to be about
+    • domains[]
+    • apparentStack[]
+    • keyThemes[]
+    Interpretation, not proof
+  end note
+}
+
+:Write **project.json**;
+note right
+  {
+    role, story: { raw, preparedContext },
+    readme: { present, path? },
+    profile: { summary, domains, … },
+    provenance: { model, generatedAt }
+  }
+end note
+
+#LightGreen:✅ Project initialized;
+
+stop
+
+@enduml
+
+
+@startuml preconditions-init-sequence
+!theme plain
+skinparam shadowing false
+
+title **init** — LLM sessions & data flow
+
+actor "Developer" as DEV
+participant "CLI\ninit" as CLI
+database "Git repo" as REPO
+database "config.json" as CFG
+database "project.json" as PJ
+participant "Ollama\n(reportModel)" as LLM
+
+DEV -> CLI : dev-workgraph init ./repo\n[--role] [--story] [--force]\n[--period] [--from] [--to]
+
+CLI -> REPO : resolve path → repo-id
+CLI -> CFG : read/write role\n(and period definition if --period)
+
+alt project.json exists && !--force
+  CLI --> DEV : skip (idempotent)
+else period && !--force && repo-level project.json exists
+  CLI -> PJ : copy repo-level → periods/<id>/project.json
+  CLI --> DEV : inherited (no LLM)
+else full init
+  DEV -> CLI : role (prompt or --role)
+  CLI -> CFG : persist role
+  DEV -> CLI : project story (editor or --story)
+  CLI -> REPO : read README.md (optional)
+
+  CLI -> LLM : **Session 1** — story prepare\n(role + raw story)
+  LLM --> CLI : preparedContext
+
+  CLI -> LLM : **Session 2** — project profile\n(role + preparedContext + README)\nJSON schema validated
+  LLM --> CLI : profile { summary, domains, stack, themes }
+
+  CLI -> PJ : write project.json + provenance
+  CLI --> DEV : ✅ initialized
+end
+
+@enduml
+
+
+@startuml preconditions-init-period
+!theme plain
+skinparam shadowing false
+skinparam ActivityBorderColor #888888
+
+title **init:period** / **init --period** — Review period seeding (§0.5)
+
+start
+
+:Define period in config.json;
+note right
+  periods: {
+    "2022": { from: "2022-01-01", to: "2023-01-01" },
+    "2022-H1": { from: "2022-01-01", to: "2022-07-01" }
+  }
+  Half-open [from, to) — no double-count on boundary
+end note
+
+:Data subtree (mirrors repo layout):
+periods/<id>/project.json
+periods/<id>/commits/ … groups/ … reports/ …;
+
+if (--force?) then (yes)
+  :Run full **init** LLM sessions\n→ period-specific project.json;
+else (no — default inherit)
+  if (repo-level project.json?) then (missing)
+    #Pink:Error — run `init` first;
+    stop
+  else (exists)
+    :Copy repo-level → periods/<id>/project.json;
+    note right
+      No LLM — role/story rarely change between periods
+    end note
+  endif
+endif
+
+:Downstream stages use --period <id>;
+note right
+  • Load period project.json, fallback to repo-level
+  • evidence filters commits by author timestamp ∈ [from, to)
+  • final → RECONSTRUCTION.<project>.<period>.md
+  • Period data travels with export/import
+end note
+
+#LightGreen:✅ Period ready;
+
+stop
+
+@enduml
+
+
+@startuml preconditions-project-context
+!theme plain
+skinparam shadowing false
+skinparam componentStyle rectangle
+
+title **Project context block** — output of preconditions, input to all later LLM steps
+
+package "Sources" {
+  [config.json\nrole] as ROLE
+  [project.json\nstory.preparedContext] as STORY
+  [project.json\nprofile] as PROF
+}
+
+package "Project context block\n(prepended to prompts)" as BLOCK {
+  component "Role" as R
+  component "Prepared story context" as PS
+  component "Profile summary" as SUM
+  component "Domains" as DOM
+  component "Apparent stack" as STK
+  component "Key themes" as THM
+}
+
+ROLE --> R
+STORY --> PS
+PROF --> SUM
+PROF --> DOM
+PROF --> STK
+PROF --> THM
+
+package "Consumed by (M:*)" {
+  [summarize] as SUMM
+  [commit-group\nclassify + compose] as CG
+  [report\nfold merge] as REP
+  [prepare] as PRE
+  [final\nIMPACT + Role Narrative] as FIN
+}
+
+BLOCK --> SUMM
+BLOCK --> CG
+BLOCK --> REP
+BLOCK --> PRE
+BLOCK --> FIN
+
+note bottom of BLOCK
+  **Purpose:**
+  • interpret patches in light of what the project is
+  • avoid questions README/story already answer
+  • frame **questions** by seniority (§8)
+  **Never** use role to inflate impact
+end note
+
+note bottom of SUMM
+  If project.json missing at model step:
+  CLI **warns**, continues with empty context
+  (same as pre-init behavior)
+end note
+
+@enduml
+
+
+@startuml preconditions-role-questions
+!theme plain
+skinparam shadowing false
+
+title Role-aware **questions** — how init role shapes later outputs (§0, §8)
+
+map "Question emphasis by role" as ROLEMAP {
+  Principal Developer => system-wide trade-offs,\ncross-team boundaries,\nlong-term architectural consequences,\nproduction adoption at org scale
+  Staff Developer => design ownership across subsystems,\nplatform direction,\nintegration with adjacent systems
+  Senior Developer => feature/design ownership,\ncustomer or product driver,\nreplacing manual processes,\nmentoring or review scope
+  Junior Developer => assigned vs self-directed work,\nlearning context, scope of autonomy,\nwho reviewed or unblocked
+}
+
+note bottom of ROLEMAP
+  Questions target what **Git cannot know**:
+  ownership, intent, production usage, customer driver, …
+  Role shapes **which gaps to ask about**,
+  not how impressive the work sounds.
+end note
+
+@enduml

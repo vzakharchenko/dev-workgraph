@@ -6,6 +6,7 @@ import { Command } from "commander";
 import { type AuthorsOptions, authors } from "./actions/authors.js";
 import { type CheckOptions, check } from "./actions/check.js";
 import { type CommitGroupOptions, commitGroup } from "./actions/commit-group.js";
+import { type DeepenOptions, deepen } from "./actions/deepen.js";
 import { type EvidenceOptions, evidence } from "./actions/evidence.js";
 import { type ExportOptions, exportRepo } from "./actions/export.js";
 import { type FinalOptions, final } from "./actions/final.js";
@@ -335,6 +336,58 @@ program
       };
       try {
         await final(options);
+      } catch (err) {
+        console.error(`✖ ${(err as Error).message}`);
+        process.exitCode = 1;
+      }
+    },
+  );
+
+// ✅ Command: extend latest finish with four new Q&A → refined RECONSTRUCTION
+program
+  .command("deepen")
+  .description(
+    "Extend the latest finish: recalled context, four new questions, refined narrative (8+ Q&A).",
+  )
+  .argument("[repo]", "Path to the Git repository", ".")
+  .option(
+    "--context-file <path>",
+    "Recalled non-code project context as plain text (skips the editor prompt)",
+  )
+  .option(
+    "--answers-file <path>",
+    "Pre-written answers to the four NEW questions only (non-interactive)",
+  )
+  .option("--output <path>", "Output markdown path (default: ./RECONSTRUCTION.<project>.md)")
+  .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
+  .option("--model <name>", "Model to use (skips the interactive picker)")
+  .option("--force", "Extend again even if a child finish for the current latest already exists")
+  .option("--period <id>", "Operate on a defined review period's data")
+  .action(
+    async (
+      repo: string,
+      opts: {
+        contextFile?: string;
+        answersFile?: string;
+        output?: string;
+        url?: string;
+        model?: string;
+        force?: boolean;
+        period?: string;
+      },
+    ) => {
+      const options: DeepenOptions = {
+        repo,
+        contextFile: opts.contextFile,
+        answersFile: opts.answersFile,
+        output: opts.output,
+        url: opts.url,
+        model: opts.model,
+        force: opts.force,
+        period: opts.period,
+      };
+      try {
+        await deepen(options);
       } catch (err) {
         console.error(`✖ ${(err as Error).message}`);
         process.exitCode = 1;

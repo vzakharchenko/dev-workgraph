@@ -1,0 +1,435 @@
+@startuml final-overview
+!theme plain
+skinparam shadowing false
+skinparam ArrowColor #555555
+
+title dev-workgraph — **final** (§11)\nClose the loop: human answers -> **RECONSTRUCTION.<project>.md**
+
+legend top left
+  |= Tag |= Meaning |
+  | **(H)** | Human input — primary product |
+  | **(M:n)** | Ollama **narrativeModel** |
+  | **(D)** | Deterministic assembly / persist |
+endlegend
+
+rectangle "**Preconditions**" #FFF8E1 {
+  card "**prepare** -> prepared/<id>.json\n(4 questions + history)" as PREP
+  card "**init** -> project.json" as INIT
+}
+
+rectangle "**Not read directly**" #ECEFF1 {
+  card "report / groups / commits" as X #CCCCCC
+  card "evidence" as E #CCCCCC
+}
+
+rectangle "**final**" #FCE4EC {
+  card "**Step 1 (H):** collect 4 answers\npersist to prepared record" as S1
+  card "**Step 2a (M:n):** refine Your IMPACT\nhistory + answers woven in" as S2A
+  card "**Step 2b (M:n):** Role Narrative\n4 impact bullets" as S2B
+  card "**Step 3 (D):** assemble markdown" as S3
+  card "**Step 4 (D):** archive finish/" as S4
+}
+
+rectangle "**Deliverables**" #E8F5E9 {
+  card "**cwd:** RECONSTRUCTION.<project>.md" as MD
+  card "finish/<preparedId>.md + .json" as FIN
+}
+
+PREP --> S1
+INIT --> S2A
+INIT --> S2B
+S1 --> S2A
+S2A --> S2B
+S2A --> S3
+S2B --> S3
+PREP --> S3
+INIT --> S3
+S3 --> MD
+S3 --> S4
+S4 --> FIN
+
+X .. S1 : only via prepared
+E .. S1
+
+note bottom of S1
+  **Interactive** in `run` — questions exist only after prepare.
+  `--answers-file` for non-interactive.
+  Reuse saved answers unless `--force`.
+end note
+
+note bottom of MD
+  Personal reconstruction document — not auto-scored,
+  not a public portfolio. Confirmed context from human answers.
+end note
+
+@enduml
+
+
+@startuml final-command
+!theme plain
+skinparam shadowing false
+skinparam ActivityBorderColor #888888
+skinparam NoteBackgroundColor #FCE4EC
+
+title **final** — Full command flow
+
+start
+
+:Require **project.json** + latest **prepared/<reportId>.json**;
+
+if (No prepared?) then (yes)
+  #Pink:Run **prepare** first;
+  stop
+else (no)
+endif
+
+partition "**Step 1 — Collect answers (H, no LLM)**" {
+  if (--answers-file?) then (yes)
+    :Load Q&A from JSON file;
+  else if (saved answers AND NOT --force?) then (yes)
+    :Reuse answers from prepared record;
+  else (no)
+    :Interactive editor:\n4 questions one at a time\n(multi-line allowed);
+  endif
+  :Persist answers + answeredAt\n**in-place** on prepared/<id>.json;
+}
+
+:Pick **narrativeModel** (Ollama);
+
+partition "**Step 2a — Refine Your IMPACT (M:n)**" {
+  :Input: prepared.model.history\n+ Q&A pairs + project context;
+  :Weave answers into narrative;\nANSWER_CORRECTION_RULE:\nanswers override over-strong Git claims;
+  :Output: **impactHistory**;\nfallback = prepared history on failure;
+  note right
+    Prepared history NOT modified on disk
+  end note
+}
+
+partition "**Step 2b — Role Narrative (M:n)**" {
+  :Input: **impactHistory** (from 2a)\n+ 4 signalReasons + Q&A + project context;
+  :Output: **exactly 4** impact bullets;\nclaim-safe engineer-to-engineer tone;
+}
+
+partition "**Step 3 — Write markdown (D)**" {
+  :Assemble RECONSTRUCTION.<project>.md\n-> **process.cwd()** (not repo path);
+  note right
+    ## PROJECT DESCRIPTION (from profile)
+    ## Your IMPACT as {ROLE}
+    ## Technologies
+    ## Impact bullet points
+    ## Possible questions (Q&A)
+  end note
+}
+
+partition "**Step 4 — Archive (D)**" {
+  :Copy markdown -> finish/<preparedId>.md;
+  :Write FinishRecord -> finish/<preparedId>.json\n(links sourcePrepared + sourceReport);
+}
+
+#LightGreen:MVP deliverable complete;
+
+stop
+
+@enduml
+
+
+@startuml final-inputs
+!theme plain
+skinparam shadowing false
+
+title **final** — inputs and provenance chain (file names only)
+
+rectangle "**Read by final**" #FFF8E1 {
+  card "prepared/<reportId>.json" as P
+  card "project.json" as PJ
+}
+
+rectangle "**From prepared**" #FFF3E0 {
+  component "model.history -> refine in 2a" as H
+  component "model.questions x4 -> ask human" as Q
+  component "model.signalReasons x4 -> Role Narrative" as R
+  component "model.technologies -> markdown" as T
+  component "sourceReport (traceability)" as SR
+}
+
+rectangle "**From project.json**" as PJIN #FFF8E1 {
+  component "role -> IMPACT heading + framing" as ROLE
+  component "profile.summary/domains/stack\n-> PROJECT DESCRIPTION" as PROF
+  component "story.preparedContext -> LLM context" as STORY
+}
+
+rectangle "**Not loaded**" #ECEFF1 {
+  card "reports/" as REP #CCCCCC
+  card "groups/" as G #CCCCCC
+  card "commits/" as C #CCCCCC
+}
+
+P --> H
+P --> Q
+P --> R
+P --> T
+PJ --> ROLE
+PJ --> PROF
+PJ --> STORY
+
+REP .. P : trace via sourceReport\nin finish record only
+G .. P
+C .. P
+
+note bottom of P
+  Provenance chain (no commit hashes):
+  finish -> sourcePrepared -> prepared
+  -> sourceReport -> report
+  (groups/commits implicit inside report)
+end note
+
+@enduml
+
+
+@startuml final-human-loop
+!theme plain
+skinparam shadowing false
+skinparam NoteBackgroundColor #FCE4EC
+
+title **Step 1** — Human loop closes the pipeline (§8, §11)
+
+rectangle "**System asked (prepare)**" #FFF3E0 {
+  card "4 role-aware questions\nwhat Git cannot know" as Q
+}
+
+rectangle "**Human confirms (final)**" #FCE4EC {
+  card "Answer each question\n(editor, multi-line)" as A
+  card "Persist to prepared record:\nanswers[] + answeredAt" as P
+}
+
+rectangle "**System refines with answers (M:n)**" as REF #E1F5FE {
+  card "2a: IMPACT narrative\nGit reconstruction + confirmed context"
+  card "2b: 4 Role Narrative bullets\nsame confirmed scope"
+}
+
+Q --> A : interactive\n(or --answers-file)
+A --> P
+P --> REF
+
+note as RULE
+  **ANSWER_CORRECTION_RULE:**
+  Human answers are **higher priority** than Git reconstruction.
+  POC / prototype / rejected option / unfinished work
+  in an answer -> narrative narrowed, not appended as caveat.
+  Empty answer -> keep Git reconstruction for that part.
+end note
+
+note bottom of Q
+  Questions are the **primary product** of the whole pipeline.
+  final is where they get **answered** and become confirmed context.
+end note
+
+@enduml
+
+
+@startuml final-llm-sessions
+!theme plain
+skinparam shadowing false
+
+title **Steps 2a + 2b** — two **narrativeModel** sessions
+
+left to right direction
+
+package "**Inputs shared**" #FFF8E1 {
+  component "project context block" as CTX
+  component "4 Q&A pairs (from step 1)" as QA
+}
+
+package "**Step 2a — IMPACT narrative (M:n)**" #FFF3E0 {
+  component "prepared.model.history" as PH
+  component "**impactHistory**\nflowing prose, answers woven in" as IH
+}
+
+package "**Step 2b — Role Narrative (M:n)**" #FFF3E0 {
+  component "**impactHistory** (from 2a)" as IH2
+  component "4 signalReasons" as SR
+  component "**narrative x4**\nimpact bullet points" as NB
+}
+
+CTX --> IH
+PH --> IH
+QA --> IH
+
+CTX --> NB
+IH2 --> NB
+SR --> NB
+QA --> NB
+IH --> IH2
+
+note bottom of IH
+  Rules: invent nothing; claim-safe tone;
+  no hype words; name real components;
+  answers applied **throughout**, not appended.
+end note
+
+note bottom of NB
+  Same scope as impactHistory — if answer says POC,
+  bullets say prototyped/evaluated, not "migrated production".
+  Framed for role seniority.
+end note
+
+@enduml
+
+
+@startuml final-markdown
+!theme plain
+skinparam shadowing false
+
+title **Step 3** — RECONSTRUCTION markdown structure (D assembly)
+
+rectangle "**Sources**" as SRC {
+  card "project.profile" as PJ #FFF8E1
+  card "impactHistory (2a)" as IH #FFF3E0
+  card "prepared.technologies" as T #FFF3E0
+  card "narrative x4 (2b)" as N #FFF3E0
+  card "Q&A pairs (step 1)" as QA #FCE4EC
+  card "project.role" as R #FFF8E1
+}
+
+rectangle "**RECONSTRUCTION.<project>.md**" as MD #E8F5E9 {
+  card "## PROJECT DESCRIPTION\nprofile.summary + domains/stack" as S1
+  card "## Your IMPACT as {ROLE}\nimpactHistory" as S2
+  card "## Technologies\ncomma-separated list" as S3
+  card "## Impact bullet points\n4 bullets" as S4
+  card "## Possible questions\nQ/A x4" as S5
+}
+
+PJ --> S1
+R --> S2
+IH --> S2
+T --> S3
+N --> S4
+QA --> S5
+
+note bottom of MD
+  Written to **process.cwd()** — where CLI was launched.
+  Period mode: RECONSTRUCTION.<project>.<period>.md
+  `--output` overrides path.
+end note
+
+@enduml
+
+
+@startuml final-finish-record
+!theme plain
+skinparam shadowing false
+skinparam classBackgroundColor #FAFAFA
+
+title **Step 4** — FinishRecord archive
+
+class "FinishRecord" as FR #E1F5FE {
+  finishId = prepared.preparedId
+  sourcePrepared — prepared file name
+  sourceReport — report file name (traceability)
+  project — repo basename
+  role
+  technologies
+  history — refined impactHistory
+  narrative — 4 Role Narrative bullets
+  answers — Q&A pairs
+  outputMarkdown — finish/<id>.md
+  provenance { model, generatedAt }
+}
+
+class "On disk" as DISK {
+  finish/<preparedId>.md — copy of markdown
+  finish/<preparedId>.json — this record
+}
+
+class "Also on disk" as CWD {
+  cwd/RECONSTRUCTION.<project>.md — primary deliverable
+}
+
+FR *-- DISK
+FR .. CWD : same content
+
+note bottom of FR
+  Links back through prepared -> report by **file name**.
+  No commit hashes. `--force` overwrites finish + cwd md.
+end note
+
+@enduml
+
+
+@startuml final-sequence
+!theme plain
+skinparam shadowing false
+
+title Sequence — **final**
+
+actor "Developer" as DEV
+database "prepared/<id>.json" as PREP
+database "project.json" as PJ
+participant "**final**" as FIN
+participant "Ollama\nnarrativeModel" as LLM
+database "cwd/RECONSTRUCTION.*.md" as MD
+database "finish/" as ARCH
+
+DEV -> FIN : final ./repo [--force] [--answers-file]
+
+FIN -> PJ : loadProjectContext (required)
+FIN -> PREP : latestPrepared()
+
+alt no saved answers or --force
+  FIN -> DEV : 4 interactive questions (editor)
+  DEV --> FIN : answers
+else reuse or answers-file
+  FIN -> FIN : load existing Q&A
+end
+
+FIN -> PREP : persist answers + answeredAt
+
+FIN -> LLM : [2a] refine IMPACT narrative\n(history + Q&A + project context)
+LLM --> FIN : impactHistory
+
+FIN -> LLM : [2b] Role Narrative\n(impactHistory + signalReasons + Q&A)
+LLM --> FIN : narrative x4
+
+FIN -> FIN : assemble markdown (D)
+FIN -> MD : write RECONSTRUCTION.<project>.md
+FIN -> ARCH : finish/<id>.md + FinishRecord json
+
+FIN --> DEV : path to deliverable
+
+@enduml
+
+
+@startuml final-pipeline-end
+!theme plain
+skinparam shadowing false
+skinparam ArrowColor #555555
+
+title Full pipeline terminus — **final** closes the loop
+
+rectangle "Git evidence" #E8F5E9 {
+  card "evidence -> summarize -> commit-group -> report" as PIPE
+}
+
+rectangle "Distillation" #FFF3E0 {
+  card "prepare -> 4 questions + unified history" as PREP
+}
+
+rectangle "**Human confirms**" #FCE4EC {
+  card "**final** answers + refines" as FIN
+}
+
+rectangle "**Deliverable**" #C8E6C9 {
+  card "**RECONSTRUCTION.<project>.md**" as OUT
+}
+
+PIPE --> PREP : reconstruct + ask
+PREP --> FIN : ask -> answer
+FIN --> OUT : confirmed personal document
+
+note bottom of OUT
+  System: reconstruct what changed, ask what Git cannot know.
+  Human: confirm ownership, intent, scope via answers.
+  Output: claim-safe narrative — not auto-scored achievements.
+end note
+
+@enduml

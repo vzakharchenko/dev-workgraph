@@ -21,6 +21,8 @@ import {
   buildGroupClassifyPrompt,
   buildGroupComposePrompt,
   buildImpactNarrativePrompt,
+  buildDeepenImpactNarrativePrompt,
+  combinePreparedAndPriorHistory,
   buildPrepareHistoryPrompt,
   buildPrepareQuestionsPrompt,
   buildPrepareReasonsPrompt,
@@ -302,5 +304,31 @@ describe("final prompts", () => {
     expect(IMPACT_NARRATIVE_SYSTEM).toContain("HUMAN ANSWERS");
     expect(STORY_PREPARE_SYSTEM).toContain("preparedContext");
     expect(PROJECT_PROFILE_SYSTEM).toContain("PROFILE");
+  });
+});
+
+describe("deepen prompts", () => {
+  it("combinePreparedAndPriorHistory stacks prepare then prior final", () => {
+    const combined = combinePreparedAndPriorHistory(
+      "Prepared baseline text.",
+      "Final refined text.",
+    );
+    expect(combined).toContain("Baseline from prepare:");
+    expect(combined).toContain("Prepared baseline text.");
+    expect(combined).toContain("Refined after prior final:");
+    expect(combined).toContain("Final refined text.");
+  });
+
+  it("buildDeepenImpactNarrativePrompt includes both history layers and Q&A", () => {
+    const prompt = buildDeepenImpactNarrativePrompt(
+      "From prepare.",
+      "From prior final.",
+      [{ question: "Q?", answer: "A." }],
+      "Recalled note.",
+    );
+    expect(prompt).toContain("From prepare.");
+    expect(prompt).toContain("From prior final.");
+    expect(prompt).toContain("Recalled note.");
+    expect(prompt).toContain("A.");
   });
 });

@@ -1,0 +1,664 @@
+@startuml report-overview
+!theme plain
+skinparam shadowing false
+skinparam ArrowColor #555555
+skinparam linetype ortho
+
+title dev-workgraph — **report** (§9)\nCumulative fold over groups **left -> right** (oldest first)
+
+legend top left
+  |= Symbol |= Meaning |
+  | Gk | Next **group** file (commit-group) |
+  | R(k-1) | **Previous report** file on disk — read at merge |
+  | Rk | **New report** written after fold |
+  | merge | **Two inputs:** prev report + next group |
+endlegend
+
+rectangle "Groups (oldest -> newest)" #E3F2FD {
+  card "G1" as G1
+  card "G2" as G2
+  card "G3" as G3
+  card "Gn" as GN
+}
+
+rectangle "Reports on disk (chain)" #FFF8E1 {
+  card "R1\nreports/t1.json" as R1
+  card "R2\nreports/t2.json" as R2
+  card "R3\nreports/t3.json" as R3
+  card "Rn" as RN
+}
+
+rectangle "Fold steps" #FFF3E0 {
+  card "**init**(G1)\n1 input" as M1
+  card "**merge**(R1, G2)\n**2 inputs**" as M2
+  card "**merge**(R2, G3)\n**2 inputs**" as M3
+  card "**merge**(R(n-1), Gn)" as MN
+}
+
+G1 --> M1
+M1 --> R1
+
+R1 --> M2 : **read prev report**\nreports/t1.json
+G2 --> M2 : **read next group**\ngroups/t2.json
+M2 --> R2
+
+R2 --> M3 : read prev report
+G3 --> M3 : read next group
+M3 --> R3
+
+R3 --> MN : read prev report
+GN --> MN : read next group
+MN --> RN
+
+note bottom of M2
+  Each merge loads **two files**, then internally:
+  • **Signals** — levels max(D); reasons merged(M:r)
+  • **questions** — recombined, deduped, role-prioritized(M:r)
+  • **hi/medium/lowContext** — merged, demote-only, capped(M:r)
+  • **history** — add-if-new + rolling compact @ mergeCursor
+  • **historySource** — graph links: which **group files**
+    fed each history entry (union on compact)
+  **mergedFrom** on output: prev report + group just folded
+end note
+
+note bottom of G1
+  **Input:** groups/ only (commit-group output).
+  Groups without model layer are **skipped**.
+  **evidence** does not participate in report.
+end note
+
+@enduml
+
+
+@startuml report-fold-chain
+!theme plain
+skinparam shadowing false
+
+title Fold model — **report_k = merge(report_{k-1}, group_k)**
+
+left to right direction
+
+package "Step 0" {
+  component "group_1" as G1 #E3F2FD
+}
+
+package "Step 1" {
+  component "report_1\ninit(group_1)" as R1 #FFF3E0
+}
+
+package "Step 2 — **two inputs**" {
+  component "reports/report_1.json\n**prev report (read)**" as R1b #FFF8E1
+  component "groups/group_2.json\n**next group (read)**" as G2 #E3F2FD
+  component "merge(R1, G2)" as MERGE2 #FFE0B2
+  component "reports/report_2.json\n**written**" as R2 #FFF3E0
+}
+
+package "Step 3 — **two inputs**" {
+  component "reports/report_2.json\nprev report" as R2b #FFF8E1
+  component "groups/group_3.json\nnext group" as G3 #E3F2FD
+  component "merge(R2, G3)" as MERGE3 #FFE0B2
+  component "reports/report_3.json\nwritten" as R3 #FFF3E0
+}
+
+G1 --> R1
+
+note as N1
+  **init(group_1)** — only **one** input (group).
+  No previous report. No mergedFrom.
+end note
+
+R1b --> MERGE2 : input 1
+G2 --> MERGE2 : input 2
+MERGE2 --> R2
+
+R2b --> MERGE3 : input 1
+G3 --> MERGE3 : input 2
+MERGE3 --> R3
+
+note as N2
+  **merge** always has **two sources** (except init):
+  • **Previous report file** — last snapshot in chain
+  • **Next group file** — one new work session
+  **mergedFrom** on output links both:
+  previousReportFile + groupFile
+  (NOT group-to-group merge)
+end note
+
+@enduml
+
+
+@startuml report-cursor
+!theme plain
+skinparam shadowing false
+skinparam NoteBackgroundColor #FFFDE7
+
+title **mergeCursor** — rolling compaction (cap = **MAX_HISTORY_ENTRIES** = 12)
+
+rectangle "History list grows left -> right as groups fold" as HIST {
+  card "history[0]" as H0
+  card "history[1]" as H1
+  card "..." as HX
+  card "history[n-1]\n(newest — never merged first)" as HN
+}
+
+rectangle "Parallel provenance (D)" as PROV {
+  card "historySource[0]" as S0
+  card "historySource[1]" as S1
+  card "..." as SX
+  card "historySource[n-1]" as SN
+}
+
+H0 -[hidden]down- S0
+H1 -[hidden]down- S1
+HN -[hidden]down- SN
+
+note as RULE
+  **When history.length > 12 after add-if-new:**
+  1. Take pair at **mergeCursor**: history[cursor] + history[cursor+1]
+  2. LLM compact -> one entry (text only)
+  3. Union historySource[cursor] + historySource[cursor+1]
+  4. **Advance cursor** (+1, wrap to 0 at end)
+  Newest entry stays verbatim until cursor reaches it on a later pass.
+end note
+
+note as EX
+  Example (cap = 4, cursor starts @0):
+  [A, B, C, D]  cursor@0
+  +E -> [A+B, C, D, E]  cursor@1
+  +F -> [A+B, C+D, E, F]  cursor@2
+  +G -> [A+B, C+D, E+F, G]  cursor@0 (wrapped)
+  +H -> [ABCD, E+F, G, H]  cursor@1
+end note
+
+@enduml
+
+
+@startuml report-command
+!theme plain
+skinparam shadowing false
+skinparam ActivityBorderColor #888888
+skinparam NoteBackgroundColor #FFF3E0
+
+title **report** — Walk groups oldest -> newest, write one report file per fold
+
+start
+
+:Load groups/ with model != null\n(oldest first);
+
+:Resume: load longest existing\nreports/ prefix unless --force;
+
+partition "For each group G_k (cursor walks the list)" {
+  if (First group?) then (yes)
+    :**init(G1)** -> report_1;
+    note right
+      Seed from group model
+      history[0] = group.history
+      sourceGroups = [G1]
+    end note
+  else (no)
+    :Read **reports/report_{k-1}.json**\n(previous report from disk);
+    :Read **groups/G_k.json**\n(next group only);
+    :**merge(prev report, G_k)**;
+    note right
+      **Two inputs loaded:**
+      1. prev — full chain state so far
+      2. group — this session's model + history
+      **mergedFrom** on output names both files
+    end note
+  endif
+
+  :Write reports/<group.timestampEnd>.json;
+
+  :Advance to next group ->;
+}
+
+#LightGreen:Final report = last file in chain;
+
+floating note left
+  File name = timestampEnd of **latest group folded**.
+  Re-run without --force continues from
+  first missing report in the chain.
+end note
+
+stop
+
+@enduml
+
+
+@startuml report-merge-substeps
+!theme plain
+skinparam shadowing false
+skinparam ActivityBorderColor #888888
+
+title **merge(prev report, next group)** — 4 sub-steps (substantive path)
+
+start
+
+:Deterministic (D):\nunion evidence fields;\nappend group to sourceGroups;\nset mergedFrom;
+
+:Signals (D):\neach *Signal = max(prev, group);
+
+partition "[1/4] Routine gate (M:r — cheap)" {
+  :LLM: routine vs substantive?;
+  if (ONLY routine upkeep?) then (yes)
+    :Fold deterministically;\nkeep prev history unchanged;\none generic maintenance bullet;
+    stop
+  else (no)
+  endif
+}
+
+partition "[2/4] Model merge (M:r)" {
+  :**Signals (D):** tech/arch/sec = max(prev, group);
+  :**signalReasons (M:r):** merge both arrays,\ncollapse near-duplicates;
+  :**questions (M:r):** recompute for combined work;\ndedupe; keep most valuable for role;
+  :**hiContext / mediumContext / lowContext (M:r):**\nmerge bullets, collapse duplicates,\nre-rank **downward only**, cap <= 12/tier;
+  :changeTypes union; confidence re-assessed;
+}
+
+partition "[3/4] History add-if-new (M:r + D links)" {
+  :Compare prev history texts + group.history;
+  if (Adds substantive new work?) then (yes)
+    :Append history[n].text (LLM text only);
+    :**historySource[n] = [G_k]** — graph link\nto group file for this entry;
+  else (no)
+    :Leave history + historySource unchanged;
+  endif
+}
+
+partition "[4/4] History compact — rolling circle (M:r + D)" {
+  if (history.length > 12?) then (yes)
+    :Take pair at **mergeCursor**:\nhistory[cursor] + history[cursor+1];
+    :LLM condense -> one text entry;
+    :**Union historySource[cursor] + [cursor+1]**\n(all group files that fed either entry);
+    :Replace pair with merged entry;\n**advance mergeCursor** (wrap to 0);
+  else (no)
+  endif
+}
+
+:Write report_k with full accumulated state;
+
+stop
+
+@enduml
+
+
+@startuml report-record
+!theme plain
+skinparam shadowing false
+skinparam classBackgroundColor #FAFAFA
+
+title **ReportRecord** — cumulative state after folding group_k
+
+class "ReportRecord" as RR #FFF3E0 {
+  reportId = timestampEnd of latest group folded
+  sourceGroups[] — **all** groups so far (cumulative)
+  groupCount
+  --
+  **history[]** — { text } only
+  index i pairs with historySource[i]
+  --
+  **mergeCursor** — next compaction pair (0-based)
+}
+
+class "mergedFrom (per fold step)" as MF #E3F2FD {
+  previousReportId — reportId of **last report**
+  previousReportFile — e.g. "1579390000.json"
+  groupFile — e.g. "1591444361.json"
+  (absent on seeded report_1 — no prior report)
+}
+
+RR *-- MF
+
+note bottom of MF
+  Explicit **dual link** on every merge output:
+  which **report** was read + which **group**
+  was folded in. Not a group-to-group edge.
+end note
+
+class "ReportModelLayer (M:r)" as MOD {
+  signals = max across folded groups (D levels)
+  signalReasons — **arrays** (merged, deduped)
+  questions — recombined for combined work
+  hiContext / mediumContext / lowContext — capped
+  changeTypes, confidence, technologies
+}
+
+class "ReportDeterministicLayer (D)" as DET #E8F5E9 {
+  union of group deterministic fields
+  **historySource[][]** parallel to history[]
+  historySource[i] lists group files for history[i]
+}
+
+RR *-- MOD
+RR *-- DET
+
+note bottom of RR
+  Each report file is a **snapshot** after folding
+  one more group left-to-right. The final report
+  is the last JSON in reports/ (highest reportId).
+end note
+
+@enduml
+
+
+@startuml report-group-link
+!theme plain
+skinparam shadowing false
+
+title **report** fold — **two inputs** per step (prev report + next group)
+
+rectangle "**Input 1 — previous report (chain)**" #FFF8E1 {
+  card "reports/<prevReportId>.json" as PR
+  card "Accumulated: model, history,\nmergeCursor, sourceGroups" as PRC
+}
+
+rectangle "**Input 2 — next group**" #E3F2FD {
+  card "groups/<timestampEnd>.json" as G
+  card "This session only:\nhistory, signals, questions" as GC
+}
+
+rectangle "**merge (M:r + D)**" #FFE0B2 {
+  card "foldGroup(prev, groupFile)" as M
+}
+
+rectangle "**Output — new report snapshot**" #FFF3E0 {
+  card "reports/<newReportId>.json" as OUT
+  card "mergedFrom ->\nprev report file + group file" as MF
+}
+
+PR --> M : **read last report**
+PRC -[hidden]down- PR
+G --> M : **read one new group**
+GC -[hidden]down- G
+M --> OUT
+M --> MF
+
+rectangle "**Not used**" #ECEFF1 {
+  card "evidence" as E #CCCCCC
+  card "older groups directly" as OG #CCCCCC
+}
+
+E .. M : no link
+OG .. M : G2..Gk not read again;\nonly via prev report
+
+note bottom of PR
+  Step k>1: CLI loads **report_{k-1}** from reports/
+  (resume uses longest existing prefix as current).
+  Groups G1..G_{k-1} are **inside** that report —
+  not loaded separately from groups/.
+end note
+
+@enduml
+
+
+@startuml report-sequence
+!theme plain
+skinparam shadowing false
+
+title Sequence — fold **left to right** with resume
+
+actor "Developer" as DEV
+database "groups/*.json" as GRP
+database "reports/*.json" as RPT
+participant "**report**" as REP
+participant "Ollama\nreportModel" as LLM
+
+DEV -> REP : report ./repo
+
+REP -> GRP : load groups (model != null)\noldest first
+REP -> RPT : resume longest prefix\n(unless --force)
+
+loop for each group G_k left to right
+  alt k = 1
+    REP -> REP : init(G1) — seed report
+  else k > 1
+    REP -> RPT : **read report_{k-1}.json**\n(input 1 — prev report)
+    REP -> GRP : **read G_k.json**\n(input 2 — next group only)
+    note over RPT, GRP
+      merge uses **two files**:
+      last report snapshot + one new group
+    end note
+    REP -> LLM : [1] routine gate (on group)
+    alt substantive
+      REP -> LLM : [2] merge model layers
+      REP -> LLM : [3] add history if new
+      opt history > 12
+        REP -> LLM : [4] compact pair @ mergeCursor
+        REP -> REP : advance mergeCursor
+      end
+    end
+    REP -> REP : report_k = merge(report_{k-1}, G_k)
+  end
+  REP -> RPT : write reports/<ts>.json\n(+ mergedFrom links)
+end
+
+REP --> DEV : final report path
+
+@enduml
+
+
+@startuml report-merge-internals
+!theme plain
+skinparam shadowing false
+skinparam NoteBackgroundColor #FFFDE7
+
+title **Inside merge** — what happens to model + history (substantive path)
+
+rectangle "**Inputs**" as IN {
+  card "prev report\n(model + history + mergeCursor\n+ historySource graph)" as PREV #FFF8E1
+  card "next group G_k\n(model + history)" as GRP #E3F2FD
+}
+
+rectangle "**Deterministic (D) — code**" as DET #E8F5E9 {
+  card "Union deterministic evidence" as D1
+  card "sourceGroups += G_k\n(cumulative group list)" as D2
+  card "**Signals level:**\ntech/arch/sec = max(prev, group)" as D3
+  card "mergedFrom ->\nprev report file + G_k" as D4
+}
+
+rectangle "**[2/4] Model merge (M:r)**" as MMOD #FFF3E0 {
+  card "**signalReasons** arrays:\nmerge prev + group reasons,\ncollapse near-duplicates" as SR
+  card "**questions:**\nrecompute for COMBINED work;\ndrop duplicates;\nkeep most valuable for role" as Q
+  card "**hiContext / mediumContext / lowContext:**\nmerge bullets from both sides;\ncollapse duplicates;\nre-rank importance **downward only**;\ncap <= 12 per tier (role-first)" as CTX
+  card "changeTypes union;\nconfidence re-assessed" as CT
+}
+
+rectangle "**[3/4] History add-if-new (M:r + D graph)**" as HADD #E1F5FE {
+  card "If group adds new substance:\nappend history[n].text" as HT
+  card "**historySource[n] = [G_k]**\nlink entry -> group file" as HS
+}
+
+rectangle "**[4/4] Rolling history compact (M:r + D)**" as HCOMP #FCE4EC {
+  card "if len(history) > 12:\npair @ **mergeCursor**" as P
+  card "LLM: merge 2 texts -> 1" as MT
+  card "**Union historySource[i] + [i+1]**\ngraph keeps ALL group files\nthat fed the merged story" as MU
+  card "advance cursor (+1, wrap)\n**merge by circle**, not always oldest" as CUR
+}
+
+PREV --> DET
+GRP --> DET
+PREV --> MMOD
+GRP --> MMOD
+PREV --> HADD
+GRP --> HADD
+HADD --> HCOMP
+
+note bottom of MU
+  **Provenance graph:** history[i] <-> historySource[i]
+  Each row lists **group file names** (not commit hashes).
+  Index i always pairs: story text + which groups sourced it.
+  On compact, group links **accumulate** (union), not lost.
+end note
+
+note bottom of Q
+  Not a simple concat of group questions —
+  LLM **re-evaluates** for the growing body of work.
+  Same for context tiers: merge + demote-only ranking.
+end note
+
+@enduml
+
+
+@startuml report-history-graph
+!theme plain
+skinparam shadowing false
+
+title **history** + **historySource** — provenance graph to **group files**
+
+rectangle "report.history — text only (M:r)" #FFF3E0 {
+  card "entry 0: I built deployment automation..." as H0
+  card "entry 1: I added Keycloak plugin SPI..." as H1
+  card "entry 2: ..." as H2
+}
+
+rectangle "deterministic.historySource — graph edges (D)" #E3F2FD {
+  card "row 0 -> 1579390000.json" as S0
+  card "row 1 -> 1591440500.json" as S1
+  card "row 2 -> 1591444361.json, 1591450000.json" as S2
+}
+
+rectangle "groups/ files" #E8F5E9 {
+  card "1579390000.json" as G1
+  card "1591440500.json" as G2
+  card "1591444361.json" as G3
+  card "1591450000.json" as G4
+}
+
+H0 -[hidden]down- S0
+H1 -[hidden]down- S1
+H2 -[hidden]down- S2
+
+S0 --> G1
+S1 --> G2
+S2 --> G3
+S2 --> G4
+
+note as ADD
+  **Step 3 add-if-new:** append history[n].text;
+  set historySource[n] = [G_k] — one group link
+end note
+
+note as COMP
+  **Step 4 compact @ mergeCursor:**
+  merge history[i]+history[i+1] -> one text;
+  historySource[i] = union(row i, row i+1)
+  -> merged entry links to **all** source groups
+end note
+
+note bottom of H0
+  LLM returns text only — never group file names.
+  CLI maintains index pairing: history[i] <-> historySource[i]
+end note
+
+@enduml
+
+
+@startuml report-merge-model-detail
+!theme plain
+skinparam shadowing false
+
+title **[2/4] Model merge** — signals, questions, context tiers
+
+left to right direction
+
+package "From prev report" #FFF8E1 {
+  component "signalReasons arrays" as PR
+  component "questions" as PQ
+  component "hi / medium / lowContext" as PC
+  component "signal levels (D max later)" as PS
+}
+
+package "From next group G_k" #E3F2FD {
+  component "signalReasons (strings)" as GR
+  component "questions" as GQ
+  component "hi / medium / lowContext" as GC
+  component "signal levels" as GS
+}
+
+package "Merge result (M:r + D)" #FFF3E0 {
+  component "**Levels (D):**\nmax(prev, group)\nper dimension" as OUTS
+  component "**Reasons (M:r):**\narray = merge + dedupe" as OUTR
+  component "**Questions (M:r):**\nrecompute, dedupe,\nrole-valuable picks" as OUTQ
+  component "**Context tiers (M:r):**\nmerge bullets,\ndemote-only rank,\ncap 12/tier" as OUTC
+}
+
+PR --> OUTR
+GR --> OUTR
+PQ --> OUTQ
+GQ --> OUTQ
+PC --> OUTC
+GC --> OUTC
+PS --> OUTS
+GS --> OUTS
+
+note bottom of OUTQ
+  Targets gaps Git still cannot know.
+  Drops duplicates and questions already
+  answered by project context / story.
+end note
+
+note bottom of OUTC
+  NEVER promote a bullet to higher tier.
+  Routine upkeep -> one generic low bullet.
+  Least important dropped when over cap.
+end note
+
+@enduml
+
+
+@startuml report-cursor-compact
+!theme plain
+skinparam shadowing false
+skinparam NoteBackgroundColor #FFFDE7
+
+title Rolling **mergeCursor** — merge history **by circle** + union group links
+
+rectangle "Before compact (len=13, cap=12, cursor=2)" {
+  card "h[0]" as H0
+  card "h[1]" as H1
+  card "h[2]" as H2 #FFE082
+  card "h[3]" as H3 #FFE082
+  card "..." as HX
+  card "h[12] newest" as HN
+}
+
+rectangle "historySource (parallel)" #E3F2FD {
+  card "s[0]->G1" as S0
+  card "s[1]->G2" as S1
+  card "s[2]->G3,G4" as S2 #FFE082
+  card "s[3]->G5" as S3 #FFE082
+  card "s[12]->G13" as SN
+}
+
+H2 .. S2
+H3 .. S3
+
+rectangle "After compact @cursor=2" {
+  card "h[0]" as H0b
+  card "h[1]" as H1b
+  card "**h[2]' merged**" as H2b #C8E6C9
+  card "..." as HXb
+  card "h[11] newest unchanged" as HNb
+}
+
+rectangle "historySource after" #E3F2FD {
+  card "s[0]->G1" as S0b
+  card "s[1]->G2" as S1b
+  card "**s[2]' -> G3,G4,G5**" as S2b #C8E6C9
+  card "s[11]->G13" as SNb
+}
+
+H2 --> H2b : LLM condense\n2 texts -> 1
+H3 --> H2b
+S2 --> S2b : **union** group files
+S3 --> S2b
+
+note bottom
+  Cursor moves **round the list** (wrap to 0),
+  so compaction spreads across ages — not always
+  squashing the same oldest blob.
+  **Newest entry is never the first merged.**
+  Next fold: cursor = 3 (or 0 if wrapped).
+end note
+
+@enduml

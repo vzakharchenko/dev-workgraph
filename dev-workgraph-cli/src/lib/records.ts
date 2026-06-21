@@ -69,6 +69,23 @@ export interface FinishRecord {
   answers: { question: string; answer: string }[];
   /** File name of the result markdown written next to this record. */
   outputMarkdown: string;
+  /** Prior finish archive this record extended (`deepen`). */
+  sourcePreviousFinish?: string;
+  /**
+   * Monotonic version cursor in this finish chain.
+   * `1` = initial `final` (`<preparedId>.json`); `2+` = `<preparedId>.vN.json` from `deepen`.
+   */
+  version: number;
+  /** @deprecated Use `version`. Kept when reading legacy archives. */
+  round?: number;
+  /**
+   * Non-code context the developer recalled during this `deepen` round — team decisions,
+   * constraints, handoffs, pivots, meetings, why something mattered; not visible in Git.
+   * Captured interactively (or via `--context-file`) before new questions are generated.
+   * Shapes follow-up questions and refined IMPACT / Role Narrative; stored on the finish
+   * archive when non-empty. Not proof of production impact unless the developer stated that.
+   */
+  recalledContext?: string;
   provenance: {
     model: string;
     generatedAt: string;
