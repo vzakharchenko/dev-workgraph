@@ -356,6 +356,21 @@ describe("deepen prompts", () => {
     expect(prompt).toContain("prepared q1");
   });
 
+  it("buildDeepenQuestionsPrompt handles empty prior Q&A and recalled context", () => {
+    const prompt = buildDeepenQuestionsPrompt(
+      "Prepare only.",
+      "",
+      ["r1", "r2", "r3", "r4"],
+      [],
+      [],
+      [],
+      "   ",
+    );
+    expect(prompt).toContain("(none provided)");
+    expect(prompt).toContain("Prior Q&A (do not re-ask these angles):");
+    expect(prompt).toContain("(none)");
+  });
+
   it("buildRoleNarrativePrompt and buildImpactNarrativePrompt include recalled context", () => {
     const rolePrompt = buildRoleNarrativePrompt(
       "History.",

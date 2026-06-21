@@ -82,4 +82,29 @@ describe("final", () => {
     expect(md).toContain("Staging only.");
     expect(fs.existsSync(path.join(repoFinishDir(FAKE_REPO), "1700000000.json"))).toBe(true);
   });
+
+  it("writes period-suffixed reconstruction markdown for final", async () => {
+    writeProjectContext(FAKE_REPO, "2022");
+    seedPrepared(FAKE_REPO, "1700000000.json", "2022");
+    const answersFile = path.join(cwd, "answers.json");
+    fs.writeFileSync(
+      answersFile,
+      JSON.stringify([
+        { question: "Was it production?", answer: "Staging only." },
+        { question: "Who designed it?", answer: "I did." },
+        { question: "Any security impact?", answer: "No." },
+        { question: "Customer driven?", answer: "Internal." },
+      ]),
+    );
+    await final({
+      repo: FAKE_REPO,
+      model: "test-model",
+      period: "2022",
+      answersFile,
+      force: true,
+    });
+    expect(
+      fs.existsSync(path.join(cwd, `RECONSTRUCTION.${path.basename(FAKE_REPO)}.2022.md`)),
+    ).toBe(true);
+  });
 });

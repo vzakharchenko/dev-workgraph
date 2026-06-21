@@ -276,10 +276,11 @@ export function summarizedCommit(hash: string): CommitRecord {
   });
 }
 
-export function summarizedGroup(): GroupRecord {
+export function summarizedGroup(overrides: Partial<GroupRecord> = {}): GroupRecord {
   return sampleGroup({
     timestampEnd: 1_700_000_000,
     model: sampleGroupModel({ history: "Built the scheduler." }),
+    ...overrides,
   });
 }
 

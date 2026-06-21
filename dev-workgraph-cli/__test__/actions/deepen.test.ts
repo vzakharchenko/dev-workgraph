@@ -11,9 +11,18 @@ import {
   setupWorkgraphHome,
   writeProjectContext,
 } from "../helpers/action-fixtures.js";
-import { repoFinishDir } from "../../src/lib/config.js";
+import { repoFinishDir, repoPreparedDir } from "../../src/lib/config.js";
+import { combinePreparedAndPriorHistory } from "../../src/lib/prompts.js";
 import { latestFinish } from "../../src/lib/finish-load.js";
 import { chatJson } from "../../src/lib/ollama.js";
+
+const { promptMock } = vi.hoisted(() => ({
+  promptMock: vi.fn(),
+}));
+
+vi.mock("inquirer", () => ({
+  default: { prompt: promptMock },
+}));
 
 vi.mock("../../src/lib/git.js", () => ({
   resolveRepo: vi.fn((repo: string) => path.resolve(repo === "." ? FAKE_REPO : repo)),
@@ -36,16 +45,18 @@ vi.mock("../../src/lib/select.js", () => ({
 
 import { deepen } from "../../src/actions/deepen.js";
 
-function writeNewAnswersFile(cwd: string): string {
+function writeNewAnswersFile(cwd: string, answers?: { question?: string; answer?: string }[]): string {
   const answersFile = path.join(cwd, "new-answers.json");
   fs.writeFileSync(
     answersFile,
-    JSON.stringify([
-      { question: "q1", answer: "New answer one." },
-      { question: "q2", answer: "New answer two." },
-      { question: "q3", answer: "New answer three." },
-      { question: "q4", answer: "New answer four." },
-    ]),
+    JSON.stringify(
+      answers ?? [
+        { question: "q1", answer: "New answer one." },
+        { question: "q2", answer: "New answer two." },
+        { question: "q3", answer: "New answer three." },
+        { question: "q4", answer: "New answer four." },
+      ],
+    ),
   );
   return answersFile;
 }
@@ -65,6 +76,8 @@ describe("deepen", () => {
     ({ restore: restoreHome } = setupWorkgraphHome());
     cwd = fs.mkdtempSync(path.join(os.tmpdir(), "workgraph-deepen-cwd-"));
     vi.spyOn(process, "cwd").mockReturnValue(cwd);
+    promptMock.mockReset();
+    vi.mocked(chatJson).mockImplementation(async (opts) => chatJsonFromSchema(opts.schema));
     process.exitCode = undefined;
   });
 
@@ -96,7 +109,9 @@ describe("deepen", () => {
     fs.writeFileSync(v1Path, JSON.stringify(record));
 
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
-    await deepen({ repo: FAKE_REPO, model: "test-model", contextFile: "/dev/null" });
+    const contextFile = path.join(cwd, "ctx.txt");
+    fs.writeFileSync(contextFile, "note");
+    await deepen({ repo: FAKE_REPO, model: "test-model", contextFile });
     expect(process.exitCode).toBe(1);
     expect(err).toHaveBeenCalledWith(expect.stringContaining("no saved answers"));
   });
@@ -120,13 +135,31 @@ describe("deepen", () => {
     expect(err).toHaveBeenCalledWith(expect.stringContaining("Prepared record not found"));
   });
 
+  it("fails when report record is missing", async () => {
+    writeProjectContext(FAKE_REPO);
+    const preparedFile = seedPrepared(FAKE_REPO, "1700000000.json");
+    seedFinish(FAKE_REPO, path.basename(preparedFile));
+
+    const contextFile = path.join(cwd, "ctx.txt");
+    fs.writeFileSync(contextFile, "note");
+
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    await deepen({
+      repo: FAKE_REPO,
+      model: "test-model",
+      contextFile,
+      answersFile: writeNewAnswersFile(cwd),
+    });
+    expect(process.exitCode).toBe(1);
+    expect(err).toHaveBeenCalledWith(expect.stringContaining("Report not found"));
+  });
+
   it("skips when the next finish version already exists unless --force", async () => {
     writeProjectContext(FAKE_REPO);
     seedDeepenChain(FAKE_REPO);
     seedFinish(FAKE_REPO, "1700000000.json", {}, undefined, 2);
 
     const finishDir = repoFinishDir(FAKE_REPO);
-    // Orphan v3 slot (lower version cursor) — latest stays v2, but v3.json blocks the next write.
     fs.writeFileSync(
       path.join(finishDir, "1700000000.v3.json"),
       JSON.stringify({ version: 1, answers: [] }),
@@ -201,18 +234,76 @@ describe("deepen", () => {
       version: number;
       sourcePreviousFinish?: string;
       recalledContext?: string;
+      outputMarkdown?: string;
     };
     expect(latest.answers).toHaveLength(8);
     expect(latest.version).toBe(2);
     expect(latest.sourcePreviousFinish).toBe("1700000000.json");
     expect(latest.recalledContext).toContain("security review");
+    expect(latest.outputMarkdown).toBe("1700000000.v2.md");
     expect(fs.existsSync(path.join(finishDir, "1700000000.json"))).toBe(true);
+    expect(fs.existsSync(path.join(finishDir, "1700000000.v2.md"))).toBe(true);
 
     const mdPath = path.join(cwd, `RECONSTRUCTION.${path.basename(FAKE_REPO)}.v2.md`);
     const md = fs.readFileSync(mdPath, "utf8");
     expect(md).toContain("New answer four.");
     expect(md).toContain("security review");
     expect(md).toContain("Recalled context (this deepen round)");
+  });
+
+  it("collects recalled context and new answers interactively", async () => {
+    writeProjectContext(FAKE_REPO);
+    seedDeepenChain(FAKE_REPO);
+
+    promptMock
+      .mockResolvedValueOnce({ recalled: "  Team pivot after review.  " })
+      .mockResolvedValueOnce({ answer: " interactive one " })
+      .mockResolvedValueOnce({ answer: "interactive two" })
+      .mockResolvedValueOnce({ answer: "" })
+      .mockResolvedValueOnce({ answer: "interactive four" });
+
+    await deepen({ repo: FAKE_REPO, model: "test-model" });
+
+    expect(promptMock).toHaveBeenCalledTimes(5);
+    const latest = JSON.parse(
+      fs.readFileSync(path.join(repoFinishDir(FAKE_REPO), "1700000000.v2.json"), "utf8"),
+    ) as {
+      recalledContext?: string;
+      answers: { question: string; answer: string }[];
+    };
+    expect(latest.recalledContext).toBe("Team pivot after review.");
+    expect(latest.answers.at(-2)?.answer).toBe("");
+    expect(latest.answers.at(-1)?.answer).toBe("interactive four");
+  });
+
+  it("reads answers from a wrapped { answers: [...] } file", async () => {
+    writeProjectContext(FAKE_REPO);
+    seedDeepenChain(FAKE_REPO);
+
+    const contextFile = path.join(cwd, "ctx.txt");
+    fs.writeFileSync(contextFile, "note");
+    const answersFile = path.join(cwd, "wrapped.json");
+    fs.writeFileSync(
+      answersFile,
+      JSON.stringify({
+        answers: [{ answer: "Wrapped only." }, { answer: "Two." }, {}, { answer: "Four." }],
+      }),
+    );
+
+    await deepen({
+      repo: FAKE_REPO,
+      model: "test-model",
+      contextFile,
+      answersFile,
+    });
+
+    const md = fs.readFileSync(
+      path.join(cwd, `RECONSTRUCTION.${path.basename(FAKE_REPO)}.v2.md`),
+      "utf8",
+    );
+    expect(md).toContain("Wrapped only.");
+    expect(md).toContain("**Q:** q3");
+    expect(md).toContain("**A:** (no answer)");
   });
 
   it("omits recalledContext when context file is empty", async () => {
@@ -222,12 +313,17 @@ describe("deepen", () => {
     const contextFile = path.join(cwd, "empty.txt");
     fs.writeFileSync(contextFile, "   \n");
 
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
     await deepen({
       repo: FAKE_REPO,
       model: "test-model",
       contextFile,
       answersFile: writeNewAnswersFile(cwd),
     });
+
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining("No recalled context provided"),
+    );
 
     const latest = JSON.parse(
       fs.readFileSync(path.join(repoFinishDir(FAKE_REPO), "1700000000.v2.json"), "utf8"),
@@ -239,6 +335,76 @@ describe("deepen", () => {
       "utf8",
     );
     expect(md).not.toContain("Recalled context (this deepen round)");
+  });
+
+  it("falls back to combined history when IMPACT refine returns empty", async () => {
+    writeProjectContext(FAKE_REPO);
+    seedDeepenChain(FAKE_REPO);
+
+    const finishDir = repoFinishDir(FAKE_REPO);
+    const prior = JSON.parse(
+      fs.readFileSync(path.join(finishDir, "1700000000.json"), "utf8"),
+    ) as { history: string };
+    const prepared = JSON.parse(
+      fs.readFileSync(path.join(repoPreparedDir(FAKE_REPO), "1700000000.json"), "utf8"),
+    ) as { model: { history: string } };
+    const expectedHistory = combinePreparedAndPriorHistory(
+      prepared.model.history,
+      prior.history,
+    );
+
+    vi.mocked(chatJson)
+      .mockImplementationOnce(async (opts) => chatJsonFromSchema(opts.schema))
+      .mockImplementationOnce(async () => ({}))
+      .mockImplementationOnce(async (opts) => chatJsonFromSchema(opts.schema));
+
+    const contextFile = path.join(cwd, "ctx.txt");
+    fs.writeFileSync(contextFile, "note");
+    await deepen({
+      repo: FAKE_REPO,
+      model: "test-model",
+      contextFile,
+      answersFile: writeNewAnswersFile(cwd),
+    });
+
+    const v2 = JSON.parse(
+      fs.readFileSync(path.join(finishDir, "1700000000.v2.json"), "utf8"),
+    ) as { history: string };
+    expect(v2.history).toBe(expectedHistory);
+  });
+
+  it("renders markdown placeholders when narrative and technologies are empty", async () => {
+    writeProjectContext(FAKE_REPO);
+    seedDeepenChain(FAKE_REPO);
+
+    const preparedPath = path.join(repoPreparedDir(FAKE_REPO), "1700000000.json");
+    const prepared = JSON.parse(fs.readFileSync(preparedPath, "utf8")) as {
+      model: { technologies: string[] };
+    };
+    prepared.model.technologies = [];
+    fs.writeFileSync(preparedPath, JSON.stringify(prepared));
+
+    vi.mocked(chatJson)
+      .mockImplementationOnce(async (opts) => chatJsonFromSchema(opts.schema))
+      .mockImplementationOnce(async (opts) => chatJsonFromSchema(opts.schema))
+      .mockImplementationOnce(async () => ({ narrative: [] }));
+
+    const contextFile = path.join(cwd, "ctx.txt");
+    fs.writeFileSync(contextFile, "note");
+    await deepen({
+      repo: FAKE_REPO,
+      model: "test-model",
+      contextFile,
+      answersFile: writeNewAnswersFile(cwd),
+    });
+
+    const md = fs.readFileSync(
+      path.join(cwd, `RECONSTRUCTION.${path.basename(FAKE_REPO)}.v2.md`),
+      "utf8",
+    );
+    expect(md).toContain("## Technologies");
+    expect(md).toContain("(none)");
+    expect(md).toContain("- (none)");
   });
 
   it("extends from latest finish to v3 with twelve cumulative Q&A pairs", async () => {
@@ -343,5 +509,55 @@ describe("deepen", () => {
     expect(process.exitCode).toBe(1);
     expect(err).toHaveBeenCalledWith(expect.stringContaining("fewer than four"));
     expect(fs.existsSync(path.join(repoFinishDir(FAKE_REPO), "1700000000.v2.json"))).toBe(false);
+  });
+
+  it("fails when follow-up questions are not an array", async () => {
+    writeProjectContext(FAKE_REPO);
+    seedDeepenChain(FAKE_REPO);
+
+    const contextFile = path.join(cwd, "ctx.txt");
+    fs.writeFileSync(contextFile, "note");
+
+    vi.mocked(chatJson).mockResolvedValueOnce({ questions: "not-an-array", confidence: "low" });
+
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    await deepen({
+      repo: FAKE_REPO,
+      model: "test-model",
+      contextFile,
+      answersFile: writeNewAnswersFile(cwd),
+    });
+
+    expect(process.exitCode).toBe(1);
+    expect(err).toHaveBeenCalledWith(expect.stringContaining("fewer than four"));
+  });
+
+  it("passes recalled context and cumulative Q&A into deepen LLM prompts", async () => {
+    writeProjectContext(FAKE_REPO);
+    seedDeepenChain(FAKE_REPO);
+
+    const contextFile = path.join(cwd, "ctx.txt");
+    fs.writeFileSync(contextFile, "Pivot after security review.");
+
+    await deepen({
+      repo: FAKE_REPO,
+      model: "test-model",
+      contextFile,
+      answersFile: writeNewAnswersFile(cwd),
+    });
+
+    const calls = vi.mocked(chatJson).mock.calls;
+    expect(calls.length).toBeGreaterThanOrEqual(3);
+
+    const questionsUser = calls[0]?.[0]?.user as string;
+    expect(questionsUser).toContain("Pivot after security review.");
+    expect(questionsUser).toContain("Staging only.");
+
+    const impactUser = calls[1]?.[0]?.user as string;
+    expect(impactUser).toContain("New answer one.");
+    expect(impactUser).toContain("Pivot after security review.");
+
+    const narrativeUser = calls[2]?.[0]?.user as string;
+    expect(narrativeUser).toContain("New answer four.");
   });
 });

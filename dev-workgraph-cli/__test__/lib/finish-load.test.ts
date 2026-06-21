@@ -88,4 +88,8 @@ describe("finish-load versioning", () => {
     expect(latestFinish(dir)?.file).toBe("1700000000.v2.json");
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  it("latestFinish returns null when finish dir is missing", () => {
+    expect(latestFinish(path.join(os.tmpdir(), "no-such-finish-dir"))).toBeNull();
+  });
 });
