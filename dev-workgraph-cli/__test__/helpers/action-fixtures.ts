@@ -145,13 +145,15 @@ export function seedFinish(
   preparedFile: string,
   overrides: Partial<FinishRecord> = {},
   period?: string,
+  version = 1,
 ): string {
+  const finishId = overrides.finishId ?? 1_700_000_000;
   const record: FinishRecord = {
-    finishId: 1_700_000_000,
+    finishId,
     sourcePrepared: preparedFile,
     sourceReport: "1700000000.json",
-    round: 1,
-    version: 1,
+    round: version,
+    version,
     project: path.basename(repoPath),
     role: "Senior Developer",
     technologies: ["TypeScript"],
@@ -163,15 +165,20 @@ export function seedFinish(
       { question: "Any security impact?", answer: "No." },
       { question: "Customer driven?", answer: "Internal." },
     ],
-    outputMarkdown: "1700000000.md",
+    outputMarkdown: version <= 1 ? `${finishId}.md` : `${finishId}.v${version}.md`,
     provenance: { model: "test-model", generatedAt: "2026-01-01T00:00:00Z" },
     ...overrides,
   };
   const dir = repoFinishDir(repoPath, period);
   fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, `${record.finishId}.json`);
+  const jsonFile =
+    version <= 1 ? `${finishId}.json` : `${finishId}.v${version}.json`;
+  const file = path.join(dir, jsonFile);
   fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
-  fs.writeFileSync(path.join(dir, `${record.finishId}.md`), "# finish\n");
+  fs.writeFileSync(
+    path.join(dir, record.outputMarkdown),
+    "# finish\n",
+  );
   return file;
 }
 

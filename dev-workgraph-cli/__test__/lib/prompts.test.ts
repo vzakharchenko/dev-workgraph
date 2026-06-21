@@ -22,7 +22,9 @@ import {
   buildGroupComposePrompt,
   buildImpactNarrativePrompt,
   buildDeepenImpactNarrativePrompt,
+  buildDeepenQuestionsPrompt,
   combinePreparedAndPriorHistory,
+  DEEPEN_QUESTIONS_SYSTEM,
   buildPrepareHistoryPrompt,
   buildPrepareQuestionsPrompt,
   buildPrepareReasonsPrompt,
@@ -319,6 +321,11 @@ describe("deepen prompts", () => {
     expect(combined).toContain("Final refined text.");
   });
 
+  it("combinePreparedAndPriorHistory returns (none) when both layers empty", () => {
+    expect(combinePreparedAndPriorHistory("", "")).toBe("(none)");
+    expect(combinePreparedAndPriorHistory("  ", "")).toBe("(none)");
+  });
+
   it("buildDeepenImpactNarrativePrompt includes both history layers and Q&A", () => {
     const prompt = buildDeepenImpactNarrativePrompt(
       "From prepare.",
@@ -330,5 +337,44 @@ describe("deepen prompts", () => {
     expect(prompt).toContain("From prior final.");
     expect(prompt).toContain("Recalled note.");
     expect(prompt).toContain("A.");
+  });
+
+  it("buildDeepenQuestionsPrompt includes recalled context and prior Q&A", () => {
+    const prompt = buildDeepenQuestionsPrompt(
+      "Prepare history.",
+      "Prior final history.",
+      ["r1", "r2", "r3", "r4"],
+      ["report q1"],
+      ["prepared q1"],
+      [{ question: "Old?", answer: "Yes." }],
+      "Team pivoted after review.",
+    );
+    expect(prompt).toContain("Team pivoted after review.");
+    expect(prompt).toContain("Prepare history.");
+    expect(prompt).toContain("Prior final history.");
+    expect(prompt).toContain("Old?");
+    expect(prompt).toContain("prepared q1");
+  });
+
+  it("buildRoleNarrativePrompt and buildImpactNarrativePrompt include recalled context", () => {
+    const rolePrompt = buildRoleNarrativePrompt(
+      "History.",
+      ["Reason"],
+      [{ question: "Q?", answer: "A." }],
+      "Recalled pivot.",
+    );
+    expect(rolePrompt).toContain("Recalled pivot.");
+
+    const impactPrompt = buildImpactNarrativePrompt(
+      "History.",
+      [{ question: "Q?", answer: "A." }],
+      "Recalled pivot.",
+    );
+    expect(impactPrompt).toContain("Recalled pivot.");
+  });
+
+  it("exports deepen question system prompt", () => {
+    expect(DEEPEN_QUESTIONS_SYSTEM).toContain("EXACTLY FOUR NEW");
+    expect(DEEPEN_QUESTIONS_SYSTEM).toContain("recalled");
   });
 });
