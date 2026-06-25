@@ -22,6 +22,7 @@ import {
 import { writeRecordJson } from "../lib/record-io.js";
 import type { CommitRecord } from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
+import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
  * Options for the `summarize` command.
@@ -108,43 +109,51 @@ export async function summarize(options: SummarizeOptions): Promise<void> {
 
   console.log(`Summarizing ${work.length} commit(s)...\n`);
 
+  const tracker = new TokenUsageTracker(repoPath, options.period);
+  tracker.beginStep("summarize");
+
   let done = 0;
   let failed = 0;
-  for (const [i, item] of work.entries()) {
-    const short = item.record.commitHash.slice(0, 8);
-    process.stdout.write(
-      `[${i + 1}/${work.length}] ${short} ${item.record.title.slice(0, 50)} ... `,
-    );
+  try {
+    for (const [i, item] of work.entries()) {
+      const short = item.record.commitHash.slice(0, 8);
+      process.stdout.write(
+        `[${i + 1}/${work.length}] ${short} ${item.record.title.slice(0, 50)} ... `,
+      );
 
-    const patchPath = item.file.replace(/\.json$/, ".patch");
-    const patch = fs.existsSync(patchPath) ? fs.readFileSync(patchPath, "utf8") : "";
-    const { prompt, truncated } = buildCommitUserPrompt(item.record, patch);
+      const patchPath = item.file.replace(/\.json$/, ".patch");
+      const patch = fs.existsSync(patchPath) ? fs.readFileSync(patchPath, "utf8") : "";
+      const { prompt, truncated } = buildCommitUserPrompt(item.record, patch);
 
-    try {
-      const raw = (await chatJson({
-        baseUrl,
-        model,
-        system,
-        user: prompt,
-        schema: modelJsonSchema(),
-      })) as ModelLayer;
+      try {
+        const raw = (await chatJson({
+          baseUrl,
+          model,
+          system,
+          user: prompt,
+          schema: modelJsonSchema(),
+          tracker,
+        })) as ModelLayer;
 
-      const layer = enforceSignalReasons(raw);
-      layer.questionsAnalysis = cleanQuestionAnalysis(layer.questionsAnalysis);
-      layer.provenance = {
-        model,
-        generatedAt: new Date().toISOString(),
-        patchTruncated: truncated,
-      };
+        const layer = enforceSignalReasons(raw);
+        layer.questionsAnalysis = cleanQuestionAnalysis(layer.questionsAnalysis);
+        layer.provenance = {
+          model,
+          generatedAt: new Date().toISOString(),
+          patchTruncated: truncated,
+        };
 
-      item.record.model = layer;
-      writeRecordJson(item.file, item.record);
-      console.log("ok");
-      done += 1;
-    } catch (err) {
-      console.log(`failed (${(err as Error).message})`);
-      failed += 1;
+        item.record.model = layer;
+        writeRecordJson(item.file, item.record);
+        console.log("ok");
+        done += 1;
+      } catch (err) {
+        console.log(`failed (${(err as Error).message})`);
+        failed += 1;
+      }
     }
+  } finally {
+    tracker.endStep();
   }
 
   console.log(`\n✅ Summarized ${done}, failed ${failed}. Records updated in ${dir}.`);

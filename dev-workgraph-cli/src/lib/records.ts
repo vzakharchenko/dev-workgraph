@@ -108,6 +108,31 @@ export interface FinishRecord {
   };
 }
 
+/** Token totals for one model or an aggregate bucket. */
+export interface TokenTotals {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  calls: number;
+}
+
+/** Per-step LLM token usage persisted in `project.json`. */
+interface StepTokenUsage extends TokenTotals {
+  lastRunAt: string;
+  byModel: Record<string, TokenTotals>;
+}
+
+/** Cumulative LLM token usage for a repo (or period-scoped project context). */
+export interface ProjectTokenUsage {
+  lifetime: TokenTotals & { byModel: Record<string, TokenTotals> };
+  steps: Partial<
+    Record<
+      "init" | "summarize" | "commit-group" | "report" | "prepare" | "final" | "deepen",
+      StepTokenUsage
+    >
+  >;
+}
+
 /**
  * Project context captured by `init`, grounding every later LLM call.
  * Stored at `~/.workgraph/data/repos/<repo-id>/project.json`.
@@ -129,6 +154,8 @@ export interface ProjectContext {
     model: string;
     generatedAt: string;
   };
+  /** Cumulative LLM token usage by pipeline step and model. */
+  tokenUsage?: ProjectTokenUsage;
 }
 
 /**

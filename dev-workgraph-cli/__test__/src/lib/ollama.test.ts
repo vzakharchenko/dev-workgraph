@@ -60,10 +60,13 @@ describe("chatJson", () => {
   });
 
   it("posts to /api/chat and validates JSON content", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
         message: { content: '{"routine": true, "reason": "deps"}' },
+        prompt_eval_count: 120,
+        eval_count: 30,
       }),
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -75,6 +78,7 @@ describe("chatJson", () => {
       schema: routineCheckJsonSchema(),
     });
     expect(result).toEqual({ routine: true, reason: "deps" });
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("prompt 120"));
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(body.options.num_predict).toBe(8192);
     expect(body.options.num_ctx).toBe(16384);
@@ -107,6 +111,7 @@ describe("chatJson", () => {
 
   it("escalates num_ctx and num_predict on truncation retries", async () => {
     vi.useFakeTimers();
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce({
@@ -114,6 +119,8 @@ describe("chatJson", () => {
         json: async () => ({
           done_reason: "length",
           message: { content: '{"routine":' },
+          prompt_eval_count: 1000,
+          eval_count: 500,
         }),
       })
       .mockResolvedValueOnce({
@@ -121,12 +128,16 @@ describe("chatJson", () => {
         json: async () => ({
           done_reason: "length",
           message: { content: '{"routine":' },
+          prompt_eval_count: 2000,
+          eval_count: 800,
         }),
       })
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
           message: { content: '{"routine": true, "reason": "ok"}' },
+          prompt_eval_count: 3000,
+          eval_count: 100,
         }),
       });
     vi.stubGlobal("fetch", fetchMock);

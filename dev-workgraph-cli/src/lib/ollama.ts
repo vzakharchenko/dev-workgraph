@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { parseAndValidateModelJson } from "./json-response.js";
+import { logTokenCall, type TokenUsageTracker } from "./token-usage.js";
 
 /** Default Ollama endpoint. */
 const DEFAULT_BASE_URL = "http://127.0.0.1:11434";
@@ -81,6 +82,33 @@ const DEFAULT_CHAT_OPTIONS = {
   temperature: 0.2,
 } as const;
 
+export class ChatJsonError extends Error {
+  readonly promptTokens: number;
+  readonly completionTokens: number;
+
+  constructor(message: string, promptTokens: number, completionTokens: number) {
+    super(message);
+    this.name = "ChatJsonError";
+    this.promptTokens = promptTokens;
+    this.completionTokens = completionTokens;
+  }
+}
+
+function recordAndLogUsage(
+  tracker: TokenUsageTracker | undefined,
+  model: string,
+  promptTokens: number,
+  completionTokens: number,
+): void {
+  tracker?.recordCall({ model, promptTokens, completionTokens });
+  logTokenCall({
+    step: tracker?.step ?? null,
+    model,
+    promptTokens,
+    completionTokens,
+  });
+}
+
 /** One chat attempt: POST, check status, parse the JSON content. */
 async function chatJsonOnce(opts: {
   baseUrl: string;
@@ -89,7 +117,7 @@ async function chatJsonOnce(opts: {
   user: string;
   schema: Record<string, unknown>;
   ollamaOptions?: Record<string, unknown>;
-}): Promise<unknown> {
+}): Promise<{ data: unknown; promptTokens: number; completionTokens: number }> {
   const res = await fetch(`${opts.baseUrl}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -114,14 +142,24 @@ async function chatJsonOnce(opts: {
   const data = (await res.json()) as {
     message?: { content?: string };
     done_reason?: string;
+    prompt_eval_count?: number;
+    eval_count?: number;
   };
   const content = data.message?.content ?? "";
+  const promptTokens = data.prompt_eval_count ?? 0;
+  const completionTokens = data.eval_count ?? 0;
   if (data.done_reason === "length") {
-    throw new Error(
+    throw new ChatJsonError(
       `model output truncated (token limit); content starts: ${content.slice(0, 120)}`,
+      promptTokens,
+      completionTokens,
     );
   }
-  return parseAndValidateModelJson(content, opts.schema);
+  return {
+    data: parseAndValidateModelJson(content, opts.schema),
+    promptTokens,
+    completionTokens,
+  };
 }
 
 export async function chatJson(opts: {
@@ -132,6 +170,7 @@ export async function chatJson(opts: {
   schema: Record<string, unknown>;
   ollamaOptions?: Record<string, unknown>;
   maxAttempts?: number;
+  tracker?: TokenUsageTracker;
 }): Promise<unknown> {
   const maxAttempts = opts.maxAttempts ?? MAX_ATTEMPTS;
   let lastError: Error | undefined;
@@ -139,11 +178,16 @@ export async function chatJson(opts: {
     const num_predict = numPredictForAttempt(attempt);
     const num_ctx = numCtxForAttempt(attempt);
     try {
-      return await chatJsonOnce({
+      const { data, promptTokens, completionTokens } = await chatJsonOnce({
         ...opts,
         ollamaOptions: { ...opts.ollamaOptions, num_predict, num_ctx },
       });
+      recordAndLogUsage(opts.tracker, opts.model, promptTokens, completionTokens);
+      return data;
     } catch (err) {
+      if (err instanceof ChatJsonError) {
+        recordAndLogUsage(opts.tracker, opts.model, err.promptTokens, err.completionTokens);
+      }
       lastError = err as Error;
       if (attempt < maxAttempts) {
         const nextPredict = numPredictForAttempt(attempt + 1);

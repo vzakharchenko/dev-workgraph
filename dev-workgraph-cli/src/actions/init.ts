@@ -19,6 +19,7 @@ import {
 import { writeRecordJson } from "../lib/record-io.js";
 import type { ProjectContext, ProjectProfile } from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
+import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
  * Options for the `init` command.
@@ -131,10 +132,13 @@ export async function init(options: InitOptions): Promise<void> {
   const savedOllama = loadConfig().ollama;
   const model = await resolveModel(baseUrl, options.model, {
     message: "Which Ollama model should prepare project context?",
-    saved: savedOllama?.reportModel ?? savedOllama?.model,
+    saved: savedOllama?.narrativeModel ?? savedOllama?.reportModel ?? savedOllama?.model,
   });
-  setOllamaConfig({ baseUrl, reportModel: model });
+  setOllamaConfig({ baseUrl, narrativeModel: model });
   console.log(`\nPreparing project context for a ${role} with "${model}"...`);
+
+  const tracker = new TokenUsageTracker(repoPath, period);
+  tracker.beginStep("init");
 
   // Session 1 — reframe the raw story for the role.
   const prepared = (await chatJson({
@@ -143,6 +147,7 @@ export async function init(options: InitOptions): Promise<void> {
     system: STORY_PREPARE_SYSTEM,
     user: buildStoryPreparePrompt(role, story),
     schema: storyPrepareJsonSchema(),
+    tracker,
   })) as { preparedContext?: string };
   const preparedContext = prepared.preparedContext?.trim() ?? "";
 
@@ -153,7 +158,10 @@ export async function init(options: InitOptions): Promise<void> {
     system: PROJECT_PROFILE_SYSTEM,
     user: buildProjectProfilePrompt(role, preparedContext, readme),
     schema: projectProfileJsonSchema(),
+    tracker,
   })) as Record<string, unknown>;
+
+  tracker.endStep({ persist: false });
 
   const profile: ProjectProfile = {
     summary: typeof rawProfile.summary === "string" ? rawProfile.summary : "",
@@ -168,6 +176,7 @@ export async function init(options: InitOptions): Promise<void> {
     readme: readmePresent ? { present: true, path: "README.md" } : { present: false },
     profile,
     provenance: { model, generatedAt: new Date().toISOString() },
+    tokenUsage: tracker.getUsage(),
   };
 
   fs.mkdirSync(path.dirname(file), { recursive: true });

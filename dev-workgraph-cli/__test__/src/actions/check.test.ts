@@ -38,17 +38,17 @@ describe("check", () => {
     vi.spyOn(ollama, "listModels").mockResolvedValue(["alpha"]);
     vi.spyOn(config, "loadConfig").mockReturnValue({
       repos: {},
-      ollama: { commitModel: "missing-model", reportModel: "alpha" },
+      ollama: { commitModel: "missing-model", reportModel: "alpha", narrativeModel: "beta" },
     });
     await check({});
     expect(process.exitCode).toBe(1);
   });
 
   it("passes when saved models are installed", async () => {
-    vi.spyOn(ollama, "listModels").mockResolvedValue(["alpha", "beta"]);
+    vi.spyOn(ollama, "listModels").mockResolvedValue(["alpha", "beta", "gamma"]);
     vi.spyOn(config, "loadConfig").mockReturnValue({
       repos: {},
-      ollama: { commitModel: "alpha", reportModel: "beta" },
+      ollama: { commitModel: "alpha", reportModel: "beta", narrativeModel: "gamma" },
     });
     await check({});
     expect(process.exitCode).toBeUndefined();

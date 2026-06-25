@@ -37,11 +37,11 @@ digraph pipeline {
     v_readme [label="README\n(D)\nif present" fillcolor="#ECEFF1" width=1.2 height=0.9]
     v_auth   [label="authors\n(H)\nemail filter" fillcolor="#FFF8E1" width=1.0 height=0.9]
 
-    v_context [label="context\nproject.json" fillcolor="#FFE082" width=1.3 height=0.9]
+    v_context [label="context\nproject.json\n(M:n)" fillcolor="#FFE082" width=1.3 height=0.9]
 
     { rank=same; v_story; v_role; v_readme; v_auth; }
 
-    v_story  -> v_context [label=" 3:1\ninit "]
+    v_story  -> v_context [label=" 3:1\ninit (M:n) "]
     v_role   -> v_context
     v_readme -> v_context
   }

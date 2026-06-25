@@ -39,6 +39,7 @@ import {
 import { writeRecordJson } from "../lib/record-io.js";
 import type { PreparedModelLayer, PreparedRecord, ReportRecord } from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
+import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
  * Options for the `prepare` command.
@@ -117,109 +118,120 @@ export async function prepare(options: PrepareOptions): Promise<void> {
     `Preparing narrative from ${latest.file} (${report.groupCount} groups) with "${model}"\n`,
   );
 
-  // Step 1 — concatenate report history (deterministic).
-  const rawHistory = report.history.map((h) => h.text).join("\n");
+  const tracker = new TokenUsageTracker(repoPath, options.period);
+  tracker.beginStep("prepare");
 
-  // Step 2 — compose one unified history.
-  process.stdout.write("   [1/4] compose unified history ... ");
-  const composed = (await chatJson({
-    baseUrl,
-    model,
-    system: withProjectContext(projectBlock, PREPARE_HISTORY_SYSTEM),
-    user: buildPrepareHistoryPrompt(
-      rawHistory,
-      {
-        technical: m.technicalSignal,
-        architecture: m.architectureSignal,
-        security: m.securitySignal,
-      },
-      m.changeTypes,
-    ),
-    schema: groupHistoryJsonSchema(),
-  })) as { history?: string };
-  const history = composed.history?.trim() ?? rawHistory;
-  console.log("ok");
+  try {
+    // Step 1 — concatenate report history (deterministic).
+    const rawHistory = report.history.map((h) => h.text).join("\n");
 
-  // Step 3 — clean & collapse the accumulated technology list (dedupe + class hierarchy).
-  let technologies = mergeTechnologies(m.technologies);
-  if (technologies.length > 0) {
-    process.stdout.write(`   [2/4] clean technologies (${technologies.length}) ... `);
-    const cleaned = (await chatJson({
+    // Step 2 — compose one unified history.
+    process.stdout.write("   [1/4] compose unified history ... ");
+    const composed = (await chatJson({
       baseUrl,
       model,
-      system: withProjectContext(projectBlock, PREPARE_TECH_SYSTEM),
-      user: buildPrepareTechPrompt(technologies),
-      schema: prepareTechnologiesJsonSchema(),
-    })) as { technologies?: unknown };
-    const result = asStringArray(cleaned.technologies).slice(0, 5);
-    if (result.length > 0) technologies = result;
-    console.log(`ok (${technologies.length})`);
-  } else {
-    console.log("   [2/4] clean technologies ... skipped (none)");
+      system: withProjectContext(projectBlock, PREPARE_HISTORY_SYSTEM),
+      user: buildPrepareHistoryPrompt(
+        rawHistory,
+        {
+          technical: m.technicalSignal,
+          architecture: m.architectureSignal,
+          security: m.securitySignal,
+        },
+        m.changeTypes,
+      ),
+      schema: groupHistoryJsonSchema(),
+      tracker,
+    })) as { history?: string };
+    const history = composed.history?.trim() ?? rawHistory;
+    console.log("ok");
+
+    // Step 3 — clean & collapse the accumulated technology list (dedupe + class hierarchy).
+    let technologies = mergeTechnologies(m.technologies);
+    if (technologies.length > 0) {
+      process.stdout.write(`   [2/4] clean technologies (${technologies.length}) ... `);
+      const cleaned = (await chatJson({
+        baseUrl,
+        model,
+        system: withProjectContext(projectBlock, PREPARE_TECH_SYSTEM),
+        user: buildPrepareTechPrompt(technologies),
+        schema: prepareTechnologiesJsonSchema(),
+        tracker,
+      })) as { technologies?: unknown };
+      const result = asStringArray(cleaned.technologies).slice(0, 5);
+      if (result.length > 0) technologies = result;
+      console.log(`ok (${technologies.length})`);
+    } else {
+      console.log("   [2/4] clean technologies ... skipped (none)");
+    }
+
+    // Step 4 — collapse signal reasons into four.
+    process.stdout.write("   [3/4] collapse signal reasons → 4 ... ");
+    const collapsed = (await chatJson({
+      baseUrl,
+      model,
+      system: withProjectContext(projectBlock, PREPARE_REASONS_SYSTEM),
+      user: buildPrepareReasonsPrompt(m.signalReasons, history),
+      schema: prepareReasonsJsonSchema(),
+      tracker,
+    })) as { signalReasons?: unknown };
+    const signalReasons = asStringArray(collapsed.signalReasons).slice(0, 4);
+    console.log(`ok (${signalReasons.length})`);
+
+    // Step 5 — reframe role-aware questionsAnalyses + confidence.
+    process.stdout.write("   [4/4] reframe open questions → 4 ... ");
+    const priorQa = latestFinish(repoFinishDir(repoPath, options.period))?.record.answers ?? [];
+    const reframed = (await chatJson({
+      baseUrl,
+      model,
+      system: withProjectContext(projectBlock, PREPARE_QUESTIONS_SYSTEM),
+      user: buildPrepareQuestionsPrompt(history, signalReasons, m.questionsAnalyses, priorQa),
+      schema: prepareQuestionsJsonSchema(),
+      tracker,
+    })) as { questionsAnalyses?: unknown; confidence?: string };
+    const questionsAnalyses = cleanQuestionAnalyses(reframed.questionsAnalyses).slice(0, 4);
+    const questions = flattenQuestions(questionsAnalyses);
+    console.log(`ok (${questions.length})`);
+
+    const model_: PreparedModelLayer = {
+      changeTypes: m.changeTypes,
+      technologies,
+      technicalSignal: m.technicalSignal,
+      architectureSignal: m.architectureSignal,
+      securitySignal: m.securitySignal,
+      signalReasons,
+      questionsAnalyses,
+      confidence: (reframed.confidence as Signal) ?? m.confidence,
+      history,
+      provenance: { model, generatedAt, sourceReport: latest.file },
+    };
+    const record: PreparedRecord = {
+      preparedId: report.reportId,
+      sourceReport: latest.file,
+      groupCount: report.groupCount,
+      model: model_,
+    };
+
+    fs.mkdirSync(preparedDir, { recursive: true });
+    writeRecordJson(preparedFile, record);
+
+    // Preview the prepared narrative + questions so it's clear what `final` will ask.
+    console.log("\n─── Prepared narrative ───────────────────────────────────");
+    console.log(history || "(empty)");
+    console.log("\n─── Technologies ─────────────────────────────────────────");
+    console.log(technologies.length > 0 ? technologies.join(", ") : "(none)");
+    console.log("\n─── Questions `final` will ask ───────────────────────────");
+    if (questions.length === 0) {
+      console.log("(none)");
+    } else {
+      questions.forEach((q, i) => {
+        console.log(`${i + 1}. ${q}`);
+      });
+    }
+    console.log("──────────────────────────────────────────────────────────");
+
+    console.log(`\n✅ Prepared narrative: ${preparedFile}`);
+  } finally {
+    tracker.endStep();
   }
-
-  // Step 4 — collapse signal reasons into four.
-  process.stdout.write("   [3/4] collapse signal reasons → 4 ... ");
-  const collapsed = (await chatJson({
-    baseUrl,
-    model,
-    system: withProjectContext(projectBlock, PREPARE_REASONS_SYSTEM),
-    user: buildPrepareReasonsPrompt(m.signalReasons, history),
-    schema: prepareReasonsJsonSchema(),
-  })) as { signalReasons?: unknown };
-  const signalReasons = asStringArray(collapsed.signalReasons).slice(0, 4);
-  console.log(`ok (${signalReasons.length})`);
-
-  // Step 5 — reframe role-aware questionsAnalyses + confidence.
-  process.stdout.write("   [4/4] reframe open questions → 4 ... ");
-  const priorQa = latestFinish(repoFinishDir(repoPath, options.period))?.record.answers ?? [];
-  const reframed = (await chatJson({
-    baseUrl,
-    model,
-    system: withProjectContext(projectBlock, PREPARE_QUESTIONS_SYSTEM),
-    user: buildPrepareQuestionsPrompt(history, signalReasons, m.questionsAnalyses, priorQa),
-    schema: prepareQuestionsJsonSchema(),
-  })) as { questionsAnalyses?: unknown; confidence?: string };
-  const questionsAnalyses = cleanQuestionAnalyses(reframed.questionsAnalyses).slice(0, 4);
-  const questions = flattenQuestions(questionsAnalyses);
-  console.log(`ok (${questions.length})`);
-
-  const model_: PreparedModelLayer = {
-    changeTypes: m.changeTypes,
-    technologies,
-    technicalSignal: m.technicalSignal,
-    architectureSignal: m.architectureSignal,
-    securitySignal: m.securitySignal,
-    signalReasons,
-    questionsAnalyses,
-    confidence: (reframed.confidence as Signal) ?? m.confidence,
-    history,
-    provenance: { model, generatedAt, sourceReport: latest.file },
-  };
-  const record: PreparedRecord = {
-    preparedId: report.reportId,
-    sourceReport: latest.file,
-    groupCount: report.groupCount,
-    model: model_,
-  };
-
-  fs.mkdirSync(preparedDir, { recursive: true });
-  writeRecordJson(preparedFile, record);
-
-  // Preview the prepared narrative + questions so it's clear what `final` will ask.
-  console.log("\n─── Prepared narrative ───────────────────────────────────");
-  console.log(history || "(empty)");
-  console.log("\n─── Technologies ─────────────────────────────────────────");
-  console.log(technologies.length > 0 ? technologies.join(", ") : "(none)");
-  console.log("\n─── Questions `final` will ask ───────────────────────────");
-  if (questions.length === 0) {
-    console.log("(none)");
-  } else {
-    questions.forEach((q, i) => {
-      console.log(`${i + 1}. ${q}`);
-    });
-  }
-  console.log("──────────────────────────────────────────────────────────");
-
-  console.log(`\n✅ Prepared narrative: ${preparedFile}`);
 }

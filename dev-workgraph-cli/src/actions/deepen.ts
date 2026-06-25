@@ -42,6 +42,7 @@ import {
 import { writeRecordJson } from "../lib/record-io.js";
 import type { FinishRecord, ProjectContext } from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
+import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
  * Options for the `deepen` command.
@@ -300,73 +301,89 @@ export async function deepen(options: DeepenOptions): Promise<void> {
   const priorHistory = prior.history;
   const historyBase = combinePreparedAndPriorHistory(preparedHistory, priorHistory);
 
-  process.stdout.write("Generating four new follow-up questions ... ");
-  const followUp = (await chatJson({
-    baseUrl,
-    model,
-    system: withProjectContext(projectBlock, DEEPEN_QUESTIONS_SYSTEM),
-    user: buildDeepenQuestionsPrompt(
-      preparedHistory,
-      priorHistory,
-      prepared.record.model.signalReasons,
-      flattenQuestions(report.record.model.questionsAnalyses),
-      flattenQuestions(prepared.record.model.questionsAnalyses),
-      priorQa,
-      recalledContext,
-    ),
-    schema: prepareQuestionsJsonSchema(),
-  })) as { questionsAnalyses?: unknown };
-  const newQuestions = flattenQuestions(cleanQuestionAnalyses(followUp.questionsAnalyses)).slice(
-    0,
-    4,
-  );
-  if (newQuestions.length < 4) {
-    console.error("\n✖ Model returned fewer than four new questions.");
-    process.exitCode = 1;
-    return;
+  const tracker = new TokenUsageTracker(repoPath, options.period);
+  tracker.beginStep("deepen");
+
+  let impactHistory = historyBase;
+  let narrative: string[] = [];
+  let allQa: QA[] = [...priorQa];
+
+  try {
+    process.stdout.write("Generating four new follow-up questions ... ");
+    const followUp = (await chatJson({
+      baseUrl,
+      model,
+      system: withProjectContext(projectBlock, DEEPEN_QUESTIONS_SYSTEM),
+      user: buildDeepenQuestionsPrompt(
+        preparedHistory,
+        priorHistory,
+        prepared.record.model.signalReasons,
+        flattenQuestions(report.record.model.questionsAnalyses),
+        flattenQuestions(prepared.record.model.questionsAnalyses),
+        priorQa,
+        recalledContext,
+      ),
+      schema: prepareQuestionsJsonSchema(),
+      tracker,
+    })) as { questionsAnalyses?: unknown };
+    const newQuestions = flattenQuestions(cleanQuestionAnalyses(followUp.questionsAnalyses)).slice(
+      0,
+      4,
+    );
+    if (newQuestions.length < 4) {
+      console.error("\n✖ Model returned fewer than four new questions.");
+      process.exitCode = 1;
+      return;
+    }
+    console.log("ok");
+
+    newQuestions.forEach((q, i) => {
+      console.log(`   ${i + 1}. ${q}`);
+    });
+
+    let newQa: QA[];
+    if (options.answersFile) {
+      newQa = readAnswersFile(options.answersFile, newQuestions);
+    } else {
+      console.log("\nAnswer the four new questions:");
+      newQa = await collectAnswers(newQuestions);
+    }
+
+    allQa = [...priorQa, ...newQa];
+
+    process.stdout.write("\nRefining Your IMPACT with all answers ... ");
+    const refined = (await chatJson({
+      baseUrl,
+      model,
+      system: withProjectContext(projectBlock, IMPACT_NARRATIVE_SYSTEM),
+      user: buildDeepenImpactNarrativePrompt(preparedHistory, priorHistory, allQa, recalledContext),
+      schema: groupHistoryJsonSchema(),
+      tracker,
+    })) as { history?: string };
+    impactHistory = refined.history?.trim() || historyBase;
+    console.log("ok");
+
+    process.stdout.write("Writing Role Narrative ... ");
+    const result = (await chatJson({
+      baseUrl,
+      model,
+      system: withProjectContext(projectBlock, ROLE_NARRATIVE_SYSTEM),
+      user: buildRoleNarrativePrompt(
+        impactHistory,
+        prepared.record.model.signalReasons,
+        allQa,
+        recalledContext,
+      ),
+      schema: roleNarrativeJsonSchema(),
+      tracker,
+    })) as { narrative?: unknown };
+    narrative = asStringArray(result.narrative).slice(0, 4);
+    console.log(`ok (${narrative.length} bullets)`);
+  } finally {
+    tracker.endStep();
   }
-  console.log("ok");
 
-  newQuestions.forEach((q, i) => {
-    console.log(`   ${i + 1}. ${q}`);
-  });
-
-  let newQa: QA[];
-  if (options.answersFile) {
-    newQa = readAnswersFile(options.answersFile, newQuestions);
-  } else {
-    console.log("\nAnswer the four new questions:");
-    newQa = await collectAnswers(newQuestions);
-  }
-
-  const allQa = [...priorQa, ...newQa];
-
-  process.stdout.write("\nRefining Your IMPACT with all answers ... ");
-  const refined = (await chatJson({
-    baseUrl,
-    model,
-    system: withProjectContext(projectBlock, IMPACT_NARRATIVE_SYSTEM),
-    user: buildDeepenImpactNarrativePrompt(preparedHistory, priorHistory, allQa, recalledContext),
-    schema: groupHistoryJsonSchema(),
-  })) as { history?: string };
-  const impactHistory = refined.history?.trim() || historyBase;
-  console.log("ok");
-
-  process.stdout.write("Writing Role Narrative ... ");
-  const result = (await chatJson({
-    baseUrl,
-    model,
-    system: withProjectContext(projectBlock, ROLE_NARRATIVE_SYSTEM),
-    user: buildRoleNarrativePrompt(
-      impactHistory,
-      prepared.record.model.signalReasons,
-      allQa,
-      recalledContext,
-    ),
-    schema: roleNarrativeJsonSchema(),
-  })) as { narrative?: unknown };
-  const narrative = asStringArray(result.narrative).slice(0, 4);
-  console.log(`ok (${narrative.length} bullets)`);
+  if (process.exitCode === 1) return;
 
   const projectName = path.basename(repoPath);
   const role = project.role;

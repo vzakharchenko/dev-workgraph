@@ -43,9 +43,9 @@ export interface OllamaConfig {
   model?: string;
   /** Model for commit-level work: `summarize` and `commit-group`. */
   commitModel?: string;
-  /** Model for report-level work: `init` and `report`. */
+  /** Model for cumulative report fold (`report`). */
   reportModel?: string;
-  /** Model for narrative work: `prepare` and `final`. */
+  /** Model for project context (`init`) and human-facing narrative (`prepare`, `final`, `deepen`). */
   narrativeModel?: string;
 }
 

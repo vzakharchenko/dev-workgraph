@@ -73,7 +73,7 @@ Before any export or summarization, the user initializes the repository in dev-w
    
    Output: a **project profile** — what the project appears to be about, its domain, apparent technical stack, and key themes/events the README and story support. This is interpretation, not proof.
 
-Both LLM sessions use Ollama. `init` is report-level work, so it uses the **`reportModel`** slot (see §14).
+Both LLM sessions use Ollama. `init` builds human-facing project context (story + profile), so it uses the **`narrativeModel`** slot (see §14).
 
 ### On-disk layout
 
@@ -1537,10 +1537,10 @@ manifest.json         # { schemaVersion, repoId, repoPath, exportedAt, config }
 The local model is chosen and remembered **per stage group**, in `~/.workgraph/config.json` under `ollama`:
 
 - **`commitModel`** — used by `summarize` and `commit-group` (per-commit and per-session work).
-- **`reportModel`** — used by `init` and `report` (project-level / cumulative reasoning).
-- **`narrativeModel`** — used by `prepare`, `final`, and **`deepen`** (distilling the report into the human-facing narrative + Role Narrative + follow-up rounds).
+- **`reportModel`** — used by `report` (cumulative fold over work-session groups).
+- **`narrativeModel`** — used by `init`, `prepare`, `final`, and **`deepen`** (project context, human-facing narrative, Role Narrative, follow-up rounds).
 
-Each command seeds its picker from its own slot, falling back through the more general slots — `narrativeModel ?? reportModel ?? model` for the narrative stages, `commitModel ?? model` for commit stages — so an existing two-model setup keeps working until a separate narrative model is chosen. `--model` forces a single model for that command. `run` asks for all three upfront. This lets a fast model handle commit-level volume, a stronger model fold the report, and (optionally) a different model — tuned for prose/claim-safety — write the final narrative.
+Each command seeds its picker from its own slot, falling back through the more general slots — `narrativeModel ?? reportModel ?? model` for the narrative stages, `commitModel ?? model` for commit stages, `reportModel ?? model` for report — so an existing two-model setup keeps working until a separate narrative model is chosen. `--model` forces a single model for that command. `run` asks for all three upfront. This lets a fast model handle commit-level volume, a stronger model fold the report, and (optionally) a different model — tuned for prose/claim-safety — build project context and write the final narrative.
 
 ### Resilience
 
@@ -1605,6 +1605,12 @@ The system must **never overclaim impact, ownership, or production usage.** It r
 ## Last change
 
 Reason:
+
+**`init` uses `narrativeModel`.** Project context (story `preparedContext` + `profile`) is human-facing prose work — moved from `reportModel` to **`narrativeModel`** alongside `prepare`, `final`, and `deepen`. `reportModel` is now **report-only**. `run` prompts: report model vs narrative model (init + prepare + final). `init` saves to `config.ollama.narrativeModel` with fallback `narrativeModel ?? reportModel ?? model`. Updated §0, §14, UML, and `pipeline-graph.dot`.
+
+---
+
+### Change history (`--force` removal)
 
 **Removed `--force` from the CLI.** The pipeline is strictly append-only, resumable, and idempotent. Stages skip existing work on re-run; to rebuild a stage, delete its artifacts manually (e.g. remove `project.json`, a prepared file, or the target data directory before `import`). Removed from all commands (`init`, `evidence`, `summarize`, `commit-group`, `report`, `prepare`, `final`, `deepen`, `run`, `import`) and from `package.json` dev scripts. Documented in §0–§14.
 

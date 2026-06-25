@@ -46,6 +46,7 @@ import {
   stripLegacyProvenance,
 } from "../lib/report-provenance.js";
 import { resolveModel } from "../lib/select.js";
+import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
  * Options for the `report` command.
@@ -183,22 +184,38 @@ export async function report(options: ReportOptions): Promise<void> {
     `Folding ${selected.length} group(s)${skippedNoModel ? ` (${skippedNoModel} skipped: no model)` : ""}${startIndex > 0 ? ` — resuming at ${startIndex + 1}` : ""} with "${model}" at ${baseUrl}\n`,
   );
 
-  for (let i = startIndex; i < selected.length; i += 1) {
-    const entry = selected[i];
-    if (!entry) continue;
-    const { file, record } = entry;
-    const generatedAt = new Date().toISOString();
-    console.log(`[${i + 1}/${selected.length}] fold ${file} (${record.commitCount} commits)`);
+  const tracker = new TokenUsageTracker(repoPath, options.period);
+  tracker.beginStep("report");
 
-    if (current === null) {
-      current = initReport(file, record, generatedAt, model);
-      console.log(`   seeded report (${current.history.length} history entry)`);
-    } else {
-      current = await foldGroup(current, file, record, baseUrl, model, generatedAt, projectBlock);
+  try {
+    for (let i = startIndex; i < selected.length; i += 1) {
+      const entry = selected[i];
+      if (!entry) continue;
+      const { file, record } = entry;
+      const generatedAt = new Date().toISOString();
+      console.log(`[${i + 1}/${selected.length}] fold ${file} (${record.commitCount} commits)`);
+
+      if (current === null) {
+        current = initReport(file, record, generatedAt, model);
+        console.log(`   seeded report (${current.history.length} history entry)`);
+      } else {
+        current = await foldGroup(
+          current,
+          file,
+          record,
+          baseUrl,
+          model,
+          generatedAt,
+          projectBlock,
+          tracker,
+        );
+      }
+
+      writeReport(reportsDir, current);
+      console.log(`   → ${current.reportId}.json (${current.history.length} history entries)`);
     }
-
-    writeReport(reportsDir, current);
-    console.log(`   → ${current.reportId}.json (${current.history.length} history entries)`);
+  } finally {
+    tracker.endStep();
   }
 
   console.log(`\n✅ Report built: ${path.join(reportsDir, `${current?.reportId}.json`)}`);
@@ -215,6 +232,7 @@ async function foldGroup(
   model: string,
   generatedAt: string,
   projectBlock: string,
+  tracker: TokenUsageTracker,
 ): Promise<ReportRecord> {
   const g = group.model;
   const prevProvenance = readReportProvenance(prev);
@@ -251,6 +269,7 @@ async function foldGroup(
     system: routineSystem,
     user: buildRoutineCheckPrompt(group),
     schema: routineCheckJsonSchema(),
+    tracker,
   })) as { routine?: boolean };
 
   if (check.routine) {
@@ -286,6 +305,7 @@ async function foldGroup(
     system: mergeSystem,
     user: buildReportMergePrompt(prev, group),
     schema: reportMergeJsonSchema(),
+    tracker,
   })) as Record<string, unknown>;
   console.log("ok");
 
@@ -333,6 +353,7 @@ async function foldGroup(
         candidate,
       ),
       schema: reportNewHistoryJsonSchema(),
+      tracker,
     })) as { needed?: boolean; text?: string };
 
     if (verdict.needed && verdict.text?.trim()) {
@@ -371,6 +392,7 @@ async function foldGroup(
         system: compactSystem,
         user: buildReportCompactPrompt([a.text, b.text]),
         schema: reportHistoryJsonSchema(),
+        tracker,
       })) as { history?: unknown };
 
       const condensedTexts = asStringArray(condensed.history);

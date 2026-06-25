@@ -31,7 +31,7 @@ partition "Preconditions (per repository)" {
     selectedAuthors[]
   end note
 
-  :(M:r) **init**\nCapture role + project story;\nread README if present;
+  :(M:n) **init**\nCapture role + project story;\nread README if present;
   note right
     2 LLM sessions → **project.json**
     • story.preparedContext (role-adjusted)

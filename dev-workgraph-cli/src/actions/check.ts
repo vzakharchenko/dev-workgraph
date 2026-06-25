@@ -95,6 +95,7 @@ export async function check(options: CheckOptions): Promise<void> {
   const saved: [string, string | undefined][] = [
     ["commitModel", ollama?.commitModel],
     ["reportModel", ollama?.reportModel],
+    ["narrativeModel", ollama?.narrativeModel],
   ];
   for (const [slot, m] of saved) {
     if (m) console.log(`   ${slot}: ${m}${models.includes(m) ? "" : "  (NOT installed)"}`);

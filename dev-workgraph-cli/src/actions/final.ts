@@ -36,6 +36,7 @@ import {
 import { writeRecordJson } from "../lib/record-io.js";
 import type { FinishRecord, PreparedRecord, QAPair } from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
+import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
  * Options for the `final` command.
@@ -170,7 +171,7 @@ export async function final(options: FinalOptions): Promise<void> {
   prepared.answeredAt = new Date().toISOString();
   writeRecordJson(preparedPath, prepared);
 
-  // Step 2 — Role Narrative (one LLM session, reportModel).
+  // Step 2 — Role Narrative (one LLM session, narrativeModel).
   const baseUrl = resolveBaseUrl(options.url);
   const savedOllama = loadConfig().ollama;
   const model = await resolveModel(baseUrl, options.model, {
@@ -181,38 +182,50 @@ export async function final(options: FinalOptions): Promise<void> {
 
   const projectBlock = projectContextBlock(project);
 
-  // Step 2a — refine "Your IMPACT" prose so it reflects the human's answers, not
-  // just the Git reconstruction. Falls back to the prepared history on failure.
-  process.stdout.write(
-    isExtension
-      ? "Refining Your IMPACT with all answers ... "
-      : "Refining Your IMPACT with answers ... ",
-  );
-  const impactPrompt =
-    isExtension && priorFinish
-      ? buildDeepenImpactNarrativePrompt(prepared.model.history, priorFinish.record.history, qa)
-      : buildImpactNarrativePrompt(prepared.model.history, qa);
-  const refined = (await chatJson({
-    baseUrl,
-    model,
-    system: withProjectContext(projectBlock, IMPACT_NARRATIVE_SYSTEM),
-    user: impactPrompt,
-    schema: groupHistoryJsonSchema(),
-  })) as { history?: string };
-  const impactHistory = refined.history?.trim() || prepared.model.history;
-  console.log("ok");
+  const tracker = new TokenUsageTracker(repoPath, options.period);
+  tracker.beginStep("final");
 
-  // Step 2b — Role Narrative bullets.
-  process.stdout.write("Writing Role Narrative ... ");
-  const result = (await chatJson({
-    baseUrl,
-    model,
-    system: withProjectContext(projectBlock, ROLE_NARRATIVE_SYSTEM),
-    user: buildRoleNarrativePrompt(impactHistory, prepared.model.signalReasons, qa),
-    schema: roleNarrativeJsonSchema(),
-  })) as { narrative?: unknown };
-  const narrative = asStringArray(result.narrative).slice(0, 4);
-  console.log(`ok (${narrative.length} bullets)`);
+  let impactHistory = prepared.model.history;
+  let narrative: string[] = [];
+
+  try {
+    // Step 2a — refine "Your IMPACT" prose so it reflects the human's answers, not
+    // just the Git reconstruction. Falls back to the prepared history on failure.
+    process.stdout.write(
+      isExtension
+        ? "Refining Your IMPACT with all answers ... "
+        : "Refining Your IMPACT with answers ... ",
+    );
+    const impactPrompt =
+      isExtension && priorFinish
+        ? buildDeepenImpactNarrativePrompt(prepared.model.history, priorFinish.record.history, qa)
+        : buildImpactNarrativePrompt(prepared.model.history, qa);
+    const refined = (await chatJson({
+      baseUrl,
+      model,
+      system: withProjectContext(projectBlock, IMPACT_NARRATIVE_SYSTEM),
+      user: impactPrompt,
+      schema: groupHistoryJsonSchema(),
+      tracker,
+    })) as { history?: string };
+    impactHistory = refined.history?.trim() || prepared.model.history;
+    console.log("ok");
+
+    // Step 2b — Role Narrative bullets.
+    process.stdout.write("Writing Role Narrative ... ");
+    const result = (await chatJson({
+      baseUrl,
+      model,
+      system: withProjectContext(projectBlock, ROLE_NARRATIVE_SYSTEM),
+      user: buildRoleNarrativePrompt(impactHistory, prepared.model.signalReasons, qa),
+      schema: roleNarrativeJsonSchema(),
+      tracker,
+    })) as { narrative?: unknown };
+    narrative = asStringArray(result.narrative).slice(0, 4);
+    console.log(`ok (${narrative.length} bullets)`);
+  } finally {
+    tracker.endStep();
+  }
 
   // Step 3 — assemble RECONSTRUCTION.<project>.md in the current working directory.
   const projectName = path.basename(repoPath);

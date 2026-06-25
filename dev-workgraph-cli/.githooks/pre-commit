@@ -15,8 +15,10 @@ fi
 
 cd "$PROJECT_DIR"
 
-echo "pre-commit › lint"
-npm run --silent lint
+echo "pre-commit › lint:fix"
+npm run --silent lint:fix
+echo "pre-commit › format"
+npm run --silent format
 
 echo "pre-commit › typecheck"
 npm run --silent typecheck

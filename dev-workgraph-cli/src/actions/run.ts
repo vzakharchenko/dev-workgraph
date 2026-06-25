@@ -104,11 +104,11 @@ export async function run(options: RunOptions): Promise<void> {
     saved: savedOllama?.commitModel ?? savedOllama?.model,
   });
   const reportModel = await resolveModel(baseUrl, options.model, {
-    message: "Model for project context (init) & report?",
+    message: "Model for report?",
     saved: savedOllama?.reportModel ?? savedOllama?.model,
   });
   const narrativeModel = await resolveModel(baseUrl, options.model, {
-    message: "Model for the narrative (prepare) & final?",
+    message: "Model for project context (init), prepare & final?",
     saved: savedOllama?.narrativeModel ?? savedOllama?.reportModel ?? savedOllama?.model,
   });
   setOllamaConfig({ baseUrl, commitModel, reportModel, narrativeModel });
@@ -184,7 +184,7 @@ export async function run(options: RunOptions): Promise<void> {
 
   if (needInit) {
     console.log("\n[1/7] init");
-    await init({ repo: repoPath, role, story, model: reportModel, url: baseUrl, period });
+    await init({ repo: repoPath, role, story, model: narrativeModel, url: baseUrl, period });
   } else {
     console.log("\n[1/7] init — skipped (already initialized)");
   }

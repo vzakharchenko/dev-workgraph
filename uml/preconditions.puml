@@ -271,9 +271,9 @@ partition "Automatic inputs (D)" {
   :Read **README.md** from repo root\n(if missing → continue, not an error);
 }
 
-:Pick **reportModel** (Ollama)\n--model overrides;\nsaved in config.ollama.reportModel;
+:Pick **narrativeModel** (Ollama)\n--model overrides;\nsaved in config.ollama.narrativeModel;
 
-partition "LLM session 1 — Prepare story (M:r)" {
+partition "LLM session 1 — Prepare story (M:n)" {
   :Input: role + raw story;
   :Output: **story.preparedContext**;
   note right
@@ -286,7 +286,7 @@ partition "LLM session 1 — Prepare story (M:r)" {
   end note
 }
 
-partition "LLM session 2 — Project profile (M:r)" {
+partition "LLM session 2 — Project profile (M:n)" {
   :Input: role + preparedContext + README;
   :Structured JSON output;
   :Output: **profile**;
@@ -327,7 +327,7 @@ participant "CLI\ninit" as CLI
 database "Git repo" as REPO
 database "config.json" as CFG
 database "project.json" as PJ
-participant "Ollama\n(reportModel)" as LLM
+participant "Ollama\n(narrativeModel)" as LLM
 
 DEV -> CLI : dev-workgraph init ./repo\n[--role] [--story]\n[--period] [--from] [--to]
 

@@ -43,6 +43,7 @@ import {
 import { writeRecordJson } from "../lib/record-io.js";
 import type { CommitRecord, GroupRecord } from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
+import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /** Coerces an LLM-provided value into an array of non-empty strings. */
 const asStringArray = (value: unknown): string[] =>
@@ -192,90 +193,99 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
   const classifySystem = withProjectContext(projectBlock, GROUP_CLASSIFY_SYSTEM);
   const composeSystem = withProjectContext(projectBlock, GROUP_COMPOSE_SYSTEM);
 
+  const tracker = new TokenUsageTracker(repoPath, options.period);
+  tracker.beginStep("commit-group");
+
   let summarized = 0;
   let skipped = 0;
   let failed = 0;
 
-  for (const [i, members] of sessions.entries()) {
-    const record = buildGroupRecord(members);
-    const file = path.join(groupsDir, `${record.timestampEnd}.json`);
+  try {
+    for (const [i, members] of sessions.entries()) {
+      const record = buildGroupRecord(members);
+      const file = path.join(groupsDir, `${record.timestampEnd}.json`);
 
-    if (fs.existsSync(file)) {
-      const existing = JSON.parse(fs.readFileSync(file, "utf8")) as GroupRecord;
-      if (existing.model) {
+      if (fs.existsSync(file)) {
+        const existing = JSON.parse(fs.readFileSync(file, "utf8")) as GroupRecord;
+        if (existing.model) {
+          skipped += 1;
+          continue;
+        }
+      }
+
+      if (options.limit !== undefined && summarized + failed >= options.limit) {
         skipped += 1;
         continue;
       }
-    }
 
-    if (options.limit !== undefined && summarized + failed >= options.limit) {
-      skipped += 1;
-      continue;
-    }
+      const label = `[${i + 1}/${sessions.length}] group@${record.timestampEnd} (${record.commitCount} commits)`;
+      process.stdout.write(`${label} ... `);
 
-    const label = `[${i + 1}/${sessions.length}] group@${record.timestampEnd} (${record.commitCount} commits)`;
-    process.stdout.write(`${label} ... `);
-
-    try {
-      // Stage 1 — classify signals + context tiers (no prose summary).
-      const classifyPrompt = buildGroupClassifyPrompt(record, members);
-      const rawClassify = (await chatJson({
-        baseUrl,
-        model,
-        system: classifySystem,
-        user: classifyPrompt.prompt,
-        schema: groupClassifyJsonSchema(),
-      })) as Record<string, unknown>;
-
-      const { hiContext, mediumContext, lowContext, questionsAnalyses, ...classifyFields } =
-        rawClassify;
-      const signals = enforceSignalReasons(classifyFields as unknown as ModelLayer);
-      const tiers: GroupClassifyView = {
-        technicalSignal: signals.technicalSignal,
-        architectureSignal: signals.architectureSignal,
-        securitySignal: signals.securitySignal,
-        hiContext: asStringArray(hiContext),
-        mediumContext: asStringArray(mediumContext),
-        lowContext: asStringArray(lowContext),
-      };
-
-      // Stage 2 — merge the commit summaries into one HISTORY, weighted by tier.
-      const composePrompt = buildGroupComposePrompt(record, tiers, members);
-      const rawCompose = (await chatJson({
-        baseUrl,
-        model,
-        system: composeSystem,
-        user: composePrompt.prompt,
-        schema: groupHistoryJsonSchema(),
-      })) as { history?: string };
-
-      const { summary: _omitSummary, ...signalFields } = signals;
-      record.model = {
-        ...signalFields,
-        // Technologies are a deterministic union of the member commits, not re-derived.
-        technologies: mergeTechnologies(...members.map((m) => m.model?.technologies)),
-        history: rawCompose.history ?? "",
-        hiContext: tiers.hiContext,
-        mediumContext: tiers.mediumContext,
-        lowContext: tiers.lowContext,
-        questionsAnalyses: cleanQuestionAnalyses(questionsAnalyses),
-        provenance: {
+      try {
+        // Stage 1 — classify signals + context tiers (no prose summary).
+        const classifyPrompt = buildGroupClassifyPrompt(record, members);
+        const rawClassify = (await chatJson({
+          baseUrl,
           model,
-          generatedAt: new Date().toISOString(),
-          patchTruncated: classifyPrompt.truncated || composePrompt.truncated,
-        },
-      };
+          system: classifySystem,
+          user: classifyPrompt.prompt,
+          schema: groupClassifyJsonSchema(),
+          tracker,
+        })) as Record<string, unknown>;
 
-      writeRecordJson(file, record);
-      for (const c of members) covered.add(c.commitHash);
-      console.log("ok");
-      summarized += 1;
-    } catch (err) {
-      // Save the deterministic group so a later run can retry the model layer.
-      writeRecordJson(file, record);
-      console.log(`failed (${(err as Error).message})`);
-      failed += 1;
+        const { hiContext, mediumContext, lowContext, questionsAnalyses, ...classifyFields } =
+          rawClassify;
+        const signals = enforceSignalReasons(classifyFields as unknown as ModelLayer);
+        const tiers: GroupClassifyView = {
+          technicalSignal: signals.technicalSignal,
+          architectureSignal: signals.architectureSignal,
+          securitySignal: signals.securitySignal,
+          hiContext: asStringArray(hiContext),
+          mediumContext: asStringArray(mediumContext),
+          lowContext: asStringArray(lowContext),
+        };
+
+        // Stage 2 — merge the commit summaries into one HISTORY, weighted by tier.
+        const composePrompt = buildGroupComposePrompt(record, tiers, members);
+        const rawCompose = (await chatJson({
+          baseUrl,
+          model,
+          system: composeSystem,
+          user: composePrompt.prompt,
+          schema: groupHistoryJsonSchema(),
+          tracker,
+        })) as { history?: string };
+
+        const { summary: _omitSummary, ...signalFields } = signals;
+        record.model = {
+          ...signalFields,
+          // Technologies are a deterministic union of the member commits, not re-derived.
+          technologies: mergeTechnologies(...members.map((m) => m.model?.technologies)),
+          history: rawCompose.history ?? "",
+          hiContext: tiers.hiContext,
+          mediumContext: tiers.mediumContext,
+          lowContext: tiers.lowContext,
+          questionsAnalyses: cleanQuestionAnalyses(questionsAnalyses),
+          provenance: {
+            model,
+            generatedAt: new Date().toISOString(),
+            patchTruncated: classifyPrompt.truncated || composePrompt.truncated,
+          },
+        };
+
+        writeRecordJson(file, record);
+        for (const c of members) covered.add(c.commitHash);
+        console.log("ok");
+        summarized += 1;
+      } catch (err) {
+        // Save the deterministic group so a later run can retry the model layer.
+        writeRecordJson(file, record);
+        console.log(`failed (${(err as Error).message})`);
+        failed += 1;
+      }
     }
+  } finally {
+    tracker.endStep();
   }
 
   console.log(
