@@ -35,8 +35,8 @@ note bottom of OUT
   • **questions[]** formed (role-aware)
   • summary, changeTypes, technologies, confidence
   ----
-  **Append-only:** skips commits with model already set
-  unless **--force**. Failed commits keep model: null.
+  **Append-only:** skips commits with model already set.
+  Failed commits keep model: null.
   **--limit N** for trials. **--period** scopes data dir.
 end note
 
@@ -81,7 +81,7 @@ endif
 
 :Build **pending** list;
 note right
-  Skip if record.model set (unless --force)
+  Skip if record.model set (append-only)
   Optional --limit N on pending slice
 end note
 
@@ -399,7 +399,7 @@ database "project.json" as PJ
 participant "**summarize**" as SUM
 participant "Ollama\ncommitModel" as LLM
 
-DEV -> SUM : dev-workgraph summarize ./repo\n[--period] [--force] [--limit N]
+DEV -> SUM : dev-workgraph summarize ./repo\n[--period] [--limit N]
 
 SUM -> DISK : list .json files
 SUM -> PJ : loadProjectContext()

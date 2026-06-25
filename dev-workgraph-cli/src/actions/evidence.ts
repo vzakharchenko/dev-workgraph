@@ -16,6 +16,7 @@ import {
 } from "../lib/git.js";
 import { isNoise } from "../lib/noise.js";
 import { resolvePeriodRange } from "../lib/periods.js";
+import { writeRecordJson } from "../lib/record-io.js";
 
 /**
  * Options for the `evidence` command.
@@ -25,8 +26,6 @@ export interface EvidenceOptions {
   repo: string;
   /** Override the saved author selection with these emails. */
   email?: string[];
-  /** Re-extract and overwrite commits that already exist on disk. */
-  force?: boolean;
   /** Restrict extraction to a defined review period (scopes output too). */
   period?: string;
 }
@@ -138,21 +137,15 @@ function classify(
  * @param repoPath - Absolute repository path.
  * @param outDir - The repo's commits directory.
  * @param commit - The commit to extract evidence for.
- * @param force - Overwrite an existing record.
  * @returns "extracted" when written, "skipped" when it already existed.
  */
-function extractOne(
-  repoPath: string,
-  outDir: string,
-  commit: Commit,
-  force: boolean,
-): "extracted" | "skipped" {
+function extractOne(repoPath: string, outDir: string, commit: Commit): "extracted" | "skipped" {
   const dir = path.join(outDir, String(commit.timestamp));
   const patchPath = path.join(dir, `${commit.hash}.patch`);
   const jsonPath = path.join(dir, `${commit.hash}.json`);
 
-  // Append-only: never overwrite existing exports unless forced.
-  if (!force && fs.existsSync(patchPath) && fs.existsSync(jsonPath)) {
+  // Append-only: never overwrite existing exports.
+  if (fs.existsSync(patchPath) && fs.existsSync(jsonPath)) {
     return "skipped";
   }
 
@@ -167,7 +160,7 @@ function extractOne(
     deterministic: buildDeterministic(repoPath, commit.hash),
     model: null,
   };
-  fs.writeFileSync(jsonPath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+  writeRecordJson(jsonPath, record);
 
   return "extracted";
 }
@@ -213,14 +206,10 @@ export async function evidence(options: EvidenceOptions): Promise<void> {
   let extracted = 0;
   let skipped = 0;
   for (const commit of commits) {
-    const result = extractOne(repoPath, outDir, commit, options.force ?? false);
+    const result = extractOne(repoPath, outDir, commit);
     if (result === "extracted") extracted += 1;
     else skipped += 1;
   }
 
-  console.log(
-    `\n✅ Done. Extracted ${extracted}, skipped ${skipped} (already present)${
-      options.force ? "" : " — use --force to overwrite"
-    }.`,
-  );
+  console.log(`\n✅ Done. Extracted ${extracted}, skipped ${skipped} (already present).`);
 }

@@ -5,6 +5,7 @@
 // Two flows: per-commit `summarize` and per-session `commit-group`.
 
 import { tierOf } from "./grouping.js";
+import type { QuestionAnalyses } from "./model.js";
 import type { CommitRecord, GroupRecord, ProjectContext, ReportRecord } from "./records.js";
 import { MAX_HISTORY_ENTRIES } from "./report-provenance.js";
 
@@ -120,10 +121,10 @@ export function buildProjectProfilePrompt(
 }
 
 /** Max patch characters sent to the per-commit model; longer patches are truncated. */
-const MAX_PATCH_CHARS = 16000;
+const MAX_PATCH_CHARS = 12000;
 
 /** Char budget for the serialized member commits in the group prompt. */
-const MAX_MEMBERS_CHARS = 24000;
+const MAX_MEMBERS_CHARS = 16000;
 
 // Shared across every stage: routine upkeep is named, never detailed; substantive work wins.
 const ROUTINE_RULE = [
@@ -189,10 +190,19 @@ export const COMMIT_SUMMARY_SYSTEM = [
   "- Every non-low signal MUST have a one-line reason grounded in the patch.",
   "  If you cannot justify it from the patch, use 'low'.",
   "- NEVER claim production usage, ownership, or business impact. Put anything you",
-  "  cannot know from the patch into 'questions' instead.",
-  "- questions: what a human must answer to recover missing context",
-  "  (was it used in production? your own design or maintenance of someone else's code?",
-  "  customer-driven? part of a security boundary? replacing a manual process?).",
+  "  cannot know from the patch into 'questionsAnalysis' instead.",
+  "- questionsAnalysis: the REASONED form of the missing context. Produce 1–4 entries",
+  "  (an empty array only for a purely routine commit). Each entry is an object",
+  "  { observation, missingPiece, question }:",
+  "    • observation: what the DIFF actually shows — grounded in the patch, not the message",
+  "      (e.g. 'The diff adds Docker deploy scripts plus .gitignore and package changes,",
+  "      which looks like local-environment setup rather than a production deploy.').",
+  "    • missingPiece: the human context the patch cannot establish — ownership, intent,",
+  "      whether it shipped, who drove it (e.g. 'Unclear whether this container ever reached",
+  "      real servers or stayed developer tooling.').",
+  "    • question: ONE precise question to ask the developer to recover that missing piece.",
+  "      Target what Git cannot know: production use? your own design or maintenance of",
+  "      someone else's code? customer-driven? a security boundary? replacing a manual process?",
   "- confidence: your confidence in the summary.",
   "",
   ROUTINE_RULE,
@@ -256,8 +266,15 @@ export const GROUP_CLASSIFY_SYSTEM = [
   "- Each bullet is a concise phrase, e.g. 'Implemented the background job scheduler'. A tier may be empty.",
   "",
   "changeTypes: the change-type tags that apply to the session.",
-  "questions: what I must answer later to recover missing context",
-  "  (production? my own design or maintenance? customer-driven? a security boundary?).",
+  "",
+  "questionsAnalyses — the AGGREGATED reasoned questions for the whole session. Each member",
+  "commit carried its own { observation, missingPiece, question }. MERGE them by open thread:",
+  "- Each entry is an object whose three fields are ARRAYS:",
+  "    { observation: [...], missingPiece: [...], question: [...] }.",
+  "- Group commits that probe the SAME open thread into ONE entry: collect their observations",
+  "  into `observation`, their missing pieces into `missingPiece`, their questions into `question`.",
+  "- Unrelated threads go in SEPARATE entries. Drop pure-duplicate strings. Routine-only",
+  "  upkeep does not produce an entry.",
   "confidence: confidence in this classification.",
   "",
   ROUTINE_RULE,
@@ -301,6 +318,9 @@ function serializeMembers(members: CommitRecord[]): { text: string; truncated: b
   const tierTag = { hi: "HIGH", medium: "MEDIUM", low: "LOW" } as const;
   const blocks = members.map((c) => {
     const m = c.model;
+    const analysis = (m?.questionsAnalysis ?? [])
+      .map((q) => `  - obs: ${q.observation} | missing: ${q.missingPiece} | q: ${q.question}`)
+      .join("\n");
     return [
       `### ${c.commitHash} [${tierTag[tierOf(c)]} context]`,
       `title: ${c.title}`,
@@ -310,6 +330,7 @@ function serializeMembers(members: CommitRecord[]): { text: string; truncated: b
         ? `signals: tech=${m.technicalSignal} arch=${m.architectureSignal} sec=${m.securitySignal}`
         : "signals: (not summarized)",
       `summary: ${m?.summary ?? "(none)"}`,
+      `questionsAnalysis:\n${analysis || "  (none)"}`,
     ].join("\n");
   });
 
@@ -427,6 +448,31 @@ const ROUTINE_MAINTENANCE_RULE = [
 
 const bulletList = (items: string[]): string => items.map((b) => `- ${b}`).join("\n") || "(none)";
 
+/** Renders aggregated questionsAnalyses (group/report) for a merge prompt. */
+const analysesBlock = (entries: QuestionAnalyses[]): string =>
+  entries
+    .map((e, i) => {
+      const observations = e.observation.length
+        ? e.observation.map((o, j) => `       ${j + 1}. ${o}`).join("\n")
+        : "       (none)";
+      const missing = e.missingPiece.length
+        ? e.missingPiece.map((m, j) => `       ${j + 1}. ${m}`).join("\n")
+        : "       (none)";
+      const questions = e.question.length
+        ? e.question.map((q, j) => `       ${j + 1}. ${q}`).join("\n")
+        : "       (none)";
+      return [
+        `  thread ${i + 1}:`,
+        "     observations:",
+        observations,
+        "     missing pieces:",
+        missing,
+        "     questions:",
+        questions,
+      ].join("\n");
+    })
+    .join("\n\n") || "(none)";
+
 // Merge the accumulated report's model layer with the next group's model layer.
 export const REPORT_MERGE_SYSTEM = [
   "You are merging an ACCUMULATED report of ONE developer's work with the NEXT work session,",
@@ -435,7 +481,24 @@ export const REPORT_MERGE_SYSTEM = [
   "- changeTypes: union of both; merge near-duplicate tags.",
   "- signalReasons.{technical,architecture,security}: ARRAYS merging both sides' reasons;",
   "  collapse duplicate or near-duplicate reasons into one entry.",
-  "- questions: recompute for the COMBINED body of work; drop duplicates and ones already answered.",
+  "- questionsAnalyses: REBUILD the aggregated reasoned questions for the combined work from BOTH",
+  "  sides' questionsAnalyses. Each entry: { observation: [...], missingPiece: [...], question: [...] }.",
+  "  THREAD IDENTITY — decide whether two entries are the SAME open thread primarily from whether they",
+  "  share the same missingPiece (human context Git cannot show), supported by overlapping observation",
+  "  (what the diffs show). Do NOT merge solely because question wording is similar; do NOT split solely",
+  "  because question wording differs if the missing piece is the same.",
+  "  MERGE WITHIN A THREAD — union observations and missingPieces (drop duplicate/near-duplicate strings).",
+  "  In question: keep ONE best question per thread — read each candidate's meaning, pick or rewrite the",
+  "  sharpest single question that recovers the merged missing piece. Do NOT accumulate multiple question",
+  "  strings for the same thread unless they ask genuinely different things that cannot be one question.",
+  "  VALUE — rank threads by what still matters most for the developer's role (see PROJECT CONTEXT):",
+  "  production use, ownership vs maintenance, customer/product driver, security boundary, and major",
+  "  design decisions outrank minor clarifications, housekeeping, and routine upkeep. Questions tied to",
+  "  hi-tier / high-signal work outrank those tied only to low-tier upkeep.",
+  "  DROP threads already answered, pure duplicates, and anything about routine upkeep (never an entry",
+  "  for routine-only work).",
+  `- BOUND to at most ${MAX_CONTEXT_BULLETS} entries. When over the limit, merge near-duplicate threads`,
+  "  and DROP the least valuable; KEEP the most important threads first in the output list.",
   "- confidence: re-assess for the combined work (low | medium | high).",
   "- hiContext / mediumContext / lowContext: MERGE the bullets from both sides; collapse duplicate",
   "  and near-duplicate bullets. Then RE-RANK importance DOWNWARD ONLY: a hi bullet that is minor",
@@ -532,7 +595,7 @@ export function buildReportMergePrompt(report: ReportRecord, group: GroupRecord)
     `- signalReasons.technical: ${bulletList(r.signalReasons.technical)}`,
     `- signalReasons.architecture: ${bulletList(r.signalReasons.architecture)}`,
     `- signalReasons.security: ${bulletList(r.signalReasons.security)}`,
-    `- questions:\n${bulletList(r.questions)}`,
+    `- questionsAnalyses:\n${analysesBlock(r.questionsAnalyses)}`,
     `- hiContext:\n${bulletList(r.hiContext)}`,
     `- mediumContext:\n${bulletList(r.mediumContext)}`,
     `- lowContext:\n${bulletList(r.lowContext)}`,
@@ -542,7 +605,7 @@ export function buildReportMergePrompt(report: ReportRecord, group: GroupRecord)
     `- signalReasons.technical: ${g?.signalReasons.technical ?? "(none)"}`,
     `- signalReasons.architecture: ${g?.signalReasons.architecture ?? "(none)"}`,
     `- signalReasons.security: ${g?.signalReasons.security ?? "(none)"}`,
-    `- questions:\n${bulletList(g?.questions ?? [])}`,
+    `- questionsAnalyses:\n${analysesBlock(g?.questionsAnalyses ?? [])}`,
     `- hiContext:\n${bulletList(g?.hiContext ?? [])}`,
     `- mediumContext:\n${bulletList(g?.mediumContext ?? [])}`,
     `- lowContext:\n${bulletList(g?.lowContext ?? [])}`,
@@ -698,37 +761,53 @@ export function buildPrepareReasonsPrompt(
   ].join("\n");
 }
 
-// Step 5: reframe exactly four role-aware questions + re-assess confidence.
+// Step 5: reframe role-aware questionsAnalyses + re-assess confidence.
 export const PREPARE_QUESTIONS_SYSTEM = [
-  "You produce EXACTLY FOUR role-aware questions that recover the missing human context Git cannot",
-  'show, plus a confidence. First person (\'I\'). Return JSON { "questions": ["..." x4], "confidence": "low|medium|high" }.',
-  "Given the composed history, the four signal reasons, the report's existing questions, and the",
-  "role + project context: write four questions targeting what still cannot be known (production",
-  "use, ownership vs maintenance, customer/product driver, security boundary), framed for the role.",
-  "Do NOT repeat facts already in the project context. confidence = your confidence in this narrative.",
+  "You produce up to FOUR role-aware question analyses that recover the missing human context Git",
+  "cannot show, plus a confidence. First person ('I'). Return JSON",
+  '{ "questionsAnalyses": [{ "observation": ["..."], "missingPiece": ["..."], "question": ["..."] }],',
+  '  "confidence": "low|medium|high" }.',
+  "Given the composed history, the four signal reasons, the report's existing questionsAnalyses,",
+  "any prior human Q&A from an earlier finish round, and the role + project context: write analyses",
+  "targeting what still cannot be known (production use, ownership vs maintenance, customer/product",
+  "driver, security boundary), framed for the role — especially gaps opened by NEW work in the",
+  "history. Each entry is one open thread; usually one question string per entry. Do NOT repeat",
+  "questions already answered in prior Q&A (same missing piece or paraphrase). Drop duplicates and",
+  "facts already in the project context. confidence = your confidence in this narrative.",
 ].join("\n");
 
 /**
  * Builds the prepare step-5 (reframe questions) user prompt.
  * @param history - The composed history from step 2.
  * @param reasons - The four collapsed reasons from step 4.
- * @param reportQuestions - The report's existing questions.
+ * @param reportAnalyses - The report's existing questionsAnalyses.
+ * @param priorQa - Q&A from the latest finish archive, when extending after new commits.
  */
 export function buildPrepareQuestionsPrompt(
   history: string,
   reasons: string[],
-  reportQuestions: string[],
+  reportAnalyses: QuestionAnalyses[],
+  priorQa: { question: string; answer: string }[] = [],
 ): string {
-  return [
+  const blocks = [
     "Composed history:",
     history || "(none)",
     "",
     "Signal reasons (4):",
     bulletList(reasons),
     "",
-    "The report's existing questions:",
-    bulletList(reportQuestions),
-  ].join("\n");
+    "The report's existing questionsAnalyses:",
+    analysesBlock(reportAnalyses),
+  ];
+  if (priorQa.length > 0) {
+    blocks.push(
+      "",
+      "Prior human Q&A from the latest finish (do NOT repeat these threads):",
+      priorQa.map((p) => `Q: ${p.question}\nA: ${p.answer || "(no answer)"}`).join("\n\n") ||
+        "(none)",
+    );
+  }
+  return blocks.join("\n");
 }
 
 // ───────────────────────────── final deliverable (`final`) ───────────────────────
@@ -920,15 +999,16 @@ export function buildDeepenImpactNarrativePrompt(
   return blocks.join("\n");
 }
 
-// `deepen`: four follow-up questions that must not repeat a prior round.
+// `deepen`: four follow-up questionsAnalyses that must not repeat a prior round.
 export const DEEPEN_QUESTIONS_SYSTEM = [
-  "You produce EXACTLY FOUR NEW role-aware follow-up questions that recover human context Git",
+  "You produce up to FOUR NEW role-aware follow-up question analyses that recover human context Git",
   "cannot show. First person framing for the developer ('I'). Return JSON",
-  '{ "questions": ["..." x4], "confidence": "low|medium|high" }.',
+  '{ "questionsAnalyses": [{ "observation": ["..."], "missingPiece": ["..."], "question": ["..."] }],',
+  '  "confidence": "low|medium|high" }.',
   "You are given PROJECT CONTEXT (role + story + profile from project.json), newly recalled",
   "human context (non-code memories about the project), combined history (prepare baseline plus",
-  "prior final refinement), the report's questions, signal reasons, and every question already",
-  "asked with its answer.",
+  "prior final refinement), the report's questionsAnalyses, signal reasons, and every question",
+  "already asked with its answer.",
   "Use the recalled context to ask sharper questions about what it opens up — but do NOT treat",
   "it as proof of production impact unless the developer stated that explicitly.",
   "Write four questions about gaps STILL not covered after prior Q&A and the recalled context —",

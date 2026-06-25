@@ -83,7 +83,7 @@ endif
 :`getCommits(repo, emails, range)`\n**oldest first**, no merges;
 
 partition "Per commit — **all deterministic (D)**" {
-  if (patch + json exist\nAND NOT --force?) then (yes)
+  if (patch + json exist?) then (yes)
     :Skip (append-only);
   else (no)
     :Write **<hash>.patch**\n`git show --format=fuller --find-renames`;
@@ -151,7 +151,7 @@ title **summarize** — Model layer per commit (§3)\nOllama **commitModel** · 
 
 start
 
-:List commits/**/*.json\n(skip if model present, unless --force);
+:List commits/**/*.json\n(skip if model present);
 
 if (No exported commits?) then (yes)
   #Pink:Run `evidence` first;
@@ -348,7 +348,7 @@ database "config.json\nauthors" as CFG
 participant "**evidence**\n(D)" as EVID
 database "commits/<ts>/\n.hash.patch + .json" as DISK
 
-DEV -> EVID : dev-workgraph evidence ./repo\n[--period] [--force]
+DEV -> EVID : dev-workgraph evidence ./repo\n[--period]
 
 EVID -> CFG : selectedAuthors[]
 EVID -> GIT : log + show patches\n(filter by email [, date window])

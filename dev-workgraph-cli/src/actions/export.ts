@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { getRepoConfig, type RepoConfig, repoDataDir } from "../lib/config.js";
 import { resolveRepo } from "../lib/git.js";
+import { VERSION } from "../lib/version.js";
 
 /**
  * Options for the `export` command (bundle a repo's workgraph data).
@@ -23,7 +24,8 @@ export interface ExportOptions {
  * data directory and the repo's config entry (which lives outside the data dir).
  */
 export interface BundleManifest {
-  version: number;
+  /** Encoded package semver of the CLI that produced the bundle. */
+  schemaVersion: number;
   /** Data-directory name (`<basename>-<hash>`). */
   repoId: string;
   /** Absolute repo path on the exporting machine. */
@@ -50,7 +52,7 @@ export async function exportRepo(options: ExportOptions): Promise<void> {
   const reposRoot = path.dirname(dataDir);
   const id = path.basename(dataDir);
   const manifest: BundleManifest = {
-    version: 1,
+    schemaVersion: VERSION,
     repoId: id,
     repoPath,
     exportedAt: new Date().toISOString(),

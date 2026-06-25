@@ -16,6 +16,7 @@ import {
   PROJECT_PROFILE_SYSTEM,
   STORY_PREPARE_SYSTEM,
 } from "../lib/prompts.js";
+import { writeRecordJson } from "../lib/record-io.js";
 import type { ProjectContext, ProjectProfile } from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
 
@@ -33,8 +34,6 @@ export interface InitOptions {
   url?: string;
   /** Model name; skips the interactive picker. */
   model?: string;
-  /** Re-run both LLM sessions and overwrite an existing project.json. */
-  force?: boolean;
   /** Review-period label to scope this init under. */
   period?: string;
   /** Period start date, ISO `YYYY-MM-DD` (defines/updates the period). */
@@ -101,18 +100,17 @@ export async function init(options: InitOptions): Promise<void> {
 
   const file = repoProjectPath(repoPath, period);
 
-  if (!options.force && fs.existsSync(file)) {
-    console.log(`Project already initialized (${file}). Use --force to redo.`);
+  if (fs.existsSync(file)) {
+    console.log(`Project already initialized (${file}).`);
     return;
   }
 
   // Period default: inherit the repo-level context instead of re-running the LLM.
-  // `--force` falls through to build a period-specific profile below.
-  if (period && !options.force) {
+  if (period) {
     const base = repoProjectPath(repoPath);
     if (!fs.existsSync(base)) {
       throw new Error(
-        "No repo-level project context to inherit. Run `dev-workgraph init` (without --period) first, or pass --force to build a period-specific profile.",
+        "No repo-level project context to inherit. Run `dev-workgraph init` (without --period) first.",
       );
     }
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -173,7 +171,7 @@ export async function init(options: InitOptions): Promise<void> {
   };
 
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify(context, null, 2)}\n`, "utf8");
+  writeRecordJson(file, context);
 
   console.log(`\n✅ Project initialized: ${file}`);
   console.log(`   Role: ${role} · README: ${readmePresent ? "found" : "none"}`);

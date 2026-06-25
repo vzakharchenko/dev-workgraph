@@ -5,12 +5,20 @@ import fs from "node:fs";
 import path from "node:path";
 import inquirer from "inquirer";
 import { loadConfig, repoFinishDir, repoPreparedDir, setOllamaConfig } from "../lib/config.js";
-import { defaultReconstructionName } from "../lib/finish-load.js";
+import {
+  defaultReconstructionName,
+  finishJsonFileName,
+  finishMdFileName,
+  latestFinish,
+  nextFinishVersion,
+  versionedReconstructionName,
+} from "../lib/finish-load.js";
 import { resolveRepo } from "../lib/git.js";
-import { groupHistoryJsonSchema, roleNarrativeJsonSchema } from "../lib/model.js";
+import { flattenQuestions, groupHistoryJsonSchema, roleNarrativeJsonSchema } from "../lib/model.js";
 import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
 import { loadProjectContext } from "../lib/project.js";
 import {
+  buildDeepenImpactNarrativePrompt,
   buildImpactNarrativePrompt,
   buildRoleNarrativePrompt,
   IMPACT_NARRATIVE_SYSTEM,
@@ -18,7 +26,15 @@ import {
   ROLE_NARRATIVE_SYSTEM,
   withProjectContext,
 } from "../lib/prompts.js";
-import type { FinishRecord, PreparedRecord } from "../lib/records.js";
+import {
+  collectAnswersInteractive,
+  ensureQaIds,
+  qaPairsToLegacyAnswers,
+  questionsNotYetAnswered,
+  readAnswersFile,
+} from "../lib/qa.js";
+import { writeRecordJson } from "../lib/record-io.js";
+import type { FinishRecord, PreparedRecord, QAPair } from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
 
 /**
@@ -35,15 +51,8 @@ export interface FinalOptions {
   url?: string;
   /** Model name; skips the interactive picker. */
   model?: string;
-  /** Re-collect answers and overwrite the markdown file. */
-  force?: boolean;
   /** Operate on a defined review period's data instead of the repo's all-time data. */
   period?: string;
-}
-
-interface QA {
-  question: string;
-  answer: string;
 }
 
 const asStringArray = (value: unknown): string[] =>
@@ -64,32 +73,6 @@ function latestPrepared(dir: string): { file: string; record: PreparedRecord } |
     file,
     record: JSON.parse(fs.readFileSync(path.join(dir, file), "utf8")) as PreparedRecord,
   };
-}
-
-/** Loads Q&A from a JSON file (accepts an array or `{ answers: [...] }`). */
-function readAnswersFile(p: string, questions: string[]): QA[] {
-  const parsed = JSON.parse(fs.readFileSync(p, "utf8")) as unknown;
-  const arr = Array.isArray(parsed) ? parsed : ((parsed as { answers?: unknown }).answers ?? []);
-  return (arr as { question?: string; answer?: string }[]).map((x, i) => ({
-    question: x.question ?? questions[i] ?? `Question ${i + 1}`,
-    answer: x.answer ?? "",
-  }));
-}
-
-/** Collects answers interactively, one question at a time (multi-line editor). */
-async function collectAnswers(questions: string[]): Promise<QA[]> {
-  const pairs: QA[] = [];
-  for (const [i, question] of questions.entries()) {
-    const { answer } = await inquirer.prompt<{ answer: string }>([
-      {
-        type: "editor",
-        name: "answer",
-        message: `(${i + 1}/${questions.length}) ${question}`,
-      },
-    ]);
-    pairs.push({ question, answer: (answer ?? "").trim() });
-  }
-  return pairs;
 }
 
 /**
@@ -117,23 +100,75 @@ export async function final(options: FinalOptions): Promise<void> {
   }
   const prepared = latest.record;
   const preparedPath = path.join(preparedDir, latest.file);
-  const questions = prepared.model.questions;
+
+  const finishDir = repoFinishDir(repoPath, options.period);
+  const priorFinish = latestFinish(finishDir);
+  const isExtension =
+    priorFinish !== null &&
+    (priorFinish.record.answers?.length ?? 0) > 0 &&
+    latest.file !== priorFinish.record.sourcePrepared;
+
+  const archive =
+    isExtension && priorFinish
+      ? nextFinishVersion(priorFinish.file)
+      : {
+          baseFinishId: prepared.preparedId,
+          version: 1,
+          jsonFile: finishJsonFileName(prepared.preparedId, 1),
+          mdFile: finishMdFileName(prepared.preparedId, 1),
+        };
+
+  const provenance = {
+    sourceFinal: archive.jsonFile,
+    sourceReport: prepared.sourceReport,
+  };
+
+  const preparedQuestions = flattenQuestions(prepared.model.questionsAnalyses).slice(0, 4);
+  const priorQa: QAPair[] =
+    isExtension && priorFinish
+      ? ensureQaIds(priorFinish.record.answers, {
+          sourceFinal: priorFinish.file,
+          sourceReport: priorFinish.record.sourceReport,
+        })
+      : [];
+
+  const questionsToAsk = isExtension
+    ? questionsNotYetAnswered(preparedQuestions, priorQa)
+    : preparedQuestions;
 
   // Step 1 — collect (or reuse) answers.
-  let qa: QA[];
-  if (options.answersFile) {
-    qa = readAnswersFile(options.answersFile, questions);
-  } else if (prepared.answers && prepared.answers.length > 0 && !options.force) {
-    console.log("Reusing saved answers (pass --force to re-answer).");
-    qa = prepared.answers;
+  let allQa: QAPair[];
+  if (isExtension) {
+    console.log(
+      `Continuing from finish ${priorFinish?.file} — ${priorQa.length} prior Q&A` +
+        `${questionsToAsk.length > 0 ? `, ${questionsToAsk.length} new question(s)` : ""}.`,
+    );
+    let newQa: QAPair[];
+    if (options.answersFile) {
+      newQa = readAnswersFile(options.answersFile, questionsToAsk, priorQa, provenance);
+    } else if (questionsToAsk.length === 0) {
+      console.log("All prepared questions already answered — regenerating narrative only.");
+      newQa = [];
+    } else {
+      console.log("\nAnswer the new questions:");
+      newQa = await collectAnswersInteractive(questionsToAsk, priorQa, inquirer.prompt, provenance);
+    }
+    allQa = [...priorQa, ...newQa];
+  } else if (options.answersFile) {
+    allQa = readAnswersFile(options.answersFile, preparedQuestions, [], provenance);
+  } else if (prepared.answers && prepared.answers.length > 0) {
+    console.log("Reusing saved answers.");
+    allQa = ensureQaIds(prepared.answers, provenance);
   } else {
-    qa = await collectAnswers(questions);
+    allQa = await collectAnswersInteractive(preparedQuestions, [], inquirer.prompt, provenance);
   }
 
-  // Persist Q&A in-place on the prepared record.
+  const qa = qaPairsToLegacyAnswers(allQa);
+
+  // Persist cumulative Q&A on the prepared record.
   prepared.answers = qa;
   prepared.answeredAt = new Date().toISOString();
-  fs.writeFileSync(preparedPath, `${JSON.stringify(prepared, null, 2)}\n`, "utf8");
+  writeRecordJson(preparedPath, prepared);
 
   // Step 2 — Role Narrative (one LLM session, reportModel).
   const baseUrl = resolveBaseUrl(options.url);
@@ -148,12 +183,20 @@ export async function final(options: FinalOptions): Promise<void> {
 
   // Step 2a — refine "Your IMPACT" prose so it reflects the human's answers, not
   // just the Git reconstruction. Falls back to the prepared history on failure.
-  process.stdout.write("Refining Your IMPACT with answers ... ");
+  process.stdout.write(
+    isExtension
+      ? "Refining Your IMPACT with all answers ... "
+      : "Refining Your IMPACT with answers ... ",
+  );
+  const impactPrompt =
+    isExtension && priorFinish
+      ? buildDeepenImpactNarrativePrompt(prepared.model.history, priorFinish.record.history, qa)
+      : buildImpactNarrativePrompt(prepared.model.history, qa);
   const refined = (await chatJson({
     baseUrl,
     model,
     system: withProjectContext(projectBlock, IMPACT_NARRATIVE_SYSTEM),
-    user: buildImpactNarrativePrompt(prepared.model.history, qa),
+    user: impactPrompt,
     schema: groupHistoryJsonSchema(),
   })) as { history?: string };
   const impactHistory = refined.history?.trim() || prepared.model.history;
@@ -202,24 +245,31 @@ export async function final(options: FinalOptions): Promise<void> {
 
   const outPath = options.output
     ? path.resolve(options.output)
-    : path.join(process.cwd(), defaultReconstructionName(repoPath, options.period));
+    : path.join(
+        process.cwd(),
+        isExtension
+          ? versionedReconstructionName(repoPath, archive.version, options.period)
+          : defaultReconstructionName(repoPath, options.period),
+      );
   fs.writeFileSync(outPath, `${md}\n`, "utf8");
-  console.log(`\n✅ Wrote ${outPath}`);
+  console.log(
+    `\n✅ Wrote ${outPath}` +
+      (isExtension ? ` (${qa.length} Q&A pairs, finish v${archive.version})` : ""),
+  );
 
-  // Step 4 — archive the result under the repo's finish dir: a copy of the
-  // markdown plus a JSON record that links back to the source prepared file.
-  const finishDir = repoFinishDir(repoPath, options.period);
+  // Step 4 — archive the result under the repo's finish dir.
   fs.mkdirSync(finishDir, { recursive: true });
-  const finishMdPath = path.join(finishDir, `${prepared.preparedId}.md`);
-  const finishJsonPath = path.join(finishDir, `${prepared.preparedId}.json`);
+  const finishMdPath = path.join(finishDir, archive.mdFile);
+  const finishJsonPath = path.join(finishDir, archive.jsonFile);
   fs.writeFileSync(finishMdPath, `${md}\n`, "utf8");
 
   const finishRecord: FinishRecord = {
-    finishId: prepared.preparedId,
+    finishId: archive.baseFinishId,
     sourcePrepared: latest.file,
     sourceReport: prepared.sourceReport,
-    version: 1,
-    round: 1,
+    ...(isExtension && priorFinish ? { sourcePreviousFinish: priorFinish.file } : {}),
+    version: archive.version,
+    round: archive.version,
     project: projectName,
     role,
     technologies: prepared.model.technologies,
@@ -229,6 +279,6 @@ export async function final(options: FinalOptions): Promise<void> {
     outputMarkdown: path.basename(finishMdPath),
     provenance: { model, generatedAt: new Date().toISOString() },
   };
-  fs.writeFileSync(finishJsonPath, `${JSON.stringify(finishRecord, null, 2)}\n`, "utf8");
-  console.log(`✅ Archived to ${finishDir}`);
+  writeRecordJson(finishJsonPath, finishRecord);
+  console.log(`✅ Archived to ${finishDir} (${finishJsonPath})`);
 }

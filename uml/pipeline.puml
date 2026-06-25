@@ -66,6 +66,8 @@ partition "Work sessions (§4, §7)" {
   note right
     **groups/**<timestampEnd>.json
     deterministic + model layers
+    **incremental:** extension groups
+    (uncovered commits only)
   end note
 }
 
@@ -88,22 +90,23 @@ partition "Prepared narrative (§10)" {
     2. (M:n) compose unified **history**
     3. (D) copy signals + changeTypes
     4. (M:n) collapse signalReasons → 4 strings
-    5. (M:n) reframe **4 questions**
+    5. (M:n) reframe **4 questions**\n       (+ prior finish Q&A input)
     6. (D) console preview
     **prepared/**<reportId>.json
   end note
 }
 
 partition "Final deliverable (§11)" {
-  :(H) **final** — collect answers\nPresent 4 prepared questions;\npersist Q&A to prepared record;
-  :(M:n) **final** — refine IMPACT\nWeave answers into prepared history;
+  :(H) **final** — collect answers\nUp to 4 questions/round;\n**extension:** prior finish Q&A + new;
+  :(M:n) **final** — refine IMPACT\nWeave **all** Q&A; combined history in extension;
   :(M:n) **final** — Role Narrative\n4 claim-safe impact bullets;
-  :(D) **final** — write markdown\nAssemble RECONSTRUCTION.<project>.md;
+  :(D) **final** — write markdown\nRECONSTRUCTION.<project>.md or .vN.md;
   note right
-    **cwd:** RECONSTRUCTION.<project>.md
-    (or .<period>.md with --period)
+    **cwd:** RECONSTRUCTION.<project>.md (v1)
+    or .vN.md (extension / after deepen)
     **archive:** finish/<preparedId>.{md,json}
-    **version: 1**
+    or <preparedId>.vN.{md,json}
+    **extension:** append-only vN+1
   end note
 }
 
@@ -150,7 +153,7 @@ participant "final" as FIN
 participant "Human" as H
 
 CLI -> CHECK : preflight (abort if Ollama not ready)
-CLI -> CLI : gather upfront inputs\n(3 models, role+story, authors, group thresholds)\nunless already saved / --force
+CLI -> CLI : gather upfront inputs\n(3 models, role+story, authors, group thresholds)\nonly if not already saved
 
 alt run:period / --period <id>
   CLI -> CLI : scope all stages to periods/<id>/\ncommits filtered to [from, to)
@@ -165,13 +168,19 @@ CLI -> PRE : prepare [--period]
 
 note over INIT, PRE
   Unattended stages skip work already done
-  (append-only / resumable report / idempotent prepare)
+  (append-only / extension groups / resumable report)
 end note
 
 CLI -> FIN : final [--period]
-FIN -> H : 4 prepared questions (interactive)
-H --> FIN : answers
-FIN -> CLI : RECONSTRUCTION.<project>.md + finish/ v1
+alt extension mode (new prepared + prior finish)
+  FIN -> H : up to 4 **new** questions
+  H --> FIN : new answers (merged with prior Q&A)
+  FIN -> CLI : RECONSTRUCTION.<project>.vN.md + finish vN+1
+else first run
+  FIN -> H : 4 prepared questions
+  H --> FIN : answers
+  FIN -> CLI : RECONSTRUCTION.<project>.md + finish v1
+end
 
 note over FIN
   **deepen** (§11.5) is **not** part of run —
@@ -198,7 +207,7 @@ participant "Ollama\nnarrativeModel" as LLM
 database "finish/ vN+1" as FIN2
 database "cwd RECONSTRUCTION.*.vN+1.md" as MD
 
-CLI -> DEP : deepen ./repo [--period] [--force]
+CLI -> DEP : deepen ./repo [--period]
 
 DEP -> FIN : latestFinish() — highest version
 DEP -> PREP : via sourcePrepared
@@ -228,7 +237,7 @@ DEP -> FIN2 : finish/<preparedId>.vN+1.{md,json}\nsourcePreviousFinish, recalled
 
 note over FIN, FIN2
   Never overwrites v1 or prior versions.
-  Skip if next version exists unless --force.
+  Skip if next version file already exists.
 end note
 
 @enduml
@@ -284,7 +293,7 @@ COMM --> GRP : per-commit JSONs
 GRP --> RPT : fold chain
 RPT --> PREP : latest report
 PREP --> FIN : prepared + Q&A
-FIN --> FIN : deepen → v2, v3, …\n(sourcePreviousFinish chain)
+FIN --> FIN : deepen or extension final\n→ v2, v3, … (sourcePreviousFinish)
 
 note bottom of REPO
   **export** bundles data/repos/<repo-id>/ + config entry → .tar.gz
@@ -332,7 +341,7 @@ MOD --> Q
 Q --> OUT
 REC --> Q : deepen: 4 new Q\n+ cumulative answers
 REC --> NAR
-Q --> OUTV : deepen refines\nIMPACT + Role Narrative
+Q --> OUTV : deepen / extension final\nrefines IMPACT + Role Narrative
 PREP --> MOD
 PROF --> MOD
 NAR --> OUT
@@ -342,7 +351,7 @@ note bottom of OUT
   Never overclaim impact, ownership, or production usage.
   System reconstructs **what** changed and **where**;
   human confirms **why** and **whether it mattered**.
-  **deepen** extends the same loop after final (v2+).
+  **deepen** and **extension final** share the same vN chain.
 end note
 
 @enduml

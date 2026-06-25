@@ -59,6 +59,28 @@ const MAX_ATTEMPTS = 3;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** num_predict escalates on each retry; last attempt uses -1 (Ollama: no output cap). */
+const NUM_PREDICT_BY_ATTEMPT = [8192, 16384, -1] as const;
+
+/** num_ctx escalates on each retry; last attempt uses the largest supported window. */
+const NUM_CTX_BY_ATTEMPT = [16384, 32768, 65536] as const;
+
+function numPredictForAttempt(attempt: number): number {
+  const idx = attempt - 1;
+  return NUM_PREDICT_BY_ATTEMPT[idx] ?? -1;
+}
+
+function numCtxForAttempt(attempt: number): number {
+  const idx = attempt - 1;
+  const last = NUM_CTX_BY_ATTEMPT[NUM_CTX_BY_ATTEMPT.length - 1] ?? 65536;
+  return NUM_CTX_BY_ATTEMPT[idx] ?? last;
+}
+
+/** Default Ollama generation options (num_ctx / num_predict set per attempt in chatJson). */
+const DEFAULT_CHAT_OPTIONS = {
+  temperature: 0.2,
+} as const;
+
 /** One chat attempt: POST, check status, parse the JSON content. */
 async function chatJsonOnce(opts: {
   baseUrl: string;
@@ -66,6 +88,7 @@ async function chatJsonOnce(opts: {
   system: string;
   user: string;
   schema: Record<string, unknown>;
+  ollamaOptions?: Record<string, unknown>;
 }): Promise<unknown> {
   const res = await fetch(`${opts.baseUrl}/api/chat`, {
     method: "POST",
@@ -74,7 +97,8 @@ async function chatJsonOnce(opts: {
       model: opts.model,
       stream: false,
       format: opts.schema,
-      options: { temperature: 0.2 },
+      think: false,
+      options: { ...DEFAULT_CHAT_OPTIONS, ...opts.ollamaOptions },
       messages: [
         { role: "system", content: opts.system },
         { role: "user", content: opts.user },
@@ -87,8 +111,16 @@ async function chatJsonOnce(opts: {
     throw new Error(`Ollama /api/chat returned ${res.status}: ${body.slice(0, 200)}`);
   }
 
-  const data = (await res.json()) as { message?: { content?: string } };
+  const data = (await res.json()) as {
+    message?: { content?: string };
+    done_reason?: string;
+  };
   const content = data.message?.content ?? "";
+  if (data.done_reason === "length") {
+    throw new Error(
+      `model output truncated (token limit); content starts: ${content.slice(0, 120)}`,
+    );
+  }
   return parseAndValidateModelJson(content, opts.schema);
 }
 
@@ -98,22 +130,32 @@ export async function chatJson(opts: {
   system: string;
   user: string;
   schema: Record<string, unknown>;
+  ollamaOptions?: Record<string, unknown>;
+  maxAttempts?: number;
 }): Promise<unknown> {
+  const maxAttempts = opts.maxAttempts ?? MAX_ATTEMPTS;
   let lastError: Error | undefined;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const num_predict = numPredictForAttempt(attempt);
+    const num_ctx = numCtxForAttempt(attempt);
     try {
-      return await chatJsonOnce(opts);
+      return await chatJsonOnce({
+        ...opts,
+        ollamaOptions: { ...opts.ollamaOptions, num_predict, num_ctx },
+      });
     } catch (err) {
       lastError = err as Error;
-      if (attempt < MAX_ATTEMPTS) {
+      if (attempt < maxAttempts) {
+        const nextPredict = numPredictForAttempt(attempt + 1);
+        const nextCtx = numCtxForAttempt(attempt + 1);
         process.stderr.write(
-          `retry ${attempt}/${MAX_ATTEMPTS - 1} (${lastError.message.slice(0, 80)}) `,
+          `\n   retry ${attempt}/${maxAttempts - 1} (${lastError.message.slice(0, 80)}) num_ctx→${nextCtx} num_predict→${nextPredict} `,
         );
-        await sleep(500 * attempt);
+        await sleep(750 * attempt);
       }
     }
   }
   throw new Error(
-    `Ollama chat failed after ${MAX_ATTEMPTS} attempts: ${lastError?.message ?? "unknown error"}`,
+    `Ollama chat failed after ${maxAttempts} attempts: ${lastError?.message ?? "unknown error"}`,
   );
 }

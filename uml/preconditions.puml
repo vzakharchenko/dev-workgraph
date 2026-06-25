@@ -38,6 +38,9 @@ INIT -down-> REP
 INIT -down-> PRE
 INIT -down-> FIN
 
+FIN ..> PRE : optional\nprior Q&A (extension)
+FIN ..> FIN : extension mode\n(latestFinish chain)
+
 INITP .up.> INIT : inherits repo-level\nproject.json by default
 INITP -down-> SUM : same as init,\nscoped to periods/<id>/
 
@@ -190,7 +193,7 @@ end note
 
 #LightGreen:✅ Authors saved;
 
-note bottom
+floating note left
   **Without authors:** evidence cannot know which commits are yours
   **Bots filtered by user choice:** Renovate, Dependabot, Snyk, teammates
   **May run without init** — independent precondition
@@ -225,16 +228,16 @@ endif
 
 :Target file:\n~/.workgraph/data/repos/<repo-id>/project.json\n(or periods/<id>/project.json);
 
-if (project.json exists\nAND NOT --force?) then (yes)
-  :Skip (idempotent);\n"Use --force to redo";
+if (project.json exists?) then (yes)
+  :Skip (idempotent);
   stop
 else (no)
 endif
 
 label period_branch
-if (period mode\nAND NOT --force?) then (yes)
+if (period mode?) then (yes)
   if (repo-level project.json exists?) then (no)
-    #Pink:Error: run repo-level init first\nor pass --force;
+    #Pink:Error: run repo-level init first;
     stop
   else (yes)
     :**Copy** repo-level → periods/<id>/project.json\n(no LLM);
@@ -326,14 +329,14 @@ database "config.json" as CFG
 database "project.json" as PJ
 participant "Ollama\n(reportModel)" as LLM
 
-DEV -> CLI : dev-workgraph init ./repo\n[--role] [--story] [--force]\n[--period] [--from] [--to]
+DEV -> CLI : dev-workgraph init ./repo\n[--role] [--story]\n[--period] [--from] [--to]
 
 CLI -> REPO : resolve path → repo-id
 CLI -> CFG : read/write role\n(and period definition if --period)
 
-alt project.json exists && !--force
+alt project.json exists
   CLI --> DEV : skip (idempotent)
-else period && !--force && repo-level project.json exists
+else period && repo-level project.json exists
   CLI -> PJ : copy repo-level → periods/<id>/project.json
   CLI --> DEV : inherited (no LLM)
 else full init
@@ -377,18 +380,14 @@ end note
 periods/<id>/project.json
 periods/<id>/commits/ … groups/ … reports/ …;
 
-if (--force?) then (yes)
-  :Run full **init** LLM sessions\n→ period-specific project.json;
-else (no — default inherit)
-  if (repo-level project.json?) then (missing)
-    #Pink:Error — run `init` first;
-    stop
-  else (exists)
-    :Copy repo-level → periods/<id>/project.json;
-    note right
-      No LLM — role/story rarely change between periods
-    end note
-  endif
+if (repo-level project.json?) then (missing)
+  #Pink:Error — run `init` first;
+  stop
+else (exists)
+  :Copy repo-level → periods/<id>/project.json;
+  note right
+    No LLM — role/story rarely change between periods
+  end note
 endif
 
 :Downstream stages use --period <id>;

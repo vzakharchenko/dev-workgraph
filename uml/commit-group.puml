@@ -105,7 +105,7 @@ note bottom of GQ
 end note
 
 note bottom of GSIG
-  On **--force** or retry after summarize update:
+  On re-run after new commits summarized:
   tiers, session signals, questions, history all
   recomputed from current commit.model values.
 end note
@@ -148,7 +148,7 @@ partition "Per work session (oldest group first)" {
     model = null (until LLM)
   end note
 
-  if (group file exists with model\nAND NOT --force?) then (yes)
+  if (group file exists with model?) then (yes)
     :Skip LLM (append-only);
   else (no)
     partition "**Session 1 — classify (M:c)**" {
@@ -171,11 +171,9 @@ partition "Per work session (oldest group first)" {
 
 floating note left
   On model failure: save group with model=null\n(deterministic + tiers kept) for retry.
-  **--force** re-runs grouping + both LLM sessions
-  even when model already present.
-  Re-**summarize** commits first -> new per-commit
-  signals/questions -> commit-group **--force**
-  recalculates tiers + session signals + questions.
+  **Append-only:** skips groups that already have model.
+  New commits → **extension groups** only (§4).
+  To rebuild: delete group files manually.
 end note
 
 stop
@@ -301,41 +299,68 @@ end note
 @enduml
 
 
+@startuml commit-group-incremental
+!theme plain
+skinparam shadowing false
+
+title **commit-group** — incremental re-run (extension groups, §4)
+
+actor "Developer" as DEV
+
+rectangle "**Existing on disk**" #E8F5E9 {
+  card "groups/T1.json\n[c1,c2,c3] + model" as G1
+}
+
+rectangle "**New commits exported**" #FFF8E1 {
+  card "c4, c5 (summarized)" as NC
+}
+
+rectangle "**groupByGap (full recompute)**" #E3F2FD {
+  card "Session would be\n[c1..c5]" as FULL
+}
+
+rectangle "**extensionSessions**" #FFF3E0 {
+  card "covered = {c1,c2,c3}\nuncovered = [c4,c5]" as EXT
+  card "Write **groups/T5.json**\nextension group only" as OUT
+}
+
+DEV --> NC
+G1 --> EXT : coveredCommitHashes
+FULL --> EXT : subtract covered
+EXT --> OUT
+
+note bottom of OUT
+  report resume folds **T5** only — no duplicate
+  history from re-folding [c1..c5].
+  Graph only extends; delete artifacts to rebuild.
+end note
+
+@enduml
+
+
 @startuml commit-group-rerun
 !theme plain
 skinparam shadowing false
 
-title Update / **--force** — recalculation chain
+title **Incremental re-run** (append-only graph)
 
 actor "Developer" as DEV
 
-rectangle "**1. Re-summarize commits**" #FFF8E1 {
-  card "summarize --force" as S
-  card "Per commit:\nnew signals + questions\n+ summary" as SC
+rectangle "**Re-run after new commits**" #E8F5E9 {
+  card "evidence + summarize\nnew commits only" as INC1
+  card "commit-group\n**extension groups**\n(uncovered commits)" as INC2
+  card "report resume\n+ prepare + final\n**extension mode**" as INC3
 }
 
-rectangle "**2. Re-group sessions**" #FFF3E0 {
-  card "commit-group --force" as G
-  card "(D) Rebuild membership\n(if threshold changed)" as GM
-  card "(D) **Recompute groups.tiers**\nfrom new commit signals" as GT
-  card "(M:c) classify:\n**new session signals**\n**new session questions[]**" as GC
-  card "(M:c) compose:\nnew history" as GH
-}
-
-DEV --> S
-S --> SC
-SC --> G
-G --> GM
-GM --> GT
-GT --> GC
-GC --> GH
+DEV --> INC1
+INC1 --> INC2
+INC2 --> INC3
 
 note bottom
-  Order matters: update commit models first,
-  then commit-group --force so tiers and session
-  signals/questions reflect the new per-commit layer.
-  evidence re-run only needed if Git export changed;
-  commit-group still does not call evidence.
+  **Incremental:** extension groups + cumulative Q&A in final (§11).
+  Existing JSON model layers are never overwritten.
+  To rebuild a stage: delete its artifacts manually.
+  evidence re-run only needed if Git export changed.
 end note
 
 @enduml
@@ -354,7 +379,7 @@ participant "**commit-group**" as CG
 participant "Ollama\ncommitModel" as LLM
 database "groups/<ts>.json" as GRP
 
-DEV -> CG : commit-group ./repo [--force]
+DEV -> CG : commit-group ./repo
 
 CG -> COMM : loadCommitRecords()\n**.json only**
 
@@ -363,7 +388,15 @@ note over COMM
   evidence command **not called**
 end note
 
-CG -> CG : groupByGap + buildGroupRecord (D)\naggregateDeterministic\npartitionTiers from commit.model signals
+CG -> CG : groupByGap + **extensionSessions**\n(subtract covered commit hashes)
+
+note over CG
+  **Incremental re-run:** extension groups
+  = uncovered commits only (§4).
+  Skips groups with model (append-only).
+end note
+
+CG -> CG : buildGroupRecord (D)\naggregateDeterministic\npartitionTiers from commit.model signals
 
 CG -> PJ : loadProjectContext()
 

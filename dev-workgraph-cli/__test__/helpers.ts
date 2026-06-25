@@ -28,7 +28,7 @@ export function sampleModel(overrides: Partial<ModelLayer> = {}): ModelLayer {
     architectureSignal: "low",
     securitySignal: "low",
     signalReasons: { technical: "", architecture: "", security: "" },
-    questions: [],
+    questionsAnalysis: [],
     confidence: "medium",
     ...overrides,
   };
@@ -53,7 +53,7 @@ export function sampleReportModel(overrides: Partial<ReportModelLayer> = {}): Re
     architectureSignal: "low",
     securitySignal: "low",
     signalReasons: { technical: [], architecture: [], security: [] },
-    questions: [],
+    questionsAnalyses: [],
     confidence: "low",
     hiContext: [],
     mediumContext: [],
@@ -87,7 +87,13 @@ export function sampleGroupModel(
     architectureSignal: "low",
     securitySignal: "low",
     signalReasons: { technical: "core logic", architecture: "", security: "" },
-    questions: ["Was this shipped?"],
+    questionsAnalyses: [
+      {
+        observation: ["Diff adds scheduler code."],
+        missingPiece: ["Production deployment unknown."],
+        question: ["Was this shipped?"],
+      },
+    ],
     confidence: "medium",
     history: "Implemented the scheduler.",
     hiContext: ["Background job scheduler"],

@@ -3,9 +3,18 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { loadConfig, repoPreparedDir, repoReportsDir, setOllamaConfig } from "../lib/config.js";
+import {
+  loadConfig,
+  repoFinishDir,
+  repoPreparedDir,
+  repoReportsDir,
+  setOllamaConfig,
+} from "../lib/config.js";
+import { latestFinish } from "../lib/finish-load.js";
 import { resolveRepo } from "../lib/git.js";
 import {
+  cleanQuestionAnalyses,
+  flattenQuestions,
   groupHistoryJsonSchema,
   mergeTechnologies,
   prepareQuestionsJsonSchema,
@@ -27,6 +36,7 @@ import {
   projectContextBlock,
   withProjectContext,
 } from "../lib/prompts.js";
+import { writeRecordJson } from "../lib/record-io.js";
 import type { PreparedModelLayer, PreparedRecord, ReportRecord } from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
 
@@ -40,8 +50,6 @@ export interface PrepareOptions {
   url?: string;
   /** Model name; skips the interactive picker. */
   model?: string;
-  /** Regenerate even if a prepared narrative for the latest report exists. */
-  force?: boolean;
   /** Operate on a defined review period's data instead of the repo's all-time data. */
   period?: string;
 }
@@ -89,8 +97,8 @@ export async function prepare(options: PrepareOptions): Promise<void> {
 
   const preparedDir = repoPreparedDir(repoPath, options.period);
   const preparedFile = path.join(preparedDir, `${report.reportId}.json`);
-  if (!options.force && fs.existsSync(preparedFile)) {
-    console.log(`Prepared narrative already exists (${preparedFile}). Use --force to regenerate.`);
+  if (fs.existsSync(preparedFile)) {
+    console.log(`Prepared narrative already exists (${preparedFile}).`);
     return;
   }
 
@@ -113,7 +121,7 @@ export async function prepare(options: PrepareOptions): Promise<void> {
   const rawHistory = report.history.map((h) => h.text).join("\n");
 
   // Step 2 — compose one unified history.
-  process.stdout.write("   [1/3] compose unified history ... ");
+  process.stdout.write("   [1/4] compose unified history ... ");
   const composed = (await chatJson({
     baseUrl,
     model,
@@ -132,7 +140,7 @@ export async function prepare(options: PrepareOptions): Promise<void> {
   const history = composed.history?.trim() ?? rawHistory;
   console.log("ok");
 
-  // Step — clean & collapse the accumulated technology list (dedupe + class hierarchy).
+  // Step 3 — clean & collapse the accumulated technology list (dedupe + class hierarchy).
   let technologies = mergeTechnologies(m.technologies);
   if (technologies.length > 0) {
     process.stdout.write(`   [2/4] clean technologies (${technologies.length}) ... `);
@@ -162,16 +170,18 @@ export async function prepare(options: PrepareOptions): Promise<void> {
   const signalReasons = asStringArray(collapsed.signalReasons).slice(0, 4);
   console.log(`ok (${signalReasons.length})`);
 
-  // Step 5 — reframe four role-aware questions + confidence.
-  process.stdout.write("   [4/4] reframe questions → 4 ... ");
+  // Step 5 — reframe role-aware questionsAnalyses + confidence.
+  process.stdout.write("   [4/4] reframe open questions → 4 ... ");
+  const priorQa = latestFinish(repoFinishDir(repoPath, options.period))?.record.answers ?? [];
   const reframed = (await chatJson({
     baseUrl,
     model,
     system: withProjectContext(projectBlock, PREPARE_QUESTIONS_SYSTEM),
-    user: buildPrepareQuestionsPrompt(history, signalReasons, m.questions),
+    user: buildPrepareQuestionsPrompt(history, signalReasons, m.questionsAnalyses, priorQa),
     schema: prepareQuestionsJsonSchema(),
-  })) as { questions?: unknown; confidence?: string };
-  const questions = asStringArray(reframed.questions).slice(0, 4);
+  })) as { questionsAnalyses?: unknown; confidence?: string };
+  const questionsAnalyses = cleanQuestionAnalyses(reframed.questionsAnalyses).slice(0, 4);
+  const questions = flattenQuestions(questionsAnalyses);
   console.log(`ok (${questions.length})`);
 
   const model_: PreparedModelLayer = {
@@ -181,7 +191,7 @@ export async function prepare(options: PrepareOptions): Promise<void> {
     architectureSignal: m.architectureSignal,
     securitySignal: m.securitySignal,
     signalReasons,
-    questions,
+    questionsAnalyses,
     confidence: (reframed.confidence as Signal) ?? m.confidence,
     history,
     provenance: { model, generatedAt, sourceReport: latest.file },
@@ -194,7 +204,7 @@ export async function prepare(options: PrepareOptions): Promise<void> {
   };
 
   fs.mkdirSync(preparedDir, { recursive: true });
-  fs.writeFileSync(preparedFile, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+  writeRecordJson(preparedFile, record);
 
   // Preview the prepared narrative + questions so it's clear what `final` will ask.
   console.log("\n─── Prepared narrative ───────────────────────────────────");

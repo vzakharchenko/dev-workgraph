@@ -33,8 +33,6 @@ export interface RunOptions {
   url?: string;
   /** Model name; skips the model picker. */
   model?: string;
-  /** Re-gather every input and re-run every stage with --force. */
-  force?: boolean;
   /** Review-period label to scope the whole pipeline under. */
   period?: string;
   /** Period start date, ISO `YYYY-MM-DD` (defines/updates the period). */
@@ -78,7 +76,6 @@ async function selectAuthors(repoPath: string): Promise<string[]> {
 export async function run(options: RunOptions): Promise<void> {
   const repoPath = resolveRepo(options.repo);
   const baseUrl = resolveBaseUrl(options.url);
-  const force = options.force ?? false;
 
   console.log("=== dev-workgraph run — gathering inputs ===\n");
 
@@ -121,9 +118,9 @@ export async function run(options: RunOptions): Promise<void> {
 
   // 2. Role + story. A period normally inherits the repo-level context (no
   // prompt); we only gather role/story when init will actually build a fresh
-  // profile: any non-period init, or a forced period init.
-  const needInit = force || !projectExists;
-  const needRoleStory = needInit && (!period || force);
+  // profile: any non-period init when project.json is missing.
+  const needInit = !projectExists;
+  const needRoleStory = needInit && !period;
   let role: string | undefined;
   let story: string | undefined;
   if (needRoleStory) {
@@ -137,7 +134,7 @@ export async function run(options: RunOptions): Promise<void> {
 
   // 3. Authors.
   let emails = cfg?.selectedAuthors ?? [];
-  if (force || emails.length === 0) {
+  if (emails.length === 0) {
     emails = await selectAuthors(repoPath);
     if (emails.length === 0) throw new Error("No author identities selected.");
     setRepoConfig(repoPath, { selectedAuthors: emails });
@@ -147,7 +144,7 @@ export async function run(options: RunOptions): Promise<void> {
 
   // 4. Group threshold.
   let days = cfg?.groupThresholdDays;
-  if (force || days === undefined) {
+  if (days === undefined) {
     const answer = await inquirer.prompt<{ days: number }>([
       {
         type: "number",
@@ -164,7 +161,7 @@ export async function run(options: RunOptions): Promise<void> {
 
   // 5. Max commits per group.
   let maxCommits = cfg?.groupMaxCommits;
-  if (force || maxCommits === undefined) {
+  if (maxCommits === undefined) {
     const answer = await inquirer.prompt<{ maxCommits: number }>([
       {
         type: "number",
@@ -187,16 +184,16 @@ export async function run(options: RunOptions): Promise<void> {
 
   if (needInit) {
     console.log("\n[1/7] init");
-    await init({ repo: repoPath, role, story, model: reportModel, url: baseUrl, force, period });
+    await init({ repo: repoPath, role, story, model: reportModel, url: baseUrl, period });
   } else {
     console.log("\n[1/7] init — skipped (already initialized)");
   }
 
   console.log("\n[2/7] evidence");
-  await evidence({ repo: repoPath, email: emails, force, period });
+  await evidence({ repo: repoPath, email: emails, period });
 
   console.log("\n[3/7] summarize");
-  await summarize({ repo: repoPath, model: commitModel, url: baseUrl, force, period });
+  await summarize({ repo: repoPath, model: commitModel, url: baseUrl, period });
 
   console.log("\n[4/7] commit-group");
   await commitGroup({
@@ -205,19 +202,18 @@ export async function run(options: RunOptions): Promise<void> {
     url: baseUrl,
     days,
     maxCommits,
-    force,
     period,
   });
 
   console.log("\n[5/7] report");
-  await report({ repo: repoPath, model: reportModel, url: baseUrl, force, period });
+  await report({ repo: repoPath, model: reportModel, url: baseUrl, period });
 
   console.log("\n[6/7] prepare");
-  await prepare({ repo: repoPath, model: narrativeModel, url: baseUrl, force, period });
+  await prepare({ repo: repoPath, model: narrativeModel, url: baseUrl, period });
 
   // final is interactive (answers the prepared questions) — it runs last.
   console.log("\n[7/7] final");
-  await final({ repo: repoPath, model: narrativeModel, url: baseUrl, force, period });
+  await final({ repo: repoPath, model: narrativeModel, url: baseUrl, period });
 
   console.log("\n✅ Pipeline complete.");
 }

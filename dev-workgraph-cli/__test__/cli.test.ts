@@ -109,7 +109,6 @@ describe("cli", () => {
       "http://ollama:11434",
       "--model",
       "test-model",
-      "--force",
     ]);
     expect(actionMocks.init).toHaveBeenCalledWith({
       repo: "./my-repo",
@@ -121,14 +120,13 @@ describe("cli", () => {
       periodMode: false,
       url: "http://ollama:11434",
       model: "test-model",
-      force: true,
     });
   });
 
   it("init:period sets periodMode", async () => {
-    await runCli(["init:period", ".", "--force"]);
+    await runCli(["init:period", "."]);
     expect(actionMocks.init).toHaveBeenCalledWith(
-      expect.objectContaining({ repo: ".", periodMode: true, force: true }),
+      expect.objectContaining({ repo: ".", periodMode: true }),
     );
   });
 
@@ -141,7 +139,7 @@ describe("cli", () => {
     });
   });
 
-  it("evidence forwards period, force, and emails", async () => {
+  it("evidence forwards period and emails", async () => {
     await runCli([
       "evidence",
       ".",
@@ -149,13 +147,11 @@ describe("cli", () => {
       "me@example.com",
       "--period",
       "2022",
-      "--force",
     ]);
     expect(actionMocks.evidence).toHaveBeenCalledWith({
       repo: ".",
       email: ["me@example.com"],
       period: "2022",
-      force: true,
     });
   });
 
@@ -167,7 +163,6 @@ describe("cli", () => {
       "http://ollama:11434",
       "--model",
       "m",
-      "--force",
       "--limit",
       "5",
       "--period",
@@ -177,7 +172,6 @@ describe("cli", () => {
       repo: ".",
       url: "http://ollama:11434",
       model: "m",
-      force: true,
       limit: 5,
       period: "2022",
     });
@@ -195,7 +189,6 @@ describe("cli", () => {
       "2",
       "--period",
       "2022",
-      "--force",
     ]);
     expect(actionMocks.commitGroup).toHaveBeenCalledWith({
       repo: ".",
@@ -203,7 +196,6 @@ describe("cli", () => {
       maxCommits: 20,
       url: undefined,
       model: undefined,
-      force: true,
       limit: 2,
       period: "2022",
     });
@@ -215,19 +207,17 @@ describe("cli", () => {
       repo: ".",
       url: undefined,
       model: "m",
-      force: undefined,
       limit: 3,
       period: "2022",
     });
   });
 
-  it("prepare forwards force and period", async () => {
-    await runCli(["prepare", ".", "--force", "--period", "2022"]);
+  it("prepare forwards period", async () => {
+    await runCli(["prepare", ".", "--period", "2022"]);
     expect(actionMocks.prepare).toHaveBeenCalledWith({
       repo: ".",
       url: undefined,
       model: undefined,
-      force: true,
       period: "2022",
     });
   });
@@ -242,7 +232,6 @@ describe("cli", () => {
       "out.md",
       "--model",
       "m",
-      "--force",
       "--period",
       "2022",
     ]);
@@ -252,7 +241,6 @@ describe("cli", () => {
       output: "out.md",
       url: undefined,
       model: "m",
-      force: true,
       period: "2022",
     });
   });
@@ -269,7 +257,6 @@ describe("cli", () => {
       "deep.md",
       "--model",
       "m",
-      "--force",
       "--period",
       "2022",
     ]);
@@ -280,7 +267,6 @@ describe("cli", () => {
       output: "deep.md",
       url: undefined,
       model: "m",
-      force: true,
       period: "2022",
     });
   });
@@ -297,7 +283,6 @@ describe("cli", () => {
       "2023-01-01",
       "--model",
       "m",
-      "--force",
     ]);
     expect(actionMocks.run).toHaveBeenCalledWith({
       repo: ".",
@@ -307,7 +292,6 @@ describe("cli", () => {
       periodMode: false,
       url: undefined,
       model: "m",
-      force: true,
     });
   });
 
@@ -326,12 +310,11 @@ describe("cli", () => {
     });
   });
 
-  it("import forwards tarball, repo override, and force", async () => {
-    await runCli(["import", "bundle.tar.gz", "--repo", "/tmp/repo", "--force"]);
+  it("import forwards tarball and repo override", async () => {
+    await runCli(["import", "bundle.tar.gz", "--repo", "/tmp/repo"]);
     expect(actionMocks.importRepo).toHaveBeenCalledWith({
       tarball: "bundle.tar.gz",
       repo: "/tmp/repo",
-      force: true,
     });
   });
 

@@ -141,3 +141,5 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+dev-workgraph-cli/RECONSTRUCTION.*.md
+dev-workgraph-cli/RESUME.*.md

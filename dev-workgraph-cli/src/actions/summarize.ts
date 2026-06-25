@@ -5,7 +5,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, repoCommitsDir, setOllamaConfig } from "../lib/config.js";
 import { resolveRepo } from "../lib/git.js";
-import { enforceSignalReasons, type ModelLayer, modelJsonSchema } from "../lib/model.js";
+import {
+  cleanQuestionAnalysis,
+  enforceSignalReasons,
+  type ModelLayer,
+  modelJsonSchema,
+} from "../lib/model.js";
 import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
 import { loadProjectContext } from "../lib/project.js";
 import {
@@ -14,6 +19,7 @@ import {
   projectContextBlock,
   withProjectContext,
 } from "../lib/prompts.js";
+import { writeRecordJson } from "../lib/record-io.js";
 import type { CommitRecord } from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
 
@@ -27,8 +33,6 @@ export interface SummarizeOptions {
   url?: string;
   /** Model name; skips the interactive picker when given. */
   model?: string;
-  /** Re-summarize commits that already have a model layer. */
-  force?: boolean;
   /** Only process the first N pending commits (useful for trials). */
   limit?: number;
   /** Operate on a defined review period's data instead of the repo's all-time data. */
@@ -81,28 +85,24 @@ export async function summarize(options: SummarizeOptions): Promise<void> {
   }
   const system = withProjectContext(projectBlock, COMMIT_SUMMARY_SYSTEM);
 
-  // Pending = not yet summarized, unless --force.
+  // Pending = not yet summarized (append-only).
   const pending: { file: string; record: CommitRecord }[] = [];
   for (const file of allFiles) {
     const record = JSON.parse(fs.readFileSync(file, "utf8")) as CommitRecord;
-    if (record.model && !options.force) continue;
+    if (record.model) continue;
     pending.push({ file, record });
   }
 
   const total = allFiles.length;
-  const skipped = total - pending.length; // 0 when --force (nothing is skipped)
+  const skipped = total - pending.length;
 
-  if (options.force) {
-    console.log(`${total} total · re-summarizing all (--force).`);
-  } else {
-    console.log(
-      `${total} total · ${skipped} already summarized (skipped) · ${pending.length} pending.`,
-    );
-  }
+  console.log(
+    `${total} total · ${skipped} already summarized (skipped) · ${pending.length} pending.`,
+  );
 
   const work = options.limit ? pending.slice(0, options.limit) : pending;
   if (work.length === 0) {
-    console.log("Nothing to do. Use --force to re-summarize existing records.");
+    console.log("Nothing to do.");
     return;
   }
 
@@ -130,6 +130,7 @@ export async function summarize(options: SummarizeOptions): Promise<void> {
       })) as ModelLayer;
 
       const layer = enforceSignalReasons(raw);
+      layer.questionsAnalysis = cleanQuestionAnalysis(layer.questionsAnalysis);
       layer.provenance = {
         model,
         generatedAt: new Date().toISOString(),
@@ -137,7 +138,7 @@ export async function summarize(options: SummarizeOptions): Promise<void> {
       };
 
       item.record.model = layer;
-      fs.writeFileSync(item.file, `${JSON.stringify(item.record, null, 2)}\n`, "utf8");
+      writeRecordJson(item.file, item.record);
       console.log("ok");
       done += 1;
     } catch (err) {

@@ -185,7 +185,7 @@ start
 
 :Load groups/ with model != null\n(oldest first);
 
-:Resume: load longest existing\nreports/ prefix unless --force;
+:Resume: load longest existing\nreports/ prefix;
 
 partition "For each group G_k (cursor walks the list)" {
   if (First group?) then (yes)
@@ -216,7 +216,7 @@ partition "For each group G_k (cursor walks the list)" {
 
 floating note left
   File name = timestampEnd of **latest group folded**.
-  Re-run without --force continues from
+  Re-run continues from
   first missing report in the chain.
 end note
 
@@ -386,6 +386,8 @@ note bottom of PR
   (resume uses longest existing prefix as current).
   Groups G1..G_{k-1} are **inside** that report —
   not loaded separately from groups/.
+  **Incremental commit-group:** only **extension** groups
+  (uncovered commits) are folded — no duplicate history.
 end note
 
 @enduml
@@ -406,7 +408,7 @@ participant "Ollama\nreportModel" as LLM
 DEV -> REP : report ./repo
 
 REP -> GRP : load groups (model != null)\noldest first
-REP -> RPT : resume longest prefix\n(unless --force)
+REP -> RPT : resume longest prefix\n(append-only)
 
 loop for each group G_k left to right
   alt k = 1

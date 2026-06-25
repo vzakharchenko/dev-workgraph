@@ -15,11 +15,14 @@ import {
 import { resolveRepo } from "../lib/git.js";
 import {
   aggregateDeterministic,
+  coveredCommitHashes,
+  extensionSessions,
   groupByGap,
   loadCommitRecords,
   partitionTiers,
 } from "../lib/grouping.js";
 import {
+  cleanQuestionAnalyses,
   enforceSignalReasons,
   groupClassifyJsonSchema,
   groupHistoryJsonSchema,
@@ -37,6 +40,7 @@ import {
   projectContextBlock,
   withProjectContext,
 } from "../lib/prompts.js";
+import { writeRecordJson } from "../lib/record-io.js";
 import type { CommitRecord, GroupRecord } from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
 
@@ -63,8 +67,6 @@ export interface CommitGroupOptions {
   url?: string;
   /** Model name; skips the interactive picker. */
   model?: string;
-  /** Re-group and re-summarize, overwriting existing group files. */
-  force?: boolean;
   /** Only process the first N groups that need summarizing (useful for trials). */
   limit?: number;
   /** Operate on a defined review period's data instead of the repo's all-time data. */
@@ -171,10 +173,15 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
   const groupsDir = repoGroupsDir(repoPath, options.period);
   fs.mkdirSync(groupsDir, { recursive: true });
 
-  const sessions = groupByGap(commits, thresholdDays, maxCommits);
+  const rawSessions = groupByGap(commits, thresholdDays, maxCommits);
+  const covered = coveredCommitHashes(groupsDir);
+  const sessions = extensionSessions(rawSessions, covered);
+  const fullyCovered = rawSessions.length - sessions.length;
   console.log(
-    `\n${commits.length} commit(s) → ${sessions.length} group(s) at ${thresholdDays}-day threshold` +
-      `${maxCommits > 0 ? `, max ${maxCommits}/group` : ""}.`,
+    `\n${commits.length} commit(s) → ${rawSessions.length} session(s) at ${thresholdDays}-day threshold` +
+      `${maxCommits > 0 ? `, max ${maxCommits}/group` : ""}` +
+      `${fullyCovered > 0 ? ` · ${fullyCovered} fully covered` : ""}` +
+      `${sessions.length > 0 ? ` · ${sessions.length} to summarize` : ""}.`,
   );
   console.log(`Using model "${model}" at ${baseUrl}\n`);
 
@@ -193,7 +200,7 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
     const record = buildGroupRecord(members);
     const file = path.join(groupsDir, `${record.timestampEnd}.json`);
 
-    if (!options.force && fs.existsSync(file)) {
+    if (fs.existsSync(file)) {
       const existing = JSON.parse(fs.readFileSync(file, "utf8")) as GroupRecord;
       if (existing.model) {
         skipped += 1;
@@ -220,7 +227,8 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
         schema: groupClassifyJsonSchema(),
       })) as Record<string, unknown>;
 
-      const { hiContext, mediumContext, lowContext, ...classifyFields } = rawClassify;
+      const { hiContext, mediumContext, lowContext, questionsAnalyses, ...classifyFields } =
+        rawClassify;
       const signals = enforceSignalReasons(classifyFields as unknown as ModelLayer);
       const tiers: GroupClassifyView = {
         technicalSignal: signals.technicalSignal,
@@ -250,6 +258,7 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
         hiContext: tiers.hiContext,
         mediumContext: tiers.mediumContext,
         lowContext: tiers.lowContext,
+        questionsAnalyses: cleanQuestionAnalyses(questionsAnalyses),
         provenance: {
           model,
           generatedAt: new Date().toISOString(),
@@ -257,19 +266,20 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
         },
       };
 
-      fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+      writeRecordJson(file, record);
+      for (const c of members) covered.add(c.commitHash);
       console.log("ok");
       summarized += 1;
     } catch (err) {
       // Save the deterministic group so a later run can retry the model layer.
-      fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+      writeRecordJson(file, record);
       console.log(`failed (${(err as Error).message})`);
       failed += 1;
     }
   }
 
   console.log(
-    `\n✅ Groups: ${sessions.length} · summarized ${summarized} · skipped ${skipped} · failed ${failed}.`,
+    `\n✅ Groups: ${rawSessions.length} · summarized ${summarized} · skipped ${skipped + fullyCovered} · failed ${failed}.`,
   );
   console.log(`Written to ${groupsDir}`);
 }

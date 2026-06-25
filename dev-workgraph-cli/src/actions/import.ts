@@ -16,8 +16,6 @@ export interface ImportOptions {
   tarball: string;
   /** Re-target the data under a different repo path (default: the manifest's path). */
   repo?: string;
-  /** Overwrite an existing data directory for the target repo. */
-  force?: boolean;
 }
 
 /**
@@ -56,14 +54,13 @@ export async function importRepo(options: ImportOptions): Promise<void> {
     const targetPath = options.repo ? path.resolve(options.repo) : manifest.repoPath;
     const destDataDir = repoDataDir(targetPath);
 
-    if (fs.existsSync(destDataDir) && !options.force) {
+    if (fs.existsSync(destDataDir)) {
       console.error(
-        `✖ Data already exists for this repo (${destDataDir}). Re-run with --force to overwrite.`,
+        `✖ Data already exists for this repo (${destDataDir}). Remove it manually before importing.`,
       );
       process.exitCode = 1;
       return;
     }
-    fs.rmSync(destDataDir, { recursive: true, force: true });
     fs.mkdirSync(path.dirname(destDataDir), { recursive: true });
     fs.cpSync(srcDataDir, destDataDir, { recursive: true });
 

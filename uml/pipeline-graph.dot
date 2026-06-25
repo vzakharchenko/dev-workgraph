@@ -35,25 +35,32 @@ digraph pipeline {
     v_story  [label="project story\n(H)\nwhat you remember" fillcolor="#FFF8E1" width=1.5 height=1.0]
     v_role   [label="role\n(H)" fillcolor="#FFF8E1" width=1.0 height=0.9]
     v_readme [label="README\n(D)\nif present" fillcolor="#ECEFF1" width=1.2 height=0.9]
+    v_auth   [label="authors\n(H)\nemail filter" fillcolor="#FFF8E1" width=1.0 height=0.9]
 
     v_context [label="context\nproject.json" fillcolor="#FFE082" width=1.3 height=0.9]
 
-    { rank=same; v_story; v_role; v_readme; }
+    { rank=same; v_story; v_role; v_readme; v_auth; }
 
     v_story  -> v_context [label=" 3:1\ninit "]
     v_role   -> v_context
     v_readme -> v_context
   }
 
-  // ── authors → commits (1:N) ─────────────────────────────────────────
+  // ── GIT: filtered commits (authors → 1:N) ─────────────────────────────
 
-  v_auth [label="authors\n(H)" fillcolor="#FFF8E1" width=1.0 height=0.9]
+  subgraph cluster_git {
+    label="GIT"
+    style=rounded
+    color="#558B2F"
+    bgcolor="#F1F8E9"
+    penwidth=1.2
 
-  v_c1 [label="commit 1" fillcolor="#E8F5E9" width=1.1 height=0.85]
-  v_c2 [label="commit 2" fillcolor="#E8F5E9" width=1.1 height=0.85]
-  v_c3 [label="commit 3" fillcolor="#E8F5E9" width=1.1 height=0.85]
+    v_c1 [label="commit 1" fillcolor="#E8F5E9" width=1.1 height=0.85]
+    v_c2 [label="commit 2" fillcolor="#E8F5E9" width=1.1 height=0.85]
+    v_c3 [label="commit 3" fillcolor="#E8F5E9" width=1.1 height=0.85]
 
-  { rank=same; v_c1; v_c2; v_c3; }
+    { rank=same; v_c1; v_c2; v_c3; }
+  }
 
   v_auth -> v_c1 [label=" 1:N\nfilter "]
   v_auth -> v_c2
@@ -92,7 +99,7 @@ digraph pipeline {
   // ── commit-group: group commits by criteria → work sessions ────────
 
   subgraph cluster_groups {
-    label="commit-group (§4)\ngroup commits by criteria (groupThresholdDays, groupMaxCommits)\ndeterministic (D) + commitModel (M:c) — work sessions"
+    label="commit-group (§4)\ngroup commits by criteria · **incremental: extension groups** (uncovered commits only)\ndeterministic (D) + commitModel (M:c) — work sessions"
     style=rounded
     color="#1976D2"
     bgcolor="#E3F2FD"
@@ -102,28 +109,38 @@ digraph pipeline {
 
     v_g1 [label="group 1\nN:1" fillcolor="#BBDEFB" width=1.2 height=0.9]
     v_g2 [label="group 2\n1:1" fillcolor="#BBDEFB" width=1.2 height=0.9]
+    v_gext [label="group ext\n(uncovered)" fillcolor="#E3F2FD" width=1.25 height=0.9 style="filled,dashed" color="#1976D2"]
 
-    { rank=same; v_g1; v_g2; }
+    { rank=same; v_g1; v_g2; v_gext; }
 
     v_gcrit -> v_g1 [label=" criteria ", style=dashed color="#1565C0"]
     v_gcrit -> v_g2 [style=dashed color="#1565C0"]
+    v_gcrit -> v_gext [label=" incremental ", style=dashed color="#1565C0"]
   }
 
   v_s1 -> v_g1 [label=" N:1 "]
   v_s2 -> v_g1
   v_s3 -> v_g2 [label=" 1:1 "]
 
-  // ── report fold: 2 groups → 2 reports ───────────────────────────────
+  // ── report fold: groups → report chain ────────────────────────────────
 
-  v_r1 [label="report 1\n(M:r)" fillcolor="#FFE082" width=1.2 height=0.9]
-  v_r2 [label="report 2\n(M:r)\nlatest" fillcolor="#FFF3E0" width=1.3 height=0.9]
+  subgraph cluster_reports {
+    label="report"
+    style=rounded
+    color="#F9A825"
+    bgcolor="#FFF8E1"
+    penwidth=1.2
 
-  { rank=same; v_r1; v_r2; }
+    v_r1 [label="report 1\n(M:r)" fillcolor="#FFE082" width=1.2 height=0.9]
+    v_r2 [label="report 2\n(M:r)\nlatest" fillcolor="#FFF3E0" width=1.3 height=0.9]
+
+    { rank=same; v_r1; v_r2; }
+
+    v_r1 -> v_r2 [label=" prev report ", style=dashed color="#666666"]
+  }
 
   v_g1 -> v_r1 [label=" init\n1:1 "]
   v_g2 -> v_r2 [label=" merge\n1:1 "]
-
-  v_r1 -> v_r2 [label=" prev report ", style=dashed color="#666666"]
 
   // ── prepare → 4 questions → 4 answers (H) → final ─────────────────
 
@@ -132,7 +149,7 @@ digraph pipeline {
   v_r2 -> v_prep [label=" 1:1\nread "]
 
   subgraph cluster_ask_final {
-    label="ask user (final)\n4 prepared questions → 4 answers (H) — final step 1"
+    label="ask user (final)\n4 questions/round (H) · **extension:** prior finish Q&A + up to 4 new"
     style=rounded
     color="#AD1457"
     bgcolor="#FCE4EC"
@@ -163,7 +180,20 @@ digraph pipeline {
   v_prep -> v_q3
   v_prep -> v_q4
 
-  v_fin [label="final v1\n(finish)\n(M:n+H)" fillcolor="#FCE4EC" width=1.35 height=1.0]
+  subgraph cluster_finish {
+    label="finish"
+    style=rounded
+    color="#AD1457"
+    bgcolor="#FCE4EC"
+    penwidth=1.2
+
+    v_fin [label="final v1\n(finish)\n(M:n+H)" fillcolor="#FCE4EC" width=1.35 height=1.0]
+    v_fext [label="final vN+1\n(extension run)\n(M:n+H)" fillcolor="#FCE4EC" width=1.45 height=1.0 penwidth=2 color="#AD1457"]
+
+    { rank=same; v_fin; v_fext; }
+
+    v_fin -> v_fext [label=" append-only\nchain ", style=dashed color="#AD1457"]
+  }
 
   v_prep -> v_fin [label=" prepared\nrecord ", style=dashed color="#666666"]
 
@@ -245,10 +275,16 @@ digraph pipeline {
     v_finN -> v_deepen [label=" prior\nQ&A ", style=dashed color="#AD1457" constraint=false]
   }
 
+
   // prepare + final v1 feed the deepen cluster (no new code paths)
+  v_finN -> v_fext [label=" prior Q&A\n+ history ", color="#AD1457" style=dashed]
+  v_prep -> v_fext [label=" new prepared ", color="#AD1457"]
+  v_fext -> v_finN [label=" append\nlatest ", color="#AD1457" style=dashed constraint=false]
+
   v_prep -> v_combine [label=" prepare\nhistory ", color="#AD1457"]
   v_fin -> v_combine [label=" prior\nfinal ", color="#AD1457"]
   v_fin -> v_deepen [label=" prior\nQ&A ", color="#AD1457" style=dashed]
+  v_finN -> v_prep [label=" prior Q&A\n(prepare step 4) ", style=dashed color="#AD1457" constraint=false]
   v_prep -> v_fin2 [label=" prepared\nrecord ", style=dashed color="#AD1457"]
   v_fin -> v_fin2 [label=" extends\nv1 ", color="#AD1457"]
 
@@ -318,12 +354,21 @@ digraph pipeline {
     v_role -> v_fin2
   }
 
-  legend [
-    shape=box
-    style=filled
-    fillcolor="#FAFAFA"
-    fontsize=8
-    fixedsize=false
-    label="Solid = data pipeline · Purple dashed = role + app context (project.json)\nOrange dashed = provenance to groups + evidence (code side)\nPink dashed = final/deepen ask questions\nGreen = per-commit (D+M:c) · Blue = commit-group · Pink = deepen\nLight pink nested box = ask user (Q→A); inside deepen when follow-up round"
+  // ── legend: bottom-left, content-sized (no cluster — cluster stretched to full graph width) ──
+
+  legend_compact [
+    shape=plaintext
+    margin=0
+    label=<
+      <TABLE BORDER="1" CELLBORDER="0" CELLPADDING="2" CELLSPACING="0" BGCOLOR="#FAFAFA">
+        <TR><TD ALIGN="LEFT"><B>Edges</B> (nodes = stages/artifacts)</TD></TR>
+        <TR><TD ALIGN="LEFT"><B>Solid</B> = build order (how vertex appears)</TD></TR>
+        <TR><TD ALIGN="LEFT"><FONT COLOR="#666666">Gray</FONT> chain ref · <FONT COLOR="#1565C0">Blue</FONT> group config · <FONT COLOR="#7B1FA2">Purple</FONT> LLM context · <FONT COLOR="#E65100">Orange</FONT> provenance · <FONT COLOR="#AD1457">Pink</FONT> human / Q&amp;A</TD></TR>
+        <TR><TD ALIGN="LEFT"><B>Tints</B>: green commit · blue group · yellow report · purple prepare · pink final/deepen</TD></TR>
+      </TABLE>
+    >
   ]
+
+  { rank=sink; legend_compact; }
+  v_gcrit -> legend_compact [style=invis weight=10 minlen=1]
 }

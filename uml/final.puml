@@ -13,7 +13,8 @@ legend top left
 endlegend
 
 rectangle "**Preconditions**" #FFF8E1 {
-  card "**prepare** -> prepared/<id>.json\n(4 questions + history)" as PREP
+  card "**prepare** -> prepared/<id>.json\n(up to 4 questions + history)" as PREP
+  card "**finish/** latest (optional)\nprior Q&A for extension" as PFIN #FCE4EC
   card "**init** -> project.json" as INIT
 }
 
@@ -23,7 +24,7 @@ rectangle "**Not read directly**" #ECEFF1 {
 }
 
 rectangle "**final**" #FCE4EC {
-  card "**Step 1 (H):** collect 4 answers\npersist to prepared record" as S1
+  card "**Step 1 (H):** collect answers\n4 new (extension: merge prior)" as S1
   card "**Step 2a (M:n):** refine Your IMPACT\nhistory + answers woven in" as S2A
   card "**Step 2b (M:n):** Role Narrative\n4 impact bullets" as S2B
   card "**Step 3 (D):** assemble markdown" as S3
@@ -31,11 +32,12 @@ rectangle "**final**" #FCE4EC {
 }
 
 rectangle "**Deliverables**" #E8F5E9 {
-  card "**cwd:** RECONSTRUCTION.<project>.md" as MD
-  card "finish/<preparedId>.md + .json" as FIN
+  card "**cwd:** RECONSTRUCTION.<project>.md\n(or .vN.md extension/deepen)" as MD
+  card "finish/<preparedId>.{md,json}\nor .vN (extension / deepen)" as FIN
 }
 
 PREP --> S1
+PFIN --> S1 : extension only
 INIT --> S2A
 INIT --> S2B
 S1 --> S2A
@@ -54,7 +56,8 @@ E .. S1
 note bottom of S1
   **Interactive** in `run` — questions exist only after prepare.
   `--answers-file` for non-interactive.
-  Reuse saved answers unless `--force`.
+  **Extension mode:** prior finish Q&A + up to 4 new.
+  Same prepared: reuse saved answers.
 end note
 
 note bottom of MD
@@ -83,21 +86,30 @@ if (No prepared?) then (yes)
 else (no)
 endif
 
-partition "**Step 1 — Collect answers (H, no LLM)**" {
-  if (--answers-file?) then (yes)
-    :Load Q&A from JSON file;
-  else if (saved answers AND NOT --force?) then (yes)
-    :Reuse answers from prepared record;
-  else (no)
-    :Interactive editor:\n4 questions one at a time\n(multi-line allowed);
-  endif
-  :Persist answers + answeredAt\n**in-place** on prepared/<id>.json;
-}
+if (Prior finish with answers\nAND new prepared file?) then (yes — **extension mode**)
+  partition "**Extension — Step 1 (H)**" {
+    :Load cumulative Q&A from **latestFinish()**;
+    :Ask **new** questions only\n(dedupe by normalized text, up to 4);
+    :Merge prior + new -> **allQa**;
+    :Persist full answers[] on prepared;
+  }
+else (first run / same prepared)
+  partition "**Step 1 — Collect answers (H, no LLM)**" {
+    if (--answers-file?) then (yes)
+      :Load Q&A from JSON file;
+    else if (saved answers?) then (yes)
+      :Reuse answers from prepared record;
+    else (no)
+      :Interactive editor:\nup to 4 questions\n(multi-line allowed);
+    endif
+    :Persist answers + answeredAt\n**in-place** on prepared/<id>.json;
+  }
+endif
 
 :Pick **narrativeModel** (Ollama);
 
 partition "**Step 2a — Refine Your IMPACT (M:n)**" {
-  :Input: prepared.model.history\n+ Q&A pairs + project context;
+  :Input: prepared.model.history\n+ prior finish.history (extension)\n+ **all** Q&A + project context;
   :Weave answers into narrative;\nANSWER_CORRECTION_RULE:\nanswers override over-strong Git claims;
   :Output: **impactHistory**;\nfallback = prepared history on failure;
   note right
@@ -122,8 +134,13 @@ partition "**Step 3 — Write markdown (D)**" {
 }
 
 partition "**Step 4 — Archive (D)**" {
-  :Copy markdown -> finish/<preparedId>.md;
-  :Write FinishRecord -> finish/<preparedId>.json\n(links sourcePrepared + sourceReport);
+  if (extension mode?) then (yes)
+    :Append finish/<preparedId>.vN.{md,json}\nsourcePreviousFinish, version N+1;
+    :Write RECONSTRUCTION.<project>.vN.md;
+  else (no)
+    :Copy markdown -> finish/<preparedId>.md;
+    :Write FinishRecord -> finish/<preparedId>.json\n(version 1);
+  endif
 }
 
 #LightGreen:MVP deliverable complete;
@@ -142,6 +159,7 @@ title **final** — inputs and provenance chain (file names only)
 rectangle "**Read by final**" #FFF8E1 {
   card "prepared/<reportId>.json" as P
   card "project.json" as PJ
+  card "finish/ latest\n(extension mode)" as PF #FCE4EC
 }
 
 rectangle "**From prepared**" #FFF3E0 {
@@ -164,6 +182,7 @@ rectangle "**Not loaded**" #ECEFF1 {
   card "commits/" as C #CCCCCC
 }
 
+PF --> Q : prior answers\n(extension only)
 P --> H
 P --> Q
 P --> R
@@ -237,11 +256,11 @@ left to right direction
 
 package "**Inputs shared**" #FFF8E1 {
   component "project context block" as CTX
-  component "4 Q&A pairs (from step 1)" as QA
+  component "all Q&A pairs\n(cumulative in extension)" as QA
 }
 
 package "**Step 2a — IMPACT narrative (M:n)**" #FFF3E0 {
-  component "prepared.model.history" as PH
+  component "prepared.model.history\n+ prior finish.history\n(extension)" as PH
   component "**impactHistory**\nflowing prose, answers woven in" as IH
 }
 
@@ -296,7 +315,7 @@ rectangle "**RECONSTRUCTION.<project>.md**" as MD #E8F5E9 {
   card "## Your IMPACT as {ROLE}\nimpactHistory" as S2
   card "## Technologies\ncomma-separated list" as S3
   card "## Impact bullet points\n4 bullets" as S4
-  card "## Possible questions\nQ/A x4" as S5
+  card "## Possible questions\nQ/A (cumulative)" as S5
 }
 
 PJ --> S1
@@ -350,7 +369,8 @@ FR .. CWD : same content
 
 note bottom of FR
   Links back through prepared -> report by **file name**.
-  No commit hashes. `--force` overwrites finish + cwd md.
+  No commit hashes. v1: same prepared reuses answers.
+  Extension: append vN+1 (never overwrite v1..vN).
 end note
 
 @enduml
@@ -370,13 +390,19 @@ participant "Ollama\nnarrativeModel" as LLM
 database "cwd/RECONSTRUCTION.*.md" as MD
 database "finish/" as ARCH
 
-DEV -> FIN : final ./repo [--force] [--answers-file]
+DEV -> FIN : final ./repo [--answers-file]
 
 FIN -> PJ : loadProjectContext (required)
 FIN -> PREP : latestPrepared()
 
-alt no saved answers or --force
-  FIN -> DEV : 4 interactive questions (editor)
+FIN -> ARCH : latestFinish() (if any)
+
+alt extension mode (new prepared + prior finish)
+  FIN -> DEV : new questions only (up to 4)
+  DEV --> FIN : new answers
+  FIN -> FIN : allQa = prior + new
+else no saved answers
+  FIN -> DEV : up to 4 interactive questions
   DEV --> FIN : answers
 else reuse or answers-file
   FIN -> FIN : load existing Q&A
@@ -392,9 +418,38 @@ LLM --> FIN : narrative x4
 
 FIN -> FIN : assemble markdown (D)
 FIN -> MD : write RECONSTRUCTION.<project>.md
-FIN -> ARCH : finish/<id>.md + FinishRecord json
+FIN -> ARCH : finish/<id>.md + .json\nor <id>.vN (extension)
 
 FIN --> DEV : path to deliverable
+
+@enduml
+
+
+
+@startuml final-extension-mode
+!theme plain
+skinparam shadowing false
+
+title **final** — extension mode after incremental `run` (§11)
+
+database "finish/<id>.v10.json\n40 Q&A pairs" as F10
+database "prepared/<newReportId>.json\n4 new questions" as PNEW
+participant "**final**" as FIN
+actor "Developer" as DEV
+database "finish/<id>.v11.json\n44 Q&A pairs" as F11
+
+F10 --> FIN : latestFinish()\nprior answers
+PNEW --> FIN : new prepared
+FIN -> DEV : ask 4 **new** questions only
+DEV --> FIN : new answers
+FIN -> FIN : merge 40 + 4\nrefine IMPACT (combined history)
+FIN -> F11 : append v11\nsourcePreviousFinish
+
+note over F11
+  Same version chain as **deepen**.
+  prepare step 6 also reads prior Q&A
+  so questions target new work only.
+end note
 
 @enduml
 

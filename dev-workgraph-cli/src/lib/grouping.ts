@@ -60,6 +60,38 @@ export function groupByGap(
 }
 
 /**
+ * Commit hashes already summarized in on-disk groups that have a model layer.
+ * @param groupsDir - The repo's groups directory.
+ */
+export function coveredCommitHashes(groupsDir: string): Set<string> {
+  const covered = new Set<string>();
+  for (const { record } of loadGroupRecords(groupsDir)) {
+    if (!record.model) continue;
+    for (const hash of record.groups.commits) covered.add(hash);
+  }
+  return covered;
+}
+
+/**
+ * Drops commits already covered by existing groups. When new commits extend a
+ * prior work session, the returned session contains only the uncovered tail so
+ * incremental runs do not create duplicate supersets on disk.
+ * @param sessions - Work sessions from {@link groupByGap}, oldest first.
+ * @param covered - Commit hashes already present in summarized group files.
+ */
+export function extensionSessions(
+  sessions: CommitRecord[][],
+  covered: Set<string>,
+): CommitRecord[][] {
+  const out: CommitRecord[][] = [];
+  for (const members of sessions) {
+    const uncovered = members.filter((c) => !covered.has(c.commitHash));
+    if (uncovered.length > 0) out.push(uncovered);
+  }
+  return out;
+}
+
+/**
  * Loads every group record for a repo with its file name, sorted by
  * `timestampEnd` (oldest session first).
  * @param groupsDir - The repo's groups directory.

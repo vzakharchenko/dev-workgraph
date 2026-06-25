@@ -1,7 +1,19 @@
 // SPDX-FileCopyrightText: 2025-2026 Vasyl Zakharchenko
 // SPDX-License-Identifier: Apache-2.0
 
-import type { ModelLayer, Signal } from "./model.js";
+import type { ModelLayer, QuestionAnalyses, Signal } from "./model.js";
+
+/** One question–answer pair on a finish archive; `id` is stable across deepen versions. */
+export interface QAPair {
+  /** Monotonic id within a finish chain (`q1`, `q2`, …); preserved from v1 through vN. */
+  id: string;
+  question: string;
+  answer: string;
+  /** Finish JSON file where this pair was collected (`<preparedId>.json` or `.vN.json`). */
+  sourceFinal: string;
+  /** Report JSON this question round was grounded in. */
+  sourceReport: string;
+}
 
 /** The model's interpretation of what the project is (from README + story). */
 export interface ProjectProfile {
@@ -13,7 +25,7 @@ export interface ProjectProfile {
 
 /**
  * The model layer of a prepared narrative: a single distilled history, signals
- * copied from the report, four collapsed reasons, and four role-aware questions.
+ * copied from the report, four collapsed reasons, and role-aware questionsAnalyses.
  */
 export interface PreparedModelLayer {
   changeTypes: string[];
@@ -23,7 +35,7 @@ export interface PreparedModelLayer {
   architectureSignal: Signal;
   securitySignal: Signal;
   signalReasons: string[];
-  questions: string[];
+  questionsAnalyses: QuestionAnalyses[];
   confidence: Signal;
   history: string;
   provenance: {
@@ -38,11 +50,13 @@ export interface PreparedModelLayer {
  * distillation of the latest report.
  */
 export interface PreparedRecord {
+  /** Encoded package semver when written; absent on legacy files. */
+  schemaVersion?: number;
   preparedId: number;
   sourceReport: string;
   groupCount: number;
   model: PreparedModelLayer;
-  /** Human answers to `model.questions`, collected by `final`. */
+  /** Human answers to prepared questions, collected by `final`. */
   answers?: { question: string; answer: string }[];
   answeredAt?: string;
 }
@@ -86,6 +100,8 @@ export interface FinishRecord {
    * archive when non-empty. Not proof of production impact unless the developer stated that.
    */
   recalledContext?: string;
+  /** Encoded package semver when written; absent on legacy files. */
+  schemaVersion?: number;
   provenance: {
     model: string;
     generatedAt: string;
@@ -97,6 +113,8 @@ export interface FinishRecord {
  * Stored at `~/.workgraph/data/repos/<repo-id>/project.json`.
  */
 export interface ProjectContext {
+  /** Encoded package semver when written; absent on legacy files. */
+  schemaVersion?: number;
   role: string;
   story: {
     raw: string;
@@ -136,6 +154,8 @@ export interface DeterministicLayer {
  * `summarize`).
  */
 export interface CommitRecord {
+  /** Encoded package semver when written; absent on legacy files. */
+  schemaVersion?: number;
   commitHash: string;
   timestamp: number;
   title: string;
@@ -172,17 +192,21 @@ interface GroupsBlock {
  * `summary`, plus three tiers of **context bullets** (not commit hashes):
  * `hiContext` captures the substantial work, `lowContext` the routine background.
  */
-interface GroupModelLayer extends Omit<ModelLayer, "summary"> {
+interface GroupModelLayer extends Omit<ModelLayer, "summary" | "questionsAnalysis"> {
   history: string;
   hiContext: string[];
   mediumContext: string[];
   lowContext: string[];
+  /** Aggregated reasoned questions: member-commit analyses merged per open thread. */
+  questionsAnalyses: QuestionAnalyses[];
 }
 
 /**
  * One work-session group on disk (written by `commit-group`).
  */
 export interface GroupRecord {
+  /** Encoded package semver when written; absent on legacy files. */
+  schemaVersion?: number;
   groupId: number;
   timestampStart: number;
   timestampEnd: number;
@@ -227,7 +251,8 @@ export interface ReportModelLayer {
     architecture: string[];
     security: string[];
   };
-  questions: string[];
+  /** Aggregated reasoned questions: rebuilt from the folded groups' analyses. */
+  questionsAnalyses: QuestionAnalyses[];
   confidence: Signal;
   hiContext: string[];
   mediumContext: string[];
@@ -244,6 +269,8 @@ export interface ReportModelLayer {
  * not commit hashes.
  */
 export interface ReportRecord {
+  /** Encoded package semver when written; absent on legacy files. */
+  schemaVersion?: number;
   reportId: number;
   /** Every group file folded into this report (cumulative, including routine-only folds). */
   sourceGroups: string[];

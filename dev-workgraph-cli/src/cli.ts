@@ -57,7 +57,7 @@ function registerInit(name: string, periodMode: boolean): void {
     .command(name)
     .description(
       periodMode
-        ? "Init a review period (inherits the repo-level context; --force rebuilds it)."
+        ? "Init a review period (inherits the repo-level context)."
         : "Capture developer role and project story, build a project profile.",
     )
     .argument("[repo]", "Path to the Git repository", ".")
@@ -68,7 +68,6 @@ function registerInit(name: string, periodMode: boolean): void {
     .option("--to <date>", "Period end date, ISO YYYY-MM-DD (exclusive)")
     .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
     .option("--model <name>", "Model to use (skips the interactive picker)")
-    .option("--force", "Re-run and overwrite an existing project.json")
     .action(
       async (
         repo: string,
@@ -80,7 +79,6 @@ function registerInit(name: string, periodMode: boolean): void {
           to?: string;
           url?: string;
           model?: string;
-          force?: boolean;
         },
       ) => {
         const options: InitOptions = {
@@ -93,7 +91,6 @@ function registerInit(name: string, periodMode: boolean): void {
           periodMode,
           url: opts.url,
           model: opts.model,
-          force: opts.force,
         };
         try {
           await init(options);
@@ -140,13 +137,11 @@ program
   .argument("[repo]", "Path to the Git repository", ".")
   .option("--email <email>", "Override saved author selection (repeatable)", collect, [])
   .option("--period <id>", "Restrict to a defined review period (scopes output too)")
-  .option("--force", "Re-extract and overwrite commits that already exist")
-  .action(async (repo: string, opts: { email: string[]; period?: string; force?: boolean }) => {
+  .action(async (repo: string, opts: { email: string[]; period?: string }) => {
     const options: EvidenceOptions = {
       repo,
       email: opts.email,
       period: opts.period,
-      force: opts.force,
     };
     try {
       await evidence(options);
@@ -163,19 +158,17 @@ program
   .argument("[repo]", "Path to the Git repository", ".")
   .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
   .option("--model <name>", "Model to use (skips the interactive picker)")
-  .option("--force", "Re-summarize commits that already have a model layer")
   .option("--limit <n>", "Only process the first N pending commits", (v) => Number.parseInt(v, 10))
   .option("--period <id>", "Operate on a defined review period's data")
   .action(
     async (
       repo: string,
-      opts: { url?: string; model?: string; force?: boolean; limit?: number; period?: string },
+      opts: { url?: string; model?: string; limit?: number; period?: string },
     ) => {
       const options: SummarizeOptions = {
         repo,
         url: opts.url,
         model: opts.model,
-        force: opts.force,
         limit: opts.limit,
         period: opts.period,
       };
@@ -201,7 +194,6 @@ program
   )
   .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
   .option("--model <name>", "Model to use (skips the interactive picker)")
-  .option("--force", "Re-group and re-summarize, overwriting existing group files")
   .option("--limit <n>", "Only summarize the first N groups (useful for trials)", (v) =>
     Number.parseInt(v, 10),
   )
@@ -214,7 +206,6 @@ program
         maxCommits?: number;
         url?: string;
         model?: string;
-        force?: boolean;
         limit?: number;
         period?: string;
       },
@@ -225,7 +216,6 @@ program
         maxCommits: opts.maxCommits,
         url: opts.url,
         model: opts.model,
-        force: opts.force,
         limit: opts.limit,
         period: opts.period,
       };
@@ -245,7 +235,6 @@ program
   .argument("[repo]", "Path to the Git repository", ".")
   .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
   .option("--model <name>", "Model to use (skips the interactive picker)")
-  .option("--force", "Rebuild the report chain even if a final report exists")
   .option("--limit <n>", "Only fold the first N groups (useful for trials)", (v) =>
     Number.parseInt(v, 10),
   )
@@ -253,13 +242,12 @@ program
   .action(
     async (
       repo: string,
-      opts: { url?: string; model?: string; force?: boolean; limit?: number; period?: string },
+      opts: { url?: string; model?: string; limit?: number; period?: string },
     ) => {
       const options: ReportOptions = {
         repo,
         url: opts.url,
         model: opts.model,
-        force: opts.force,
         limit: opts.limit,
         period: opts.period,
       };
@@ -279,28 +267,21 @@ program
   .argument("[repo]", "Path to the Git repository", ".")
   .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
   .option("--model <name>", "Model to use (skips the interactive picker)")
-  .option("--force", "Regenerate even if a prepared narrative for the latest report exists")
   .option("--period <id>", "Operate on a defined review period's data")
-  .action(
-    async (
-      repo: string,
-      opts: { url?: string; model?: string; force?: boolean; period?: string },
-    ) => {
-      const options: PrepareOptions = {
-        repo,
-        url: opts.url,
-        model: opts.model,
-        force: opts.force,
-        period: opts.period,
-      };
-      try {
-        await prepare(options);
-      } catch (err) {
-        console.error(`✖ ${(err as Error).message}`);
-        process.exitCode = 1;
-      }
-    },
-  );
+  .action(async (repo: string, opts: { url?: string; model?: string; period?: string }) => {
+    const options: PrepareOptions = {
+      repo,
+      url: opts.url,
+      model: opts.model,
+      period: opts.period,
+    };
+    try {
+      await prepare(options);
+    } catch (err) {
+      console.error(`✖ ${(err as Error).message}`);
+      process.exitCode = 1;
+    }
+  });
 
 // ✅ Command: collect answers to prepared questions → RECONSTRUCTION.<project>.md
 program
@@ -311,7 +292,6 @@ program
   .option("--output <path>", "Output markdown path (default: ./RECONSTRUCTION.<project>.md)")
   .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
   .option("--model <name>", "Model to use (skips the interactive picker)")
-  .option("--force", "Re-answer the questions and overwrite the markdown")
   .option("--period <id>", "Operate on a defined review period's data")
   .action(
     async (
@@ -321,7 +301,6 @@ program
         output?: string;
         url?: string;
         model?: string;
-        force?: boolean;
         period?: string;
       },
     ) => {
@@ -331,7 +310,6 @@ program
         output: opts.output,
         url: opts.url,
         model: opts.model,
-        force: opts.force,
         period: opts.period,
       };
       try {
@@ -361,7 +339,6 @@ program
   .option("--output <path>", "Output markdown path (default: ./RECONSTRUCTION.<project>.md)")
   .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
   .option("--model <name>", "Model to use (skips the interactive picker)")
-  .option("--force", "Extend again even if a child finish for the current latest already exists")
   .option("--period <id>", "Operate on a defined review period's data")
   .action(
     async (
@@ -372,7 +349,6 @@ program
         output?: string;
         url?: string;
         model?: string;
-        force?: boolean;
         period?: string;
       },
     ) => {
@@ -383,7 +359,6 @@ program
         output: opts.output,
         url: opts.url,
         model: opts.model,
-        force: opts.force,
         period: opts.period,
       };
       try {
@@ -411,7 +386,6 @@ function registerRun(name: string, periodMode: boolean): void {
     .option("--to <date>", "Period end date, ISO YYYY-MM-DD (exclusive)")
     .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
     .option("--model <name>", "Model to use for every stage (skips the picker)")
-    .option("--force", "Re-gather inputs and re-run every stage")
     .action(
       async (
         repo: string,
@@ -421,7 +395,6 @@ function registerRun(name: string, periodMode: boolean): void {
           to?: string;
           url?: string;
           model?: string;
-          force?: boolean;
         },
       ) => {
         const options: RunOptions = {
@@ -432,7 +405,6 @@ function registerRun(name: string, periodMode: boolean): void {
           periodMode,
           url: opts.url,
           model: opts.model,
-          force: opts.force,
         };
         try {
           await run(options);
@@ -468,9 +440,8 @@ program
   .description("Restore a workgraph .tar.gz bundle and add/update its config entry.")
   .argument("<tarball>", "Path to the .tar.gz produced by `export`")
   .option("--repo <path>", "Re-target the data under a different repo path")
-  .option("--force", "Overwrite existing data for the target repo")
-  .action(async (tarball: string, opts: { repo?: string; force?: boolean }) => {
-    const options: ImportOptions = { tarball, repo: opts.repo, force: opts.force };
+  .action(async (tarball: string, opts: { repo?: string }) => {
+    const options: ImportOptions = { tarball, repo: opts.repo };
     try {
       await importRepo(options);
     } catch (err) {

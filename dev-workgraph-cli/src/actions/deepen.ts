@@ -20,6 +20,8 @@ import {
 } from "../lib/finish-load.js";
 import { resolveRepo } from "../lib/git.js";
 import {
+  cleanQuestionAnalyses,
+  flattenQuestions,
   groupHistoryJsonSchema,
   prepareQuestionsJsonSchema,
   roleNarrativeJsonSchema,
@@ -37,6 +39,7 @@ import {
   ROLE_NARRATIVE_SYSTEM,
   withProjectContext,
 } from "../lib/prompts.js";
+import { writeRecordJson } from "../lib/record-io.js";
 import type { FinishRecord, ProjectContext } from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
 
@@ -64,8 +67,6 @@ export interface DeepenOptions {
   url?: string;
   /** `narrativeModel` name; skips the interactive picker when set. */
   model?: string;
-  /** Create the next finish version even when that version file already exists. */
-  force?: boolean;
   /** Scope all reads/writes to `periods/<id>/` instead of the repo's all-time data. */
   period?: string;
 }
@@ -218,7 +219,7 @@ function nextFinishExists(finishDir: string, priorFile: string): string | null {
  * 5. Write `RECONSTRUCTION.<project>.vN.md` to cwd and append-only `finish/<id>.vN.{md,json}`.
  *
  * Skips when no finish exists, prior finish has no answers, or the next version file
- * already exists (unless `--force`). Never overwrites v1 or prior deepen versions.
+ * already exists. Never overwrites v1 or prior deepen versions.
  *
  * @param options - Resolved CLI options.
  */
@@ -261,14 +262,10 @@ export async function deepen(options: DeepenOptions): Promise<void> {
     return;
   }
 
-  if (!options.force) {
-    const existing = nextFinishExists(finishDir, priorFinish.file);
-    if (existing) {
-      console.log(
-        `Finish version already exists (${existing}). Pass --force to create the next version anyway.`,
-      );
-      return;
-    }
+  const existing = nextFinishExists(finishDir, priorFinish.file);
+  if (existing) {
+    console.log(`Finish version already exists (${existing}).`);
+    return;
   }
 
   const nextArchive = nextFinishVersion(priorFinish.file);
@@ -312,14 +309,17 @@ export async function deepen(options: DeepenOptions): Promise<void> {
       preparedHistory,
       priorHistory,
       prepared.record.model.signalReasons,
-      report.record.model.questions,
-      prepared.record.model.questions,
+      flattenQuestions(report.record.model.questionsAnalyses),
+      flattenQuestions(prepared.record.model.questionsAnalyses),
       priorQa,
       recalledContext,
     ),
     schema: prepareQuestionsJsonSchema(),
-  })) as { questions?: unknown };
-  const newQuestions = asStringArray(followUp.questions).slice(0, 4);
+  })) as { questionsAnalyses?: unknown };
+  const newQuestions = flattenQuestions(cleanQuestionAnalyses(followUp.questionsAnalyses)).slice(
+    0,
+    4,
+  );
   if (newQuestions.length < 4) {
     console.error("\n✖ Model returned fewer than four new questions.");
     process.exitCode = 1;
@@ -411,6 +411,6 @@ export async function deepen(options: DeepenOptions): Promise<void> {
     ...(recalledContext ? { recalledContext } : {}),
     provenance: { model, generatedAt },
   };
-  fs.writeFileSync(finishJsonPath, `${JSON.stringify(finishRecord, null, 2)}\n`, "utf8");
+  writeRecordJson(finishJsonPath, finishRecord);
   console.log(`✅ Archived deepened finish to ${finishDir} (${finishJsonPath})`);
 }

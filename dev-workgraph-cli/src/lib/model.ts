@@ -26,6 +26,32 @@ const CHANGE_TYPES = [
 ] as const;
 
 /**
+ * One reasoned open question on a single commit: what the diff shows, the human
+ * context the diff cannot establish, and the question to recover it. All three
+ * fields are English prose.
+ */
+export interface QuestionAnalysis {
+  /** What the diff actually shows (grounded in the patch, not the commit message). */
+  observation: string;
+  /** The human context the patch cannot establish (ownership, intent, production use, …). */
+  missingPiece: string;
+  /** The single question to ask the human to recover that missing context. */
+  question: string;
+}
+
+/**
+ * The aggregated form of {@link QuestionAnalysis} used at group and report level.
+ * Because a group/report merges several commits, each field is an ARRAY: the
+ * merged observations, the merged missing pieces, and the merged questions that
+ * belong to one coherent open thread.
+ */
+export interface QuestionAnalyses {
+  observation: string[];
+  missingPiece: string[];
+  question: string[];
+}
+
+/**
  * The model-generated interpretation layer of a commit record.
  * This is interpretation, not evidence — it may be wrong.
  */
@@ -42,7 +68,8 @@ export interface ModelLayer {
     architecture: string;
     security: string;
   };
-  questions: string[];
+  /** Reasoned open questions: observation → missing piece → question (English). */
+  questionsAnalysis: QuestionAnalysis[];
   confidence: Signal;
   /** Provenance attached by the CLI after generation (not produced by the model). */
   provenance?: {
@@ -76,7 +103,18 @@ export function modelJsonSchema(): Record<string, unknown> {
         },
         required: ["technical", "architecture", "security"],
       },
-      questions: { type: "array", items: { type: "string" } },
+      questionsAnalysis: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            observation: { type: "string" },
+            missingPiece: { type: "string" },
+            question: { type: "string" },
+          },
+          required: ["observation", "missingPiece", "question"],
+        },
+      },
       confidence: signal,
     },
     required: [
@@ -87,7 +125,7 @@ export function modelJsonSchema(): Record<string, unknown> {
       "architectureSignal",
       "securitySignal",
       "signalReasons",
-      "questions",
+      "questionsAnalysis",
       "confidence",
     ],
   };
@@ -95,29 +133,50 @@ export function modelJsonSchema(): Record<string, unknown> {
 
 /**
  * JSON Schema for the group CLASSIFY session: session-level signals + change
- * types + questions, plus three tiers of **context bullets** (strings, merged
+ * types + questionsAnalyses, plus three tiers of **context bullets** (strings, merged
  * by meaning). No `summary` — that is produced separately by the compose step.
  */
 export function groupClassifyJsonSchema(): Record<string, unknown> {
   const base = modelJsonSchema();
   const props = { ...(base.properties as Record<string, unknown>) };
   // `summary` is produced by the compose step; `technologies` is a deterministic
-  // union of the member commits — neither is re-derived by the classify session.
+  // union of the member commits; the per-commit `questionsAnalysis` is replaced by
+  // the aggregated `questionsAnalyses` below — none of these is re-derived here.
   delete props.summary;
   delete props.technologies;
+  delete props.questionsAnalysis;
+  delete props.questions;
   const strArray = { type: "array", items: { type: "string" } };
   const required = (base.required as string[]).filter(
-    (field) => field !== "summary" && field !== "technologies",
+    (field) =>
+      field !== "summary" &&
+      field !== "technologies" &&
+      field !== "questionsAnalysis" &&
+      field !== "questions",
   );
   return {
     type: "object",
     properties: {
       ...props,
+      questionsAnalyses: aggregatedQuestionAnalysisSchema(),
       hiContext: strArray,
       mediumContext: strArray,
       lowContext: strArray,
     },
-    required: [...required, "hiContext", "mediumContext", "lowContext"],
+    required: [...required, "questionsAnalyses", "hiContext", "mediumContext", "lowContext"],
+  };
+}
+
+/** JSON Schema for the aggregated `questionsAnalyses` (group/report): array-valued fields. */
+function aggregatedQuestionAnalysisSchema(): Record<string, unknown> {
+  const strArray = { type: "array", items: { type: "string" } };
+  return {
+    type: "array",
+    items: {
+      type: "object",
+      properties: { observation: strArray, missingPiece: strArray, question: strArray },
+      required: ["observation", "missingPiece", "question"],
+    },
   };
 }
 
@@ -136,8 +195,8 @@ export function groupHistoryJsonSchema(): Record<string, unknown> {
 /**
  * JSON Schema for the report MERGE session: combines two model layers. Signal
  * *levels* are computed in code (max), so the model only returns `signalReasons`
- * as arrays plus the merged change types, questions, confidence, and re-ranked
- * context tiers.
+ * as arrays plus the merged change types, questionsAnalyses, confidence, and
+ * re-ranked context tiers.
  */
 export function reportMergeJsonSchema(): Record<string, unknown> {
   const strArray = { type: "array", items: { type: "string" } };
@@ -150,7 +209,7 @@ export function reportMergeJsonSchema(): Record<string, unknown> {
         properties: { technical: strArray, architecture: strArray, security: strArray },
         required: ["technical", "architecture", "security"],
       },
-      questions: strArray,
+      questionsAnalyses: aggregatedQuestionAnalysisSchema(),
       confidence: { type: "string", enum: [...SIGNALS] },
       hiContext: strArray,
       mediumContext: strArray,
@@ -159,7 +218,7 @@ export function reportMergeJsonSchema(): Record<string, unknown> {
     required: [
       "changeTypes",
       "signalReasons",
-      "questions",
+      "questionsAnalyses",
       "confidence",
       "hiContext",
       "mediumContext",
@@ -238,15 +297,15 @@ export function prepareReasonsJsonSchema(): Record<string, unknown> {
   };
 }
 
-/** JSON Schema for `prepare` step 5: role-aware questions + re-assessed confidence. */
+/** JSON Schema for `prepare` step 5: role-aware questionsAnalyses + re-assessed confidence. */
 export function prepareQuestionsJsonSchema(): Record<string, unknown> {
   return {
     type: "object",
     properties: {
-      questions: { type: "array", items: { type: "string" } },
+      questionsAnalyses: aggregatedQuestionAnalysisSchema(),
       confidence: { type: "string", enum: [...SIGNALS] },
     },
-    required: ["questions", "confidence"],
+    required: ["questionsAnalyses", "confidence"],
   };
 }
 
@@ -281,6 +340,51 @@ export function reportNewHistoryJsonSchema(): Record<string, unknown> {
     },
     required: ["needed", "text"],
   };
+}
+
+/** Flattens aggregated analyses into question strings (display / Q&A order). */
+export function flattenQuestions(analyses: QuestionAnalyses[]): string[] {
+  return analyses.flatMap((a) => a.question);
+}
+
+/**
+ * Cleans a raw per-commit `questionsAnalysis` value (from model output): trims
+ * each field and drops entries that carry no `question`.
+ * @param raw - The raw value.
+ */
+export function cleanQuestionAnalysis(raw: unknown): QuestionAnalysis[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((q) => {
+      const entry = (q ?? {}) as Partial<QuestionAnalysis>;
+      return {
+        observation: String(entry.observation ?? "").trim(),
+        missingPiece: String(entry.missingPiece ?? "").trim(),
+        question: String(entry.question ?? "").trim(),
+      };
+    })
+    .filter((q) => q.question);
+}
+
+/**
+ * Cleans a raw aggregated `questionsAnalyses` value (group/report): trims and
+ * compacts each array field and drops entries that end up with no question.
+ * @param raw - The raw value.
+ */
+export function cleanQuestionAnalyses(raw: unknown): QuestionAnalyses[] {
+  if (!Array.isArray(raw)) return [];
+  const strArray = (v: unknown): string[] =>
+    Array.isArray(v) ? v.map((s) => String(s ?? "").trim()).filter(Boolean) : [];
+  return raw
+    .map((q) => {
+      const entry = (q ?? {}) as Partial<QuestionAnalyses>;
+      return {
+        observation: strArray(entry.observation),
+        missingPiece: strArray(entry.missingPiece),
+        question: strArray(entry.question),
+      };
+    })
+    .filter((q) => q.question.length > 0);
 }
 
 /**

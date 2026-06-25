@@ -87,6 +87,7 @@ Example:
 
 ```json
 {
+  "schemaVersion": 1000000,
   "role": "Senior Developer",
   "story": {
     "raw": "Started as a Keycloak RADIUS plugin for a client MFA rollout. Pivoted to open-source when the client changed vendors. Major releases around Keycloak 8→10 upgrades.",
@@ -123,7 +124,7 @@ Config holds only the role (and other CLI prefs); the full project context lives
 }
 ```
 
-`init` is **idempotent**: if `project.json` already exists, skip unless `--force` (re-run both LLM sessions and overwrite).
+`init` is **idempotent**: if `project.json` already exists, skip. To rebuild the profile, delete `project.json` and re-run.
 
 ### Project context in all later LLM calls
 
@@ -137,7 +138,7 @@ The model must use this context to:
 
 * interpret patches and summaries in light of what the project is;
 * avoid questions that README/story already answer;
-* **frame `questions` according to role** (see §8).
+* **frame open questions according to role** (via `questionsAnalysis` / `questionsAnalyses`; see §8).
 
 If `project.json` is missing when a model step runs, the CLI warns and continues with an empty project context (same as pre-`init` behavior).
 
@@ -209,7 +210,7 @@ The `periods/` wrapper (rather than `<repo-id>/<period>/` directly) guarantees a
 
 ### Project context for a period
 
-By default a period **inherits** the repo-level project context: `init:period` copies `<repo-id>/project.json` into `<repo-id>/periods/<period>/project.json` (no LLM call — role/story rarely change between periods). `--force` instead re-runs the two `init` LLM sessions to build a **period-specific** profile. If no repo-level `project.json` exists to inherit, `init:period` errors and asks the user to run the repo-level `init` first (or pass `--force`). Downstream stages load the period's `project.json`, falling back to the repo-level one if absent — so a period pipeline always has grounding.
+By default a period **inherits** the repo-level project context: `init:period` copies `<repo-id>/project.json` into `<repo-id>/periods/<period>/project.json` (no LLM call — role/story rarely change between periods). If no repo-level `project.json` exists to inherit, `init:period` errors and asks the user to run the repo-level `init` first. Downstream stages load the period's `project.json`, falling back to the repo-level one if absent — so a period pipeline always has grounding.
 
 ### Commit filtering
 
@@ -224,6 +225,53 @@ Git history mixes the user's commits with teammates and bots (Renovate, Dependab
 The system scans the repository (`git log --all --no-merges`), aggregates authors **by email** with commit counts, and lets the user select their identities. The selection is persisted per repository in `~/.workgraph/config.json`.
 
 > Lesson from the first real run: near-identical emails (`vzaharchenko@…` vs `vzakharchenko@…`) are easy to confuse in a long list, and selecting the wrong one silently undercounts work. The author picker should surface large identities clearly and may group likely-same-person variants.
+
+⸻
+
+## 1.5 JSON schema versioning (`schemaVersion`)
+
+Every **pipeline JSON artifact** the CLI writes carries a numeric **`schemaVersion`** field so a future CLI can tell which on-disk shape it is reading and migrate or reject safely. This is separate from:
+
+* **`FinishRecord.version`** — the **finish-chain cursor** (`1` = initial `final`, `2+` = each `deepen` round **or** an incremental `final` after new commits; see §11 / §11.5).
+* **`~/.workgraph/config.json`** — user/CLI preferences; **not** schema-stamped.
+
+### Encoding
+
+`schemaVersion` is the CLI's **`package.json` semver encoded as one integer**:
+
+```
+schemaVersion = major × 1_000_000 + minor × 1_000 + patch
+```
+
+Examples: `1.0.0` → `1000000`, `1.2.3` → `1002003`.
+
+At **`npm run build`** (and before `test` / `typecheck` / `dev`), `scripts/generate-version.ts` reads `package.json` and writes `src/lib/version.ts`:
+
+```ts
+export const VERSION = 1000000;
+```
+
+Every write path uses `writeRecordJson()` → `stampSchemaVersion()`, which sets `schemaVersion: VERSION` on the object immediately before `JSON.stringify`.
+
+### Stamped files
+
+| Artifact | Path |
+|----------|------|
+| Commit evidence | `commits/<ts>/<hash>.json` |
+| Work-session group | `groups/<timestampEnd>.json` |
+| Cumulative report | `reports/<reportId>.json` |
+| Project context | `project.json` |
+| Prepared narrative | `prepared/<reportId>.json` |
+| Finish archive | `finish/<preparedId>.json` (and `.vN.json`) |
+| Export bundle manifest | `manifest.json` inside the `.tar.gz` |
+
+Re-writing an existing file (e.g. `final` persisting answers on the prepared record after manual deletion) **refreshes** `schemaVersion` to the current CLI build.
+
+### Backward compatibility
+
+* **Readers** treat a missing `schemaVersion` as a **legacy** file written before this field existed; the current CLI continues to load it.
+* **Writers** always stamp the current encoded semver on new output.
+* A future CLI may refuse to read records with `schemaVersion` below a minimum, or run explicit migrations — out of scope for the current MVP, but the field exists for that path.
 
 ⸻
 
@@ -249,7 +297,7 @@ The patch must be generated from Git using a reproducible command:
 ```
 git show --format=fuller --find-renames <commit-hash>
 ```
-Export is **append-only**: existing commits are skipped, never overwritten unless explicitly forced.
+Export is **append-only**: existing commits are skipped, never overwritten.
 The export should preserve:
 
 * commit hash
@@ -290,12 +338,13 @@ The JSON has **two layers**, kept clearly separated:
 - **Deterministic layer** — computed without any model, always present. This is evidence. Written at export time.
 - **Model layer** — added by a local model in a separate `summarize` step, optional, clearly marked as interpretation. Starts as `null`.
 
-The model layer is produced by a **local model via Ollama** (HTTP API, default `http://127.0.0.1:11434`). The model is chosen interactively from the installed models and the choice is remembered. Generation uses Ollama structured output (a JSON Schema is passed via the `format` parameter). On response, the CLI **extracts** the JSON object from the raw text (handles markdown fences and surrounding prose), **parses** it, and **schema-validates** the result before accepting — retries (up to 3, with backoff) on HTTP/transport, parse, or validation failure. Each generated layer records its provenance (model name, timestamp, whether the patch was truncated). The **project context block** (§0) is included in every summarize prompt. Summarize is append-only: commits that already have a model layer are skipped unless forced.
+The model layer is produced by a **local model via Ollama** (HTTP API, default `http://127.0.0.1:11434`). The model is chosen interactively from the installed models and the choice is remembered. Generation uses Ollama structured output (a JSON Schema is passed via the `format` parameter). On response, the CLI **extracts** the JSON object from the raw text (handles markdown fences and surrounding prose), **parses** it, and **schema-validates** the result before accepting — via the shared `chatJson` helper (§14 Resilience: up to **3** retries with escalating `num_ctx` and `num_predict`). Each generated layer records its provenance (model name, timestamp, whether the patch was truncated). The **project context block** (§0) is included in every summarize prompt. Summarize is append-only: commits that already have a model layer are skipped on re-run.
 
 ### JSON schema
 
 ```json
 {
+  "schemaVersion": 1000000,
   "commitHash": "...",
   "timestamp": 0,
   "title": "...",
@@ -326,13 +375,21 @@ The model layer is produced by a **local model via Ollama** (HTTP API, default `
       "architecture": "...",
       "security": "..."
     },
-    "questions": [],
+    "questionsAnalysis": [
+      {
+        "observation": "...",
+        "missingPiece": "...",
+        "question": "..."
+      }
+    ],
     "confidence": "low | medium | high"
   }
 }
 ```
 
 #### Field meaning
+
+**`schemaVersion`** — encoded CLI semver when the file was last written (§1.5). Absent on legacy files.
 
 **Deterministic layer (no model, always trustworthy):**
 
@@ -369,7 +426,7 @@ deployment
 
 > **No numeric scores.** Signals are `low/medium/high` only, and each non-`low` signal **must** come with a one-line `signalReasons` justification grounded in the patch. A signal without a reason is treated as `low`. This prevents false precision (e.g. "0.72") and forces the model to point at evidence.
 
-`questions` — the questions a human must answer to recover missing context. **This is the most important model output.** Framed according to developer role and project context (§0, §8). See §8.
+`questionsAnalysis` — the **reasoned form** of the missing context and the **primary commit-level question output**: an array of `{ observation, missingPiece, question }` entries. `observation` states what the *diff* actually shows (grounded in the patch, not the message); `missingPiece` names the human context the patch cannot establish (ownership, intent, whether it shipped); `question` is the single question to ask the developer to recover it. This is where the model puts anything it cannot know from the patch. A purely routine commit may have an empty array. There is **no** separate flat `questions` field — question strings live inside this structure (and are derived in code when needed for interactive Q&A).
 
 `confidence` — the model's confidence in its own summary, `low | medium | high`.
 
@@ -377,6 +434,7 @@ deployment
 
 ```json
 {
+  "schemaVersion": 1000000,
   "commitHash": "b0648088",
   "timestamp": 1717428123,
   "title": "Production build and deployment automation",
@@ -411,10 +469,12 @@ deployment
       "architecture": "Defines a deployment boundary and packaging assembly, affects how the system ships.",
       "security": "No auth/identity/data-protection code touched."
     },
-    "questions": [
-      "Was this used for real production deployment, or experimental?",
-      "Did this replace a manual deployment process?",
-      "Was this your own work or a shared team effort?"
+    "questionsAnalysis": [
+      {
+        "observation": "The diff adds Docker deploy/build scripts and changes .gitignore and package metadata, which looks like local-environment setup rather than a production deploy.",
+        "missingPiece": "Unclear whether this container ever reached real servers or stayed developer tooling.",
+        "question": "Was this Docker flow deployed to staging/production, or only used to run the service locally?"
+      }
     ],
     "confidence": "medium"
   }
@@ -470,7 +530,21 @@ Each group is written to:
 ~/.workgraph/data/repos/keycloak-radius-plugin-920018a3/groups/1717428123.json
 ```
 
-Grouping is **append-only**: existing group files are skipped unless `--force` is passed.
+Grouping is **append-only**: existing group files that already have a **`model` layer** are skipped on re-run.
+
+#### Incremental re-run: extension groups (no duplicate supersets)
+
+On a re-run, `commit-group` still recomputes work sessions from **all** exported commits (`groupByGap`), but before summarizing each session it **subtracts commit hashes already present** in on-disk group files that have a completed `model` layer (`coveredCommitHashes` / `extensionSessions` in code).
+
+| Situation | Behaviour |
+|-----------|-----------|
+| Session fully covered by existing groups | **Skipped** (no new file, no LLM) |
+| **New commits extend the last session** (same gap bucket; `timestampEnd` would change) | Writes an **extension group** containing **only the uncovered commits** — not a duplicate superset of the old group |
+| Wholly new session after a gap | Normal new group file |
+
+This keeps `groups/` consistent with incremental `report` resume: the report folds one new group per extension instead of folding an enlarged session on top of the old one (which would duplicate history). Old group files are **not deleted** automatically; orphaned supersets from runs before this rule may remain on disk until cleaned manually.
+
+Console summary distinguishes **fully covered** sessions from **to summarize** extension/new groups.
 
 ### Group JSON schema
 
@@ -478,6 +552,7 @@ A group record mirrors the commit record shape (deterministic + model layers) bu
 
 ```json
 {
+  "schemaVersion": 1000000,
   "groupId": 1717428123,
   "timestampStart": 1717000000,
   "timestampEnd": 1717428123,
@@ -538,28 +613,31 @@ This layer is evidence. It is written at group-creation time, before the LLM cal
 
 #### Model layer (group interpretation) — two LLM sessions
 
-The group model layer is built in **two separate LLM sessions** per group via Ollama (same stack as `summarize`: structured JSON output with extract/parse/schema validation, provenance, signal-without-reason enforcement). Both sessions include the **project context block** (§0). Splitting the work keeps each call focused and lets the `history` be a faithful *merge* of the per-commit summaries rather than a fresh invention.
+The group model layer is built in **two separate LLM sessions** per group via Ollama (same stack as `summarize`: `chatJson` with structured JSON output, extract/parse/schema validation, escalating `num_ctx` / `num_predict` retries — §14, provenance, signal-without-reason enforcement). Both sessions include the **project context block** (§0). Splitting the work keeps each call focused and lets the `history` be a faithful *merge* of the per-commit summaries rather than a fresh invention.
 
 **Session 1 — classify** (`groupClassifyJsonSchema`, no `summary`):
 
-* Input: the aggregated deterministic layer, a compact tier-annotated view of every member commit (title, areas, churn, signals, per-commit summary), and the deterministic `groups.tiers` partition as reference.
-* Output: session-level `technicalSignal` / `architectureSignal` / `securitySignal` (each non-low with a reason), `changeTypes`, `questions`, `confidence`, and three arrays of **context bullets** — `hiContext`, `mediumContext`, `lowContext`. These are short phrases, **not** commit hashes. Commits close in meaning are **merged** into one bullet; unrelated ones are **added** as separate bullets.
+* Input: the aggregated deterministic layer, a compact tier-annotated view of every member commit (title, areas, churn, signals, per-commit summary, **and the commit's `questionsAnalysis`**), and the deterministic `groups.tiers` partition as reference.
+* Output: session-level `technicalSignal` / `architectureSignal` / `securitySignal` (each non-low with a reason), `changeTypes`, `confidence`, three arrays of **context bullets** — `hiContext`, `mediumContext`, `lowContext` — and **`questionsAnalyses`** (see below). These bullets are short phrases, **not** commit hashes. Commits close in meaning are **merged** into one bullet; unrelated ones are **added** as separate bullets.
+
+`questionsAnalyses` — the **aggregated** reasoned-question form for the whole session. Where a *commit* carries `questionsAnalysis` with scalar `observation` / `missingPiece` / `question`, a *group* merges its members' analyses into entries whose three fields are **arrays**: `{ observation: [], missingPiece: [], question: [] }`. The model groups member-commit analyses that probe the **same open thread** into one entry (unioning their observations and missing pieces; keeping one sharp question per thread when possible) and keeps unrelated threads as separate entries. Routine upkeep does not produce an entry. There is **no** separate flat `questions` field at group level.
 
 **Session 2 — compose** (`groupComposeJsonSchema`, only `{ summary }`):
 
 * Input: the session signals and context tiers from session 1, plus the member commits' per-commit summaries grouped by tier.
 * Output: `history` — a first-person, multi-paragraph **merge** of the commit summaries (a fuller account, not a terse summary) whose detail follows the tiers: **HIGH is mandatory** — cover every item in full (a paragraph or more per strand, naming real subsystems/areas); **MEDIUM must be mentioned** — covered briefly, not dropped, but need not be exhaustive item-by-item; **LOW is optional** — at most a brief mention, may be omitted.
 
-Both sessions follow the same rules: first-person voice (never "the team"/"they"/"we"), no overclaiming (never infer production usage, ownership, or impact — put unknowns into `questions`), questions framed according to role (§0), and the shared **routine rule** — routine upkeep (dependency/version bumps, build/CI/formatting) is kept to a single generic `lowContext` bullet (never in hi/medium); if the whole session is only routine the `history` is one short sentence stating that; if there is substantive work, only the substantive work is described.
+Both sessions follow the same rules: first-person voice (never "the team"/"they"/"we"), no overclaiming (never infer production usage, ownership, or impact — put unknowns into `questionsAnalyses`), open questions framed according to role (§0), and the shared **routine rule** — routine upkeep (dependency/version bumps, build/CI/formatting) is kept to a single generic `lowContext` bullet (never in hi/medium); if the whole session is only routine the `history` is one short sentence stating that; if there is substantive work, only the substantive work is described.
 
-The final `model` object = session-1 fields (`changeTypes`, the three signals + `signalReasons`, `questions`, `confidence`, `hiContext`, `mediumContext`, `lowContext`) + session-2 `history` + a `provenance` block the CLI attaches after generation.
+The final `model` object = session-1 fields (`changeTypes`, the three signals + `signalReasons`, `questionsAnalyses`, `confidence`, `hiContext`, `mediumContext`, `lowContext`) + session-2 `history` + a `provenance` block the CLI attaches after generation.
 
-Group summarize is append-only: groups that already have a `model` layer are skipped unless `--force`.
+Group summarize is append-only: groups that already have a `model` layer are skipped on re-run.
 
 #### Example
 
 ```json
 {
+  "schemaVersion": 1000000,
   "groupId": 1717428123,
   "timestampStart": 1717350000,
   "timestampEnd": 1717428123,
@@ -606,9 +684,20 @@ Group summarize is append-only: groups that already have a `model` layer are ski
     "hiContext": ["Added backend deploy scripting and packaging, and adjusted the server entrypoint"],
     "mediumContext": ["Reworked how the backend artifact is assembled"],
     "lowContext": ["Minor docker-radius startup script fix"],
-    "questions": [
-      "Was the deployment work used in production or experimental?",
-      "Was the docker-radius fix related to a reported issue, or incidental cleanup during the same session?"
+    "questionsAnalyses": [
+      {
+        "observation": [
+          "Added deploy scripting and packaging so the backend ships as a self-contained artifact.",
+          "Adjusted the server entrypoint to match the new layout."
+        ],
+        "missingPiece": ["Unclear whether this deployment path was used in production or only experimentally."],
+        "question": ["Was the deployment work used in production or experimental?"]
+      },
+      {
+        "observation": ["Made a small fix to the docker-radius startup script."],
+        "missingPiece": ["Unclear whether the fix addressed a reported issue or was incidental cleanup."],
+        "question": ["Was the docker-radius fix related to a reported issue, or incidental cleanup during the same session?"]
+      }
     ],
     "confidence": "medium",
     "provenance": {
@@ -732,6 +821,8 @@ Git history cannot explain business context, ownership, or impact. The system's 
 
 Questions are **role-aware** (§0): the same patch may prompt a Principal Developer about org-wide rollout consequences and a Junior Developer about whether the task was assigned or self-initiated. Project profile and prepared story context prevent asking about facts the user already provided at `init`.
 
+Each question is backed by a **reasoned analysis** so it is traceable, not a bare prompt. At commit level this is `questionsAnalysis` — `{ observation, missingPiece, question }`: the diff evidence that triggered the question, the human context it cannot establish, and the question itself (§3). At group and report level the same structure is **aggregated** into `questionsAnalyses` (array-valued fields), so open threads are merged and re-folded as work accumulates (§4, §9). At **`prepare`** the report's `questionsAnalyses` are reframed into up to four role-aware entries; **`final`** and **`deepen`** present the `question` strings to the human (derived in code via `flattenQuestions()`). There is **no** redundant flat `questions` field stored at any pipeline stage.
+
 Questions may be attached to:
 
 * commit summaries
@@ -787,6 +878,7 @@ Every intermediate report is written; the **final report** is the last in the ch
 
 ```json
 {
+  "schemaVersion": 1000000,
   "reportId": 1591444361,
   "sourceGroups": ["1579390000.json", "1591444361.json"],
   "groupCount": 2,
@@ -809,7 +901,9 @@ Every intermediate report is written; the **final report** is the last in the ch
     "architectureSignal": "low | medium | high",
     "securitySignal": "low | medium | high",
     "signalReasons": { "technical": [], "architecture": [], "security": [] },
-    "questions": [],
+    "questionsAnalyses": [
+      { "observation": [], "missingPiece": [], "question": [] }
+    ],
     "confidence": "low | medium | high",
     "hiContext": [],
     "mediumContext": [],
@@ -853,7 +947,7 @@ Differences from a group record:
 
 * `changeTypes` — union; near-duplicate tags merged.
 * `signalReasons.{technical,architecture,security}` — **arrays**, with duplicate / near-duplicate reasons collapsed.
-* `questions` — recomputed for the combined body of work, deduped.
+* `questionsAnalyses` — **rebuilt** for the combined work from **both** sides' `questionsAnalyses` (same aggregated `{ observation: [], missingPiece: [], question: [] }` shape as a group). **Thread identity** is decided primarily from whether entries share the same `missingPiece` (human context Git cannot show), supported by overlapping `observation` — not from question wording alone. **Within a thread**, union `observation` and `missingPiece` (drop duplicates); in `question` keep **one best** question per thread (read each candidate's meaning; pick or rewrite the sharpest formulation — do not accumulate multiple question strings for the same thread). **Value-rank** threads for the developer's role (production use, ownership, security boundary, major design decisions outrank minor clarifications and routine upkeep; questions tied to hi-tier / high-signal work outrank low-tier-only threads). Drop threads already answered, pure duplicates, and routine upkeep (never an entry for routine-only work). **Bound** to ≤ `MAX_CONTEXT_BULLETS` entries; when over the limit, merge near-duplicate threads and **drop the least valuable**, listing the **most important threads first**. The merge prompt renders each thread with observations, missing pieces, and questions on **separate numbered lines** so the model can read them distinctly.
 * `confidence` — re-assessed for the combined work.
 * `hiContext` / `mediumContext` / `lowContext` — merge duplicate/similar bullets, then **re-rank importance DOWNWARD ONLY** (a minor `hi` bullet may be merged or demoted; nothing is ever promoted), and **bound each tier to ≤ `MAX_CONTEXT_BULLETS`** — when over, drop the least important, keeping the bullets **most relevant to the developer's role** (from the project context). A hard code-side slice backstops the cap.
 
@@ -874,11 +968,11 @@ Differences from a group record:
 
 Because both contexts (≤ `MAX_CONTEXT_BULLETS`/tier) and history (≤ `MAX_HISTORY_ENTRIES`) are bounded, each fold's prompts are bounded — total cost is **O(N · cap)** rather than O(N²).
 
-`init(group_1)` = `merge` against an empty report: signals / context tiers / `changeTypes` copied across, each `signalReasons` value lifted into a single-element array, `history` seeded with `{ text: group.history }`, `sourceGroups` set to `[group_1]`, and `historySource` set to `[[group_1]]` — index `0` in both arrays. The seeded report has **no** `mergedFrom` — nothing was merged into it.
+`init(group_1)` = `merge` against an empty report: signals / context tiers / `changeTypes` / `questionsAnalyses` copied across, each `signalReasons` value lifted into a single-element array, `history` seeded with `{ text: group.history }`, `sourceGroups` set to `[group_1]`, and `historySource` set to `[[group_1]]` — index `0` in both arrays. The seeded report has **no** `mergedFrom` — nothing was merged into it.
 
 ### Voice & honesty
 
-First person ('I'), never "the team" / "they" / "we". No overclaiming — production usage, ownership, and impact stay in `questions`. The report reconstructs and asks; it does not judge.
+First person ('I'), never "the team" / "they" / "we". No overclaiming — production usage, ownership, and impact stay in open questions (`questionsAnalyses`), not in statements. The report reconstructs and asks; it does not judge.
 
 ### Deterministic rollup (optional read-only view)
 
@@ -919,7 +1013,7 @@ After `report` produces the final cumulative report, `prepare` distills it into 
 1. **Latest report** — `~/.workgraph/data/repos/<repo-id>/reports/<reportId>.json` (the final fold in the chain).
 2. **Project context** — `project.json` from `init` (§0): role, `story.preparedContext`, `profile`.
 
-Precondition: both `project.json` and at least one report file must exist. If `prepare` was already run for this report, skip unless `--force`.
+Precondition: both `project.json` and at least one report file must exist. If `prepare` was already run for this report, skip.
 
 ### Processing steps
 
@@ -943,24 +1037,30 @@ Produce a **single first-person `history` string** — a completely rewritten na
 * de-emphasize routine upkeep already collapsed in the report;
 * never overclaim production usage, ownership, or impact.
 
-**Step 3 — Copy signals and change types (deterministic, no model).**
+**Step 3 — Clean technologies (one LLM session, skipped when none).**
+
+Given the report's accumulated `technologies` list, dedupe and collapse near-duplicates (e.g. JS subsumed by TS), capped at five entries.
+
+**Step 4 — Copy signals and change types (deterministic, no model).**
 
 From the report's `model`, copy unchanged:
 
 * `changeTypes`
 * `technicalSignal`, `architectureSignal`, `securitySignal`
 
-**Step 4 — Collapse signal reasons (one LLM session).**
+**Step 5 — Collapse signal reasons (one LLM session).**
 
 Given the report's `signalReasons` arrays (`technical`, `architecture`, `security`), the **composed `history`** from step 2, and project context (role + story + profile), produce exactly **four** reason strings — a flat array that captures why the three signals are what they are, reframed for the role and the unified narrative. Near-duplicate reasons from the report arrays are merged; minor upkeep reasons are dropped.
 
-**Step 5 — Reframe questions (one LLM session).**
+**Step 6 — Reframe questionsAnalyses (one LLM session).**
 
-Given the composed `history`, the four collapsed `signalReasons`, the report's existing `questions`, and project context (role + story + profile), produce exactly **four** new `questions` — role-aware prompts that help the human recover the missing context most relevant to their seniority (§8). Questions must target what Git still cannot know; do not repeat facts already in `project.json`.
+Given the composed `history`, the four collapsed `signalReasons`, the report's existing `questionsAnalyses`, **prior human Q&A from the latest finish archive** (when present — `latestFinish()` → `answers[]`; do not repeat those threads), and project context (role + story + profile), produce up to **four** `questionsAnalyses` entries — role-aware reasoned threads that target **new** gaps (especially work added since the last report), not questions already answered in a prior finish round. Each entry uses the aggregated shape `{ observation: [], missingPiece: [], question: [] }` (usually one question string per entry). Questions must target what Git still cannot know; do not repeat facts already in `project.json`. `confidence` is re-assessed alongside this step.
 
-**Step 6 — Console preview (deterministic, no model).**
+The prepared record stores **only these four active questions**; the canonical archive of all prior Q&A remains in the **finish** chain (§11).
 
-After the prepared record is written, `prepare` prints a readable preview to the console: the **unified `history`** as one block, followed by the **four `questions`** (numbered). This makes the upcoming `final` step transparent — the user sees the reconstructed narrative and exactly which questions they will be asked before running `final`.
+**Step 7 — Console preview (deterministic, no model).**
+
+After the prepared record is written, `prepare` prints a readable preview to the console: the **unified `history`** as one block, followed by the **question strings** derived from `questionsAnalyses` (numbered, up to four). This makes the upcoming `final` step transparent — the user sees the reconstructed narrative and exactly which questions they will be asked before running `final`.
 
 ### File layout
 
@@ -978,17 +1078,21 @@ After the prepared record is written, `prepare` prints a readable preview to the
 
 ```json
 {
+  "schemaVersion": 1000000,
   "preparedId": 1759696393,
   "sourceReport": "1759696393.json",
   "groupCount": 65,
 
   "model": {
     "changeTypes": [],
+    "technologies": [],
     "technicalSignal": "low | medium | high",
     "architectureSignal": "low | medium | high",
     "securitySignal": "low | medium | high",
     "signalReasons": [],
-    "questions": [],
+    "questionsAnalyses": [
+      { "observation": [], "missingPiece": [], "question": [] }
+    ],
     "confidence": "low | medium | high",
     "history": "...",
     "provenance": {
@@ -1002,15 +1106,17 @@ After the prepared record is written, `prepare` prints a readable preview to the
 
 Field notes:
 
+* **`schemaVersion`** — encoded CLI semver when written (§1.5).
 * **`sourceReport`** — link to the report file by name (no commit hashes).
-* **`changeTypes` / `*Signal`** — copied from the report (step 3).
-* **`signalReasons`** — exactly **four** strings (step 4); not split by technical/architecture/security.
-* **`questions`** — exactly **four** strings (step 5); role-aware.
+* **`changeTypes` / `*Signal`** — copied from the report (step 4).
+* **`technologies`** — cleaned/deduped list from the report (step 3); capped at five.
+* **`signalReasons`** — exactly **four** strings (step 5); not split by technical/architecture/security.
+* **`questionsAnalyses`** — up to **four** reasoned threads (step 6); role-aware. Interactive Q&A uses the `question` strings (`flattenQuestions()` in code).
 * **`history`** — single unified narrative string (step 2); replaces the report's multi-entry `history` array.
-* **`confidence`** — re-assessed in step 5 alongside questions, or copied from the report when unchanged.
+* **`confidence`** — re-assessed in step 6 alongside `questionsAnalyses`, or copied from the report when unchanged.
 * **No `deterministic` layer**, no `hiContext` / `mediumContext` / `lowContext`, no per-group provenance — the prepared record is interpretation for human review, grounded in the report + project context.
 
-`prepare` is **idempotent per report**: if `prepared/<reportId>.json` exists, skip unless `--force`.
+`prepare` is **idempotent per report**: if `prepared/<reportId>.json` exists, skip.
 
 ### Voice & honesty
 
@@ -1020,7 +1126,7 @@ Same rules as `report` (§9): first person ('I'), no overclaiming. The prepared 
 
 ## 11. Final deliverable (`final`)
 
-The last pipeline step runs **only on the `prepare` result** (`prepared/<reportId>.json`, §10). It closes the loop: the system presents the four questions from the prepared record, the human answers them, and two `narrativeModel` LLM sessions produce the deliverable — first a **refined "Your IMPACT" narrative** that weaves the answers into the reconstructed history, then a **Role Narrative** of four impact bullet points framed for the selected role. Everything is written to a markdown file in the **current working directory** (where the CLI was launched), not under `~/.workgraph`.
+The last pipeline step runs **only on the `prepare` result** (`prepared/<reportId>.json`, §10). It closes the loop: the system presents up to **four questions per round** from the prepared record (or only **new** questions in extension mode), the human answers them, and two `narrativeModel` LLM sessions produce the deliverable — first a **refined "Your IMPACT" narrative** that weaves the answers into the reconstructed history, then a **Role Narrative** of four impact bullet points framed for the selected role. Everything is written to a markdown file in the **current working directory** (where the CLI was launched), not under `~/.workgraph`.
 
 `final` is **interactive** — it requires human input that cannot be gathered upfront (the questions only exist after `prepare`). It runs as the **last stage of `run`** (after `prepare`), and can also be run on its own.
 
@@ -1028,14 +1134,21 @@ The last pipeline step runs **only on the `prepare` result** (`prepared/<reportI
 
 1. **Latest prepared record** — `~/.workgraph/data/repos/<repo-id>/prepared/<reportId>.json` (output of `prepare`, §10). `final` does not read the report or groups directly — only `prepare` + `project.json`.
 2. **Project context** — `project.json` (role, `story.preparedContext`, `profile`).
+3. **Latest finish archive** (extension mode only) — when a prior finish with saved `answers` exists and the latest prepared file is **new** (`prepared/<newReportId>.json` ≠ `priorFinish.sourcePrepared`), `final` loads **`latestFinish()`** (highest `version` — e.g. `*.v10.json`) and treats its `answers[]` as the cumulative Q&A baseline.
 
-Precondition: `prepare` must have completed. If Q&A for this prepared record was already collected, offer to reuse it unless `--force`.
+Precondition: `prepare` must have completed.
+
+**First run** (no prior finish, or same prepared as prior finish): present up to four questions from the latest prepared record; if Q&A for **this** prepared record was already collected, reuse `prepared.answers`.
+
+**Extension mode** (incremental pipeline after new commits): prior finish has answers **and** `latestPrepared.file !== priorFinish.sourcePrepared`. Ask only **new** question strings from the latest prepare (up to four), **excluding** questions whose normalized text already appears in prior `answers`. Merge **prior + new** into cumulative Q&A (e.g. 40 prior + 4 new → 44). Narrative sessions use **all** Q&A; IMPACT refinement uses the **`deepen`-style** combined history prompt (new `prepared.model.history` + prior `finish.history`). Append the next finish version (`v11` after `v10`) — **do not overwrite** prior finish files. Write `RECONSTRUCTION.<project>.vN.md` to cwd when `N > 1`.
+
+If every prepared question duplicates prior answers, skip the Q&A prompt and **regenerate narrative only** from existing cumulative Q&A + updated prepared history.
 
 ### Step 1 — Collect answers (interactive, no model)
 
-Present each of the four `model.questions` from the prepared record one at a time (multi-line input allowed). Store as `{ question, answer }` pairs.
+Present each question string to ask (derived from `model.questionsAnalyses` via `flattenQuestions()`, capped at four per round). In **extension mode**, only **new** questions not already answered in the latest finish are presented. Multi-line input allowed. Store as `{ question, answer }` pairs.
 
-Answers are persisted alongside the prepared record:
+**Cumulative Q&A** is persisted on the latest prepared record (`answers` holds the **full** merged list in extension mode) and on the finish archive:
 
 ```
 ~/.workgraph/data/repos/<repo-id>/prepared/<reportId>.json   # updated in-place with an `answers` block
@@ -1044,16 +1157,13 @@ Answers are persisted alongside the prepared record:
 ```json
 {
   "answers": [
-    { "question": "...", "answer": "..." },
-    { "question": "...", "answer": "..." },
-    { "question": "...", "answer": "..." },
     { "question": "...", "answer": "..." }
   ],
   "answeredAt": "2026-06-14T12:00:00.000Z"
 }
 ```
 
-A `--answers-file <path>` flag may supply pre-written Q&A as JSON (non-interactive).
+A `--answers-file <path>` flag may supply pre-written Q&A as JSON (non-interactive). In extension mode the file should contain answers for the **new** questions only; they are appended after prior finish `answers`.
 
 ### Step 2a — Refine "Your IMPACT" with the answers (one LLM session, `narrativeModel`)
 
@@ -1062,8 +1172,9 @@ The prepared `model.history` is a reconstruction from Git evidence alone (§10).
 Given:
 
 * `model.history` from the prepared record (the Git reconstruction);
+* in **extension mode**, also **prior `finish.history`** (combined like `deepen` — prepare baseline + prior final);
 * project context from `project.json` (role, `story.preparedContext`, `profile`);
-* the four question–answer pairs from step 1.
+* **all** question–answer pairs for this round (four on first run; **cumulative** prior + new in extension mode).
 
 Produce **one** refined first-person `history` string — the same flowing-prose form as the prepared history, with the answers woven in. Rules:
 
@@ -1081,7 +1192,7 @@ Given:
 * the **refined `history`** from step 2a;
 * project context from `project.json` (role, `story.preparedContext`, `profile`);
 * `model.signalReasons` (the four collapsed reasons);
-* the four question–answer pairs from step 1.
+* **all** question–answer pairs from step 1 (cumulative in extension mode).
 
 Produce exactly **four** impact bullet points — the **Role Narrative**. Each bullet describes the developer's impact on the project **as the selected role**, grounded in the history, signal reasons, and the human's own answers. Rules:
 
@@ -1140,7 +1251,7 @@ RECONSTRUCTION.<project>.md
 
 `{ROLE}` is the developer role from config / `project.json` (e.g. `Senior Developer`).
 
-The markdown file is the **MVP's final human-facing deliverable**. Re-running `final` with `--force` overwrites the file and updates the stored Q&A.
+The markdown file is the **MVP's final human-facing deliverable**. Re-running `final` on the same prepared reuses saved answers and regenerates narrative from them.
 
 ### Step 4 — Archive under the repo's finish dir
 
@@ -1155,6 +1266,7 @@ In addition to the cwd markdown, `final` writes the result into the repo's data 
 
 ```json
 {
+  "schemaVersion": 1000000,
   "finishId": 1759696393,
   "version": 1,
   "sourcePrepared": "1759696393.json",
@@ -1170,7 +1282,7 @@ In addition to the cwd markdown, `final` writes the result into the repo's data 
 }
 ```
 
-Provenance is by file name only (`sourcePrepared` → `prepared/<id>.json` → `reports/<id>.json`); no commit hashes. **`version`** is `1` for the initial `final`. Re-running `final` with `--force` overwrites this v1 pair (`<preparedId>.json` / `.md`) and the cwd markdown. Later **`deepen`** (§11.5) appends versioned siblings (`<preparedId>.v2.json`, …) without touching v1.
+Provenance is by file name only (`sourcePrepared` → `prepared/<id>.json` → `reports/<id>.json`); no commit hashes. **`version`** is `1` for the initial `final` (finish-chain cursor — not `schemaVersion`; see §1.5). **Extension mode** (new prepared after incremental commits) appends `<preparedId>.vN.json` like **`deepen`** — prior versions are never overwritten. In extension mode the finish record also sets **`sourcePreviousFinish`** to the prior archive file name. **`deepen`** (§11.5) uses the same version cursor and cumulative `answers[]` semantics without re-running `report`/`prepare`.
 
 ### Voice & honesty
 
@@ -1180,15 +1292,15 @@ The Role Narrative bullets are interpretation informed by human answers — they
 
 ## 11.5 Narrative extension (`deepen`)
 
-Optional step **after `final`**. It does **not** re-run `report` or `prepare`. It extends the latest finish archive with **four new follow-up questions**, human answers, a refined **Your IMPACT** narrative, and an updated Role Narrative — producing a **new versioned** finish record and markdown **without overwriting** the prior `final`.
+Optional step **after `final`**. It does **not** re-run `report` or `prepare`. It extends the latest finish archive with **four new follow-up questions**, human answers, a refined **Your IMPACT** narrative, and an updated Role Narrative — producing a **new versioned** finish record and markdown **without overwriting** the prior `final`. The same **cumulative Q&A + version append** pattern also applies when **`final`** runs in **extension mode** after an incremental `run` (new report → new prepared); see §11.
 
 `deepen` is **interactive** (recalled context + four new Q&A). It is **not** part of `run`.
 
 ### Inputs (via provenance chain)
 
 1. **Latest finish archive** — `~/.workgraph/data/repos/<repo-id>/finish/<preparedId>.json` (or `<preparedId>.vN.json` if a prior `deepen` exists). The loader picks the record with the highest **`version`** cursor.
-2. **Prepared record** — loaded via `finish.sourcePrepared` → `prepared/<reportId>.json` (for `model.history`, `signalReasons`, prepared questions).
-3. **Report** — loaded via `finish.sourceReport` → `reports/<reportId>.json` (for `model.questions` as context only).
+2. **Prepared record** — loaded via `finish.sourcePrepared` → `prepared/<reportId>.json` (for `model.history`, `signalReasons`, `model.questionsAnalyses`).
+3. **Report** — loaded via `finish.sourceReport` → `reports/<reportId>.json` (for `model.questionsAnalyses` as context only).
 4. **Project context** — `project.json` (role, `story.preparedContext`, `profile`) in every LLM system prompt.
 
 `deepen` does **not** read groups, commits, or evidence files directly — only through the finish → prepared → report file chain (same provenance as `final`).
@@ -1213,21 +1325,23 @@ Prompt the user (multi-line editor) for **non-code context** they remembered abo
 
 This is **starting context**, not proof. It shapes the four new questions and the refined narrative but must not inflate impact unless the user stated it explicitly.
 
-### Step 2 — Four new follow-up questions (one LLM session, `narrativeModel`)
+### Step 2 — Four new follow-up questionsAnalyses (one LLM session, `narrativeModel`)
 
 Given:
 
 * **project context block** (§0);
 * **recalled context** from step 1;
 * **combined history** (prepare baseline + prior final history);
-* report `model.questions`, prepared `model.questions`, and **all prior Q&A** from the finish record;
+* report `model.questionsAnalyses`, prepared `model.questionsAnalyses` (as flattened question strings for context), and **all prior Q&A** from the finish record;
 * prepared `signalReasons`.
 
-Produce exactly **four new** role-aware questions that:
+Produce up to **four new** `questionsAnalyses` entries (aggregated shape) whose `question` strings are role-aware follow-ups that:
 
 * target gaps **still** not covered after prior Q&A and the recalled context;
 * do **not** repeat, rephrase, or narrow the same angle as any prior question;
 * follow the same role-aware rules as `prepare` (§8, §10).
+
+The CLI derives the four interactive question strings from the result via `flattenQuestions()`.
 
 ### Step 3 — Collect answers to the four new questions (interactive, no model)
 
@@ -1282,6 +1396,7 @@ Same fields as §11 step 4, plus:
 
 ```json
 {
+  "schemaVersion": 1000000,
   "finishId": 1759696393,
   "version": 2,
   "sourcePrepared": "1759696393.json",
@@ -1299,12 +1414,12 @@ Same fields as §11 step 4, plus:
 }
 ```
 
-* **`version`** — monotonic cursor (`1` = initial `final`; each `deepen` increments).
+* **`version`** — monotonic **finish-chain** cursor (`1` = initial `final`; each `deepen` **or** extension `final` increments). Not the CLI package semver — see **`schemaVersion`** (§1.5).
 * **`sourcePreviousFinish`** — file name of the finish record this version extended.
 * **`recalledContext`** — non-code context from step 1 (omitted if empty).
-* **`answers`** — **cumulative** (all rounds); after first `deepen`, length is 8.
+* **`answers`** — **cumulative** (all rounds); after first `deepen`, length is 8; after extension `final` with a prior v10 finish, length is prior count + new answers (e.g. 44 → 48).
 
-Re-running `deepen` against the **latest** finish produces the next version (`v3`, …). If the next version file already exists for the current latest, skip unless `--force`.
+Re-running `deepen` against the **latest** finish produces the next version (`v3`, …). If the next version file already exists for the current latest, skip.
 
 ### Voice & honesty
 
@@ -1328,8 +1443,8 @@ The MVP is successful if grouped summaries remind the user of forgotten work and
 - project areas are detected deterministically
 - useful questions are generated (especially at group level)
 - top areas and forgotten-work candidates look meaningful to the user
-- `prepare` produces a readable unified history and four role-aligned questions from the final report
-- `final` collects human responses to the prepared questions and writes `RECONSTRUCTION.<project>.md` with a four-bullet Role Narrative
+- `prepare` produces a readable unified history and up to four role-aligned `questionsAnalyses` entries from the final report
+- `final` collects human responses (up to four new questions per round; cumulative Q&A in extension mode) and writes `RECONSTRUCTION.<project>.md` (or `.vN.md`) with a four-bullet Role Narrative
 - `deepen` extends the latest finish with recalled non-code context, four new questions, cumulative Q&A, and a versioned finish archive (`*.v2.json`, …) without overwriting v1
 
 **Strong success criteria:**
@@ -1404,18 +1519,18 @@ A repo's analysis lives in two places: the data directory `~/.workgraph/data/rep
 
 ```
 <repo-id>/…           # the whole data directory
-manifest.json         # { version, repoId, repoPath, exportedAt, config }
+manifest.json         # { schemaVersion, repoId, repoPath, exportedAt, config }
 ```
 
-`manifest.config` is the repo's `config.json` entry. `export <repo> [--output <path>]` writes `./<repo-id>.workgraph.tar.gz` by default (uses the system `tar`).
+`manifest.config` is the repo's `config.json` entry. `manifest.schemaVersion` is the encoded CLI semver that produced the bundle (§1.5). `export <repo> [--output <path>]` writes `./<repo-id>.workgraph.tar.gz` by default (uses the system `tar`).
 
-`import <bundle.tar.gz> [--repo <path>] [--force]` unpacks the data directory back under `~/.workgraph/data/repos/` and **adds or updates** the repo's `config.json` entry from the manifest. By default it restores to the manifest's original `repoId`/path; `--repo <path>` re-targets the data under a different repo path (recomputing the data-dir id), and `--force` overwrites an existing data directory. Provenance throughout is by file name, never commit hashes.
+`import <bundle.tar.gz> [--repo <path>]` unpacks the data directory back under `~/.workgraph/data/repos/` and **adds or updates** the repo's `config.json` entry from the manifest. By default it restores to the manifest's original `repoId`/path; `--repo <path>` re-targets the data under a different repo path (recomputing the data-dir id). If data already exists for the target repo, `import` errors — remove the existing data directory manually before importing. Provenance throughout is by file name, never commit hashes.
 
 ### `run` — unattended pipeline
 
 `check` is a standalone preflight: it verifies the Ollama server is reachable and has at least one model, and otherwise prints OS-specific install help (macOS: `brew install ollama`; Linux: `curl -fsSL https://ollama.com/install.sh | sh`) plus `ollama pull` suggestions; it also flags any saved `commitModel`/`reportModel`/`narrativeModel` that is no longer installed. `run` invokes the same check as a **preflight** and aborts before prompting if Ollama is not ready.
 
-`run` is an orchestrator that **gathers every upfront input first** (after the Ollama preflight), then executes `init → evidence → summarize → commit-group → report → prepare` without further prompts, and finishes with **`final`** which asks the four prepared questions interactively. Upfront it asks only for what is missing (unless `--force` re-gathers all): the three models (below), developer role + project story (if `project.json` is absent), author identities (if none saved), and the group-threshold days (if not saved). Each unattended stage runs with those values passed as flags. Stages skip work that is already done (append-only / resume), so `run` is safe to re-run; on re-run `final` reuses saved answers unless `--force`. `final` can also be run on its own at any time. **`deepen`** is a separate post-`final` step (§11.5) — not invoked by `run`.
+`run` is an orchestrator that **gathers every upfront input first** (after the Ollama preflight), then executes `init → evidence → summarize → commit-group → report → prepare` without further prompts, and finishes with **`final`** which asks the four prepared questions interactively. Upfront it asks only for what is missing: the three models (below), developer role + project story (if `project.json` is absent), author identities (if none saved), and the group-threshold days (if not saved). Each unattended stage runs with those values passed as flags. Stages skip work that is already done (append-only / resume / extension groups), so `run` is safe to re-run after new commits. On re-run, `evidence` and `summarize` process only new commits; `commit-group` writes **extension groups** for uncovered commits (§4); `report` resumes the fold chain; `prepare` runs for a new `reportId`; **`final`** enters **extension mode** when a finish with answers exists and the prepared file is new — asks up to four new questions, merges cumulative Q&A, and appends `finish` vN. On the **same** prepared, `final` reuses saved answers. `final` can also be run on its own. **`deepen`** is a separate post-`final` step (§11.5) — not invoked by `run`.
 
 ### Three models (commit-level vs report-level vs narrative)
 
@@ -1429,9 +1544,14 @@ Each command seeds its picker from its own slot, falling back through the more g
 
 ### Resilience
 
-- **JSON validation:** every LLM call (`chatJson`) passes a JSON Schema via Ollama's `format` parameter; the response is extracted from raw text (markdown fences tolerated), parsed, and schema-validated before acceptance (`parseAndValidateModelJson` in `src/lib/json-response.ts`).
-- **Retries:** every LLM call retries up to **3 attempts** with backoff on HTTP/transport/parse/**validation** failure; after exhaustion the stage records the item as failed and the pipeline continues.
-- **`report` resume:** each fold writes `reports/<timestampEnd>.json`, so a re-run (without `--force`) loads the longest existing prefix and **continues from the next group** instead of restarting. Adding new groups later extends the chain incrementally.
+- **JSON validation:** every LLM call (`chatJson` in `src/lib/ollama.ts`) passes a JSON Schema via Ollama's `format` parameter; the response is extracted from raw text (markdown fences tolerated), parsed, and schema-validated before acceptance (`parseAndValidateModelJson` in `src/lib/json-response.ts`). Requests use `think: false`.
+- **Retries:** every LLM call retries up to **3 attempts** with backoff on HTTP/transport, parse, validation, or **truncated output** (`done_reason === "length"`). On each attempt both limits escalate in parallel:
+  - **`num_ctx`** (total context window): **16384** → **32768** → **65536**
+  - **`num_predict`** (output cap): **8192** → **16384** → **-1** (no output cap on the last try; still bounded by remaining `num_ctx` after the prompt)
+  Retry lines log the next `num_ctx` and `num_predict`. After exhaustion the stage throws and the pipeline stops at that item.
+- **`report` resume:** each fold writes `reports/<timestampEnd>.json`, so a re-run loads the longest existing prefix and **continues from the next group** instead of restarting. Adding new groups later extends the chain incrementally.
+- **`commit-group` extension:** on re-run, subtracts commits already in summarized groups and writes **extension groups** for uncovered tails only (§4).
+- **`final` extension:** when latest prepared ≠ prior `sourcePrepared`, loads `latestFinish()` cumulative `answers`, asks new questions only (deduped), appends next finish version (§11).
 
 ### Implementation notes (as built)
 
@@ -1441,12 +1561,12 @@ Each command seeds its picker from its own slot, falling back through the more g
 - **Data layout** is namespaced per repository: `~/.workgraph/data/repos/<repo-id>/{project.json,commits/...,groups/...,reports/...,prepared/...}`. A **review period** (§0.5) nests the same sub-tree under `periods/<id>/`; all path helpers take an optional `period` argument.
 - **Project context block** — role + `story.preparedContext` + `profile` injected into every LLM prompt in `summarize`, `commit-group`, and `report`.
 - **Noise filter** and **area detection** are deterministic, shared library modules.
-- **Model layer** is generated by a local Ollama model (chosen interactively, remembered) using structured JSON output with post-response extract/parse/schema validation; the signal-without-reason rule is enforced after generation.
+- **Model layer** is generated by a local Ollama model (chosen interactively, remembered) using `chatJson` structured JSON output with post-response extract/parse/schema validation and escalating `num_ctx` / `num_predict` on retry (§14 Resilience); the signal-without-reason rule is enforced after generation.
 - **Report provenance** — cumulative group files in root-level `sourceGroups`; per-entry provenance in `deterministic.historySource` parallel to `history` (same length, same indices); legacy formats are read for backward compatibility.
-- `prepare` reads the latest report + `project.json`, runs three `narrativeModel` sessions (compose history, collapse reasons, reframe questions), writes `prepared/<reportId>.json`.
-- `final` reads the latest `prepared/<reportId>.json` + `project.json`, presents four prepared questions, persists Q&A to the prepared record, runs two `narrativeModel` sessions (refine the "Your IMPACT" narrative with the answers, then the four-bullet Role Narrative), writes `RECONSTRUCTION.<project>.md` to **cwd**, and archives a copy + a linking JSON record under `finish/<preparedId>.{md,json}` (`version: 1`).
+- `prepare` reads the latest report + `project.json`, runs four `narrativeModel` sessions (compose history, clean technologies, collapse reasons, reframe questionsAnalyses with **prior finish Q&A** when present), writes `prepared/<reportId>.json`.
+- `final` reads the latest `prepared/<reportId>.json` + `project.json`, collects Q&A (four on first run; **extension mode** merges prior finish `answers` + up to four new questions), persists cumulative Q&A to the prepared record, runs two `narrativeModel` sessions (refine IMPACT — combined history in extension mode — then Role Narrative over **all** Q&A), writes `RECONSTRUCTION.<project>.md` or `.vN.md` to **cwd**, and archives under `finish/<preparedId>.{md,json}` or `<preparedId>.vN.{md,json}` (`version` 1 or N+1).
 - **`deepen`** reads the **latest** finish (highest `version`), follows `sourcePrepared` / `sourceReport`, collects **recalled non-code context**, generates four new questions (`narrativeModel`), collects four new answers, refines IMPACT + Role Narrative over **combined history** (prepare baseline + prior final history) and **cumulative Q&A**, writes `RECONSTRUCTION.<project>.vN.md` to cwd, and appends `finish/<preparedId>.vN.{md,json}` without overwriting prior versions. Not part of `run`.
-- `init`, `evidence`, `summarize`, and `commit-group` are **append-only** with a `--force` override; `report` is **resumable**; `prepare` is **idempotent per report** (`--force` to regenerate); `final` overwrites v1 on `--force`; `deepen` is **append-only per version** (`--force` to create the next version when the next file already exists).
+- `init`, `evidence`, `summarize`, and `commit-group` are **append-only** (`commit-group` uses **extension groups** on incremental re-run); `report` is **resumable**; `prepare` is **idempotent per report**; `final` reuses saved answers on the same prepared or **appends vN** in extension mode; `deepen` is **append-only per version** (skips when the next version file already exists).
 - **`groupThresholdDays`** and **`groupMaxCommits`** (0 = unlimited) are persisted per repo in config; `commit-group` prompts for both on first run (`--days`, `--max-commits` skip the prompts).
 
 ⸻
@@ -1467,12 +1587,14 @@ group histories/signals  = interpretation over a session (may be wrong, must cit
 groups.tiers + context   = signal-weighted membership (low de-emphasized in group history)
 report                   = cumulative narrative (fold over sessions: merge, dedup, demote-only; history[i] ↔ deterministic.historySource[i])
 prepared narrative       = role-aligned distillation of the final report (human deliverable)
-questions                = missing human context (the primary product; role-aware; 4 in prepared)
-human answers            = recovered context (confirmed by the user in `final`; cumulative in `deepen`)
+questionsAnalyses        = reasoned open threads (observation + missingPiece + question); primary stored form at every stage
+human-facing questions   = `question` strings derived in code (`flattenQuestions`) for `final` / `deepen` Q&A (up to 4 per round in prepared)
+schemaVersion            = encoded CLI package semver on every pipeline JSON artifact (§1.5)
+human answers            = recovered context (confirmed in `final`; cumulative across `deepen` and extension `final`)
 role narrative           = four impact bullets (interpretation grounded in prepare output + answers)
 RECONSTRUCTION.<project>.md      = final personal artifact from `final` (cwd; v1)
-RECONSTRUCTION.<project>.vN.md   = deepened artifact from `deepen` (append-only versions)
-finish archive           = versioned JSON + md under finish/ (provenance chain; `version` cursor)
+RECONSTRUCTION.<project>.vN.md   = versioned artifact from `deepen` or extension `final` (append-only)
+finish archive           = versioned JSON + md under finish/ (provenance chain; finish-chain `version` cursor + `schemaVersion`)
 graph (deferred)         = relationships between all of them
 ```
 
@@ -1484,13 +1606,55 @@ The system must **never overclaim impact, ownership, or production usage.** It r
 
 Reason:
 
-Added **`deepen`** (§11.5): optional post-`final` extension that loads the latest finish → prepared → report chain, collects **recalled non-code context**, generates **four new** role-aware questions (`narrativeModel`), merges answers into a **cumulative** Q&A list (8, 12, …), refines IMPACT from **combined history** (prepare baseline + prior final history) + all Q&A, writes **versioned** `RECONSTRUCTION.<project>.vN.md` and `finish/<preparedId>.vN.{md,json}` without overwriting v1. Implemented in `src/actions/deepen.ts`, `src/lib/finish-load.ts`, and deepen prompts in `src/lib/prompts.ts`.
+**Removed `--force` from the CLI.** The pipeline is strictly append-only, resumable, and idempotent. Stages skip existing work on re-run; to rebuild a stage, delete its artifacts manually (e.g. remove `project.json`, a prepared file, or the target data directory before `import`). Removed from all commands (`init`, `evidence`, `summarize`, `commit-group`, `report`, `prepare`, `final`, `deepen`, `run`, `import`) and from `package.json` dev scripts. Documented in §0–§14.
+
+---
+
+### Change history (Ollama output limits)
+
+**Ollama `chatJson` retries with escalating `num_ctx` and `num_predict`.** Large JSON responses (especially `report` merge on long fold chains) could fail with truncated output (`unclosed JSON object` / `done_reason: length`). Every `chatJson` call retries up to **3** times; each attempt raises both the context window and the output cap: **`num_ctx` 16384 → 32768 → 65536** and **`num_predict` 8192 → 16384 → -1**. Truncation is detected explicitly and retried. Implemented in `src/lib/ollama.ts`; documented in §14 Resilience.
+
+Documented escalating `num_ctx` and `num_predict` on `chatJson` retry (§3 summarize cross-ref, §14 Resilience). Prior "Last change" (extension groups + cumulative Q&A) remains in change history below.
+
+---
+
+### Change history (incremental pipeline)
+
+Reason (prior release):
+
+**Incremental pipeline: extension groups + cumulative Q&A in `final`.** On re-run after new commits (without `--force`): `commit-group` writes **extension groups** containing only commits not yet covered by existing summarized groups (§4) — avoiding duplicate supersets when the last work session grows. `prepare` step 6 receives **prior Q&A** from `latestFinish()` so new questions target uncovered threads. When a finish with answers exists and a **new** prepared record appears, `final` enters **extension mode**: load cumulative `answers` from the latest finish (e.g. v10), ask up to **four new** questions (deduped by normalized text), merge into one list (e.g. 44+4), refine IMPACT with combined prepare + prior finish history, append **`finish` vN+1** and `RECONSTRUCTION.<project>.vN+1.md` without overwriting prior versions (§11). Same version cursor as `deepen` (§11.5). Implemented in `src/lib/grouping.ts` (`coveredCommitHashes`, `extensionSessions`), `src/actions/commit-group.ts`, `src/actions/prepare.ts`, `src/actions/final.ts`, `src/lib/qa.ts`, `src/lib/prompts.ts` (`buildPrepareQuestionsPrompt` prior Q&A).
+
+Documented extension groups (§4), prepare prior Q&A input (§10), `final` extension mode + cumulative Q&A (§11), shared finish versioning with `deepen` (§11.5), `run` / resilience / implementation notes (§14), core principle (§15). Supersedes the prior "Last change" pointer for changelog only — §1.5 `schemaVersion` remains current.
+
+---
+
+### Change history (schema versioning)
+
+**JSON `schemaVersion` on every pipeline artifact.** Each JSON file the CLI writes (`commits`, `groups`, `reports`, `project.json`, `prepared`, `finish`, export `manifest.json`) now carries **`schemaVersion`**: the package semver from `package.json` encoded as `major × 1_000_000 + minor × 1_000 + patch` (e.g. `1.0.0` → `1000000`). Generated at build into `src/lib/version.ts` (`VERSION`); stamped on write via `writeRecordJson()` / `stampSchemaVersion()`. Legacy files without the field remain readable. Distinct from **`FinishRecord.version`** (finish-chain cursor for `deepen` and extension `final`). Documented in §1.5; implemented in `scripts/generate-version.ts`, `src/lib/semver-version.ts`, `src/lib/record-io.ts`, and all pipeline write paths.
+
+---
+
+### Change history (schema versioning)
+
+Added §1.5 and `schemaVersion` across JSON schema examples. Supersedes export manifest field `version` → `schemaVersion`.
+
+---
+
+### Change history (reasoned questions + report merge)
+
+Documented the **reasoned-question-only** model (no flat `questions`), **`flattenQuestions()`** for interactive Q&A, and the strengthened **report merge** rules for `questionsAnalyses` (thread identity from `missingPiece`, one best question per thread, value ranking, cap with most-important-first). Supersedes the prior "Last change" entry that described a parallel flat `questions` list at every stage.
 
 ---
 
 ### Change history (deepen)
 
 Documented and built **`deepen`** (§11.5, Goal Q8): after `final`, extend the reconstruction with recalled non-code context, four new follow-up questions, cumulative Q&A, refined IMPACT + Role Narrative, and **append-only** finish versioning (`<preparedId>.json` → `<preparedId>.v2.json`, …). History input = `prepared.model.history` + prior `finish.history`. CLI flags: `--context-file`, `--answers-file`, `--force`, `--period`. Not part of `run`. Updated §8, §11 finish `version`, §12 success criteria, §14 command flow + `narrativeModel` scope, §15 core principle.
+
+---
+
+### Change history (reasoned-question layer)
+
+Added per-commit **`questionsAnalysis`** and aggregated **`questionsAnalyses`** at group/report level — `{ observation, missingPiece, question }` threaded through `summarize`, `commit-group`, and `report`. (Later superseded: the parallel flat `questions` field was removed; see "Last change" above.)
 
 ---
 
@@ -1502,7 +1666,7 @@ Added **review periods** (§0.5) so the pipeline can run over an annual/periodic
 
 ### Change history (export/import)
 
-Added **`export`** and **`import`** commands (§14, "Portability" subsection) to move a repo's accumulated analysis between machines. `export <repo>` bundles the data directory `~/.workgraph/data/repos/<repo-id>/` plus the repo's `config.json` entry (which lives outside the data dir) into a `<repo-id>.workgraph.tar.gz` (a `manifest.json` carries `{version, repoId, repoPath, exportedAt, config}`; uses the system `tar`). `import <bundle> [--repo <path>] [--force]` unpacks the data dir back and **adds/updates** the repo's config entry from the manifest; `--repo` re-targets to a different repo path (recomputing the data-dir id), `--force` overwrites existing data. Added the `repoDataDir()` helper. Side fix: `~/.workgraph/config.json` was hand-edited into invalid JSON (missing the brace closing `repos` before `ollama`), which `loadConfig()` silently swallowed → all saved settings were being ignored; repaired (backup at `config.json.bak`).
+Added **`export`** and **`import`** commands (§14, "Portability" subsection) to move a repo's accumulated analysis between machines. `export <repo>` bundles the data directory `~/.workgraph/data/repos/<repo-id>/` plus the repo's `config.json` entry (which lives outside the data dir) into a `<repo-id>.workgraph.tar.gz` (a `manifest.json` carries `{schemaVersion, repoId, repoPath, exportedAt, config}`; uses the system `tar`). `import <bundle> [--repo <path>] [--force]` unpacks the data dir back and **adds/updates** the repo's config entry from the manifest; `--repo` re-targets to a different repo path (recomputing the data-dir id), `--force` overwrites existing data. Added the `repoDataDir()` helper. Side fix: `~/.workgraph/config.json` was hand-edited into invalid JSON (missing the brace closing `repos` before `ollama`), which `loadConfig()` silently swallowed → all saved settings were being ignored; repaired (backup at `config.json.bak`).
 
 ---
 
@@ -1538,7 +1702,7 @@ Renamed the **`export`** command to **`evidence`** (§2): `dev-workgraph evidenc
 
 ### Change history #5
 
-`prepare` now prints a **console preview** after writing its record (§10, Step 6): the unified `history` as one block, then the four numbered `questions`. This makes the upcoming `final` step transparent — the user sees the reconstructed narrative and exactly which questions they will be asked before running `final`.
+`prepare` now prints a **console preview** after writing its record (§10, Step 7): the unified `history` as one block, then up to four numbered question strings derived from `questionsAnalyses`.
 
 ---
 
@@ -1581,7 +1745,7 @@ Added **`answers`** (now **`final`**, §11) as the final pipeline step. Interact
 
 ### Change history #11
 
-Added **`prepare`** (§10): reads the **latest report**, concatenates `history[]` entries (newline-separated), then three `reportModel` LLM sessions — (1) compose a single role-aligned `history` using `project.json` context, (2) collapse `signalReasons` into exactly **four** bullets, (3) reframe exactly **four** role-aware `questions`. Signals and `changeTypes` are copied from the report unchanged. Output: `data/repos/<repo-id>/prepared/<reportId>.json`. Updated Goal (question 6), §8, §11 success criteria, §13 command flow (`prepare` after `report`, `run` includes `prepare`), §14 core principle. Renumbered §10–§13 → §11–§14.
+Added **`prepare`** (§10): reads the **latest report**, concatenates `history[]` entries (newline-separated), then `narrativeModel` LLM sessions — compose unified `history`, clean `technologies`, collapse `signalReasons` into four bullets, reframe `questionsAnalyses`. Signals and `changeTypes` copied from the report. Output: `prepared/<reportId>.json`. (Later: flat `questions` removed; see "Last change".)
 
 ---
 
@@ -1606,7 +1770,7 @@ Built **`init`** and the **`run`** orchestrator, plus resilience and a two-model
 - **`init`** (§0) implemented: role + project story → two LLM sessions (prepared context, project profile) → `project.json`; project-context block injected into every later LLM prompt.
 - **`run`** — gathers all inputs upfront (two models, role+story, authors, group days), then runs `init → export → summarize → commit-group → report` unattended; only asks for what is missing unless `--force`.
 - **Two models:** `commitModel` (`summarize`, `commit-group`) and `reportModel` (`init`, `report`), remembered separately under `ollama` in config; each command seeds from its slot, `--model` overrides.
-- **Retries:** `chatJson` retries up to 3 attempts with backoff on HTTP/parse failure.
+- **Retries:** `chatJson` retries up to 3 attempts with backoff on HTTP/parse failure (later: escalating `num_ctx` / `num_predict` — see §14 Resilience).
 - **`report` resume:** re-runs continue from the longest existing report-file prefix instead of restarting.
 
 Built so far: `init`, `authors`, `export`, `summarize`, `commit-group`, `report`, `run`. Next: `ask`.

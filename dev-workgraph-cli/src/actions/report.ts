@@ -7,6 +7,7 @@ import { loadConfig, repoGroupsDir, repoReportsDir, setOllamaConfig } from "../l
 import { resolveRepo } from "../lib/git.js";
 import { loadGroupRecords, mergeDeterministic } from "../lib/grouping.js";
 import {
+  cleanQuestionAnalyses,
   maxSignal,
   mergeTechnologies,
   reportHistoryJsonSchema,
@@ -31,6 +32,7 @@ import {
   ROUTINE_CHECK_SYSTEM,
   withProjectContext,
 } from "../lib/prompts.js";
+import { writeRecordJson } from "../lib/record-io.js";
 import type {
   GroupRecord,
   ReportHistoryEntry,
@@ -55,8 +57,6 @@ export interface ReportOptions {
   url?: string;
   /** Model name; skips the interactive picker. */
   model?: string;
-  /** Rebuild the report chain even if a final report already exists. */
-  force?: boolean;
   /** Only fold the first N groups (useful for trials). */
   limit?: number;
   /** Operate on a defined review period's data instead of the repo's all-time data. */
@@ -84,11 +84,7 @@ function ensureMaintenanceBullet(low: string[]): string[] {
 }
 
 function writeReport(reportsDir: string, record: ReportRecord): void {
-  fs.writeFileSync(
-    path.join(reportsDir, `${record.reportId}.json`),
-    `${JSON.stringify(stripLegacyProvenance(record), null, 2)}\n`,
-    "utf8",
-  );
+  writeRecordJson(path.join(reportsDir, `${record.reportId}.json`), stripLegacyProvenance(record));
 }
 
 /** Seeds a report from the first group (no merge needed). */
@@ -116,7 +112,7 @@ function initReport(
         architecture: nonEmpty(g?.signalReasons.architecture),
         security: nonEmpty(g?.signalReasons.security),
       },
-      questions: g?.questions ?? [],
+      questionsAnalyses: g?.questionsAnalyses ?? [],
       confidence: g?.confidence ?? "low",
       hiContext: g?.hiContext ?? [],
       mediumContext: g?.mediumContext ?? [],
@@ -160,26 +156,22 @@ export async function report(options: ReportOptions): Promise<void> {
 
   // Resume: each fold writes reports/<group.timestampEnd>.json, so the existing
   // files form a prefix of `selected`. Load the longest existing prefix and
-  // continue from the next group (unless --force rebuilds the whole chain).
+  // continue from the next group.
   let current: ReportRecord | null = null;
   let startIndex = 0;
-  if (!options.force) {
-    for (let i = 0; i < selected.length; i += 1) {
-      const f = path.join(reportsDir, `${selected[i]?.record.timestampEnd}.json`);
-      if (!fs.existsSync(f)) break;
-      const loaded = JSON.parse(fs.readFileSync(f, "utf8")) as ReportRecord;
-      current = {
-        ...loaded,
-        history: historyTextsOnly(loaded.history),
-      };
-      startIndex = i + 1;
-    }
+  for (let i = 0; i < selected.length; i += 1) {
+    const f = path.join(reportsDir, `${selected[i]?.record.timestampEnd}.json`);
+    if (!fs.existsSync(f)) break;
+    const loaded = JSON.parse(fs.readFileSync(f, "utf8")) as ReportRecord;
+    current = {
+      ...loaded,
+      history: historyTextsOnly(loaded.history),
+    };
+    startIndex = i + 1;
   }
 
   if (startIndex >= selected.length && current) {
-    console.log(
-      `Report already complete (${path.join(reportsDir, `${current.reportId}.json`)}). Use --force to rebuild.`,
-    );
+    console.log(`Report already complete (${path.join(reportsDir, `${current.reportId}.json`)}).`);
     return;
   }
 
@@ -315,7 +307,10 @@ async function foldGroup(
       architecture: cap(asStringArray(reasons.architecture)),
       security: cap(asStringArray(reasons.security)),
     },
-    questions: cap(asStringArray(merged.questions)),
+    questionsAnalyses: cleanQuestionAnalyses(merged.questionsAnalyses).slice(
+      0,
+      MAX_CONTEXT_BULLETS,
+    ),
     confidence: (merged.confidence as Signal) ?? prev.model.confidence,
     ...contexts,
     provenance: { model, generatedAt },
