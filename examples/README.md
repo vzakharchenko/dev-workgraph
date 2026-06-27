@@ -1,8 +1,14 @@
 # Example reconstructions
 
-Sample **`RECONSTRUCTION.<project>.md`** files produced by [dev-workgraph](../dev-workgraph-cli/) on real repositories. They are **not** hand-written CV text — each file is the CLI output after Git evidence extraction, local LLM passes, interactive Q&A (`final`), and optionally **`deepen`**.
+Sample **`RECONSTRUCTION.<project>.md`** files from [dev-workgraph](../README.md) — a career story you can defend for a performance review, a CV, or interview prep.
 
-Use them to see what a performance-review / CV narrative looks like when it is grounded in commits, signals, and confirmed answers rather than a generic prompt.
+Each file is **CLI output**, not hand-written CV text: Git evidence → local LLM passes → your answers at **`final`** → optionally **`deepen`**. Claims are tied to commits, signals, and what **you** confirmed — not a generic ChatGPT prompt. The tool does **not** invent customer impact or production usage unless you stated it in an answer.
+
+| You need to see… | Look for in each file |
+|------------------|------------------------|
+| **Performance review** | **Your IMPACT**, role narrative bullets, technologies |
+| **CV / resume** | Four **CV bullets** with stack and architecture keywords from the repo |
+| **Interview prep** | Narrative of what was built + **Possible questions** with grounded answers |
 
 | Suffix | Meaning |
 |--------|---------|
@@ -11,22 +17,22 @@ Use them to see what a performance-review / CV narrative looks like when it is g
 
 Files here are **copies for documentation**; your own runs write `RECONSTRUCTION.*.md` to the directory where you invoke the CLI.
 
-Runs referenced in the root [README](../README.md) used a **MacBook Pro M4 Pro (48 GB)** and local Ollama (`qwen2.5-coder:14b` / `gpt-oss:latest` / `gemma4:31b`).
+Runs used a **MacBook Pro M4 Pro (48 GB)** and local Ollama: `qwen2.5-coder:14b` / `gpt-oss:latest` / `gemma4:31b`. See [Quick start](../README.md#quick-start) and [`dev-workgraph-cli/README.md`](../dev-workgraph-cli/README.md) for install and commands.
 
 ---
 
 ## [Forge Secure Notes for Jira](Forge-Secure-Notes-for-Jira/)
 
-**Repository:** [github.com/ForgeRock/Forge-Secure-Notes-for-Jira](https://github.com/ForgeRock/Forge-Secure-Notes-for-Jira)
+**Repository:** [github.com/ForgeRock/Forge-Secure-Notes-for-Jira](https://github.com/ForgeRock/Forge-Secure-Notes-for-Jira) · **Role:** Principal Developer
 
 Zero-trust Jira Forge app for sharing ephemeral encrypted notes inside issues — client-side AES-GCM, out-of-band key exchange, Forge SQL + KVS split storage, JSM portal support, Rovo AI analytics with AST validation.
 
-| File | Role | Notes |
-|------|------|--------|
-| [RECONSTRUCTION.Forge-Secure-Notes-for-Jira.md](Forge-Secure-Notes-for-Jira/RECONSTRUCTION.Forge-Secure-Notes-for-Jira.md) | Principal Developer | v1 after `final` |
-| [RECONSTRUCTION.Forge-Secure-Notes-for-Jira.v2.md](Forge-Secure-Notes-for-Jira/RECONSTRUCTION.Forge-Secure-Notes-for-Jira.v2.md) | Principal Developer | v2 after `deepen` — adds recalled context on email sharing vs decryption keys |
+| File | Notes |
+|------|--------|
+| [RECONSTRUCTION.Forge-Secure-Notes-for-Jira.md](Forge-Secure-Notes-for-Jira/RECONSTRUCTION.Forge-Secure-Notes-for-Jira.md) | v1 after `final` |
+| [RECONSTRUCTION.Forge-Secure-Notes-for-Jira.v2.md](Forge-Secure-Notes-for-Jira/RECONSTRUCTION.Forge-Secure-Notes-for-Jira.v2.md) | v2 after `deepen` — recalled context on email sharing vs decryption keys |
 
-**Scale:** ~**300 commits** in the analyzed history; unattended pipeline stages took **~6 hours** on the hardware above before interactive questions.
+**Scale:** ~**300 commits**; unattended stages **~6 hours** before interactive questions on the hardware above.
 
 Good reference for a **large, security-heavy product repo** — architectural steering, encryption boundaries, CI/CD, and long-form Q&A under **Possible questions**.
 
@@ -34,14 +40,14 @@ Good reference for a **large, security-heavy product repo** — architectural st
 
 ## [keycloak-radius-plugin](keycloak-radius-plugin/)
 
-**Repository:** [github.com/vzakharchenko/keycloak-radius-plugin](https://github.com/vzakharchenko/keycloak-radius-plugin)
+**Repository:** [github.com/vzakharchenko/keycloak-radius-plugin](https://github.com/vzakharchenko/keycloak-radius-plugin) · **Role:** Staff Developer (open-source IAM)
 
 Open-source Java plugin that embeds a RADIUS server in Keycloak — RadSec, CoA, OTP/WebAuthn, vendor SPI (Mikrotik, Cisco, ChilliSpot), Docker/CI releases, and continuous migration across Keycloak 9.x–26.x (WildFly → Quarkus).
 
-| File | Role | Notes |
-|------|------|--------|
-| [RECONSTRUCTION.keycloak-radius-plugin.md](keycloak-radius-plugin/RECONSTRUCTION.keycloak-radius-plugin.md) | Staff Developer | v1 after `final` |
-| [RECONSTRUCTION.keycloak-radius-plugin.v2.md](keycloak-radius-plugin/RECONSTRUCTION.keycloak-radius-plugin.v2.md) | Staff Developer | v2 after `deepen` — open-source adoption, release flow, Mikrotik/Hetzner validation vs community vendor integrations |
+| File | Notes |
+|------|--------|
+| [RECONSTRUCTION.keycloak-radius-plugin.md](keycloak-radius-plugin/RECONSTRUCTION.keycloak-radius-plugin.md) | v1 after `final` |
+| [RECONSTRUCTION.keycloak-radius-plugin.v2.md](keycloak-radius-plugin/RECONSTRUCTION.keycloak-radius-plugin.v2.md) | v2 after `deepen` — open-source adoption, release flow, Mikrotik/Hetzner validation vs community vendor integrations |
 
 Good reference for a **long-lived open-source infrastructure project** — protocol design, platform migrations, extensibility (SPI), and honest scope in answers (what you validated vs what the community contributed).
 
@@ -49,20 +55,30 @@ Good reference for a **long-lived open-source infrastructure project** — proto
 
 ## [dev-workgraph](dev-workgraph/)
 
-**Repository:** [github.com/vzakharchenko/dev-workgraph](https://github.com/vzakharchenko/dev-workgraph) (this monorepo)
+**Repository:** [github.com/vzakharchenko/dev-workgraph](https://github.com/vzakharchenko/dev-workgraph) (this monorepo) · **Role:** Staff Developer
 
-The CLI that produced these examples — evidence pipeline, schema versioning, finish question files, Q&A feedback loop, token usage tracking, Vitest coverage.
+The CLI that produced these examples — evidence pipeline, schema versioning, finish question files, Q&A feedback loop, work graph / provenance, Vitest coverage.
 
-| File | Role | Notes |
-|------|------|--------|
-| [RECONSTRUCTION.dev-workgraph.md](dev-workgraph/RECONSTRUCTION.dev-workgraph.md) | Staff Developer | v1 after `final` |
-| [RECONSTRUCTION.dev-workgraph.v2.md](dev-workgraph/RECONSTRUCTION.dev-workgraph.v2.md) | Staff Developer | v2 after `deepen` — product motivation (perf review, interview prep, CV screeners) |
+| File | Notes |
+|------|--------|
+| [RECONSTRUCTION.dev-workgraph.md](dev-workgraph/RECONSTRUCTION.dev-workgraph.md) | v1 after `final` |
+| [RECONSTRUCTION.dev-workgraph.v2.md](dev-workgraph/RECONSTRUCTION.dev-workgraph.v2.md) | v2 after `deepen` — product motivation (perf review, interview prep, CV screeners, evidence grounding) |
 
 Good reference for a **tooling / DevEx repo** and for **dogfooding** the pipeline on the project itself.
 
 ---
 
 ## How to reproduce
+
+**Prerequisites:** Node.js 20+, Git, [Ollama](https://ollama.com).
+
+```bash
+brew install ollama
+ollama pull qwen2.5-coder:14b
+ollama pull gpt-oss:latest
+ollama pull gemma4:31b
+ollama serve
+```
 
 ```bash
 cd /path/to/cloned/repo
@@ -72,4 +88,4 @@ npx dev-workgraph deepen .
 # optional second round → ./RECONSTRUCTION.<project>.v2.md
 ```
 
-Pipeline stages before `final` can be **interrupted and resumed**; see [dev-workgraph-cli/README.md](../dev-workgraph-cli/README.md).
+Stop anytime before `final` and re-run — completed stages are skipped. For review windows use `--period` ([Review periods](../README.md#review-periods)). Pipeline design: [`ARCHITECTURE.md`](../ARCHITECTURE.md) · full spec: [`REQUIREMENTS.md`](../REQUIREMENTS.md).

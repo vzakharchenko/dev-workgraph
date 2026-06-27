@@ -1,5 +1,5 @@
 {
-  "name": "dev-workgraph-cli",
+  "name": "dev-workgraph",
   "version": "1.0.0",
   "description": "Reconstruct forgotten engineering work from Git history.",
   "license": "Apache-2.0",
@@ -11,6 +11,33 @@
   },
   "files": [
     "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vzakharchenko/dev-workgraph.git",
+    "directory": "dev-workgraph-cli"
+  },
+  "homepage": "https://github.com/vzakharchenko/dev-workgraph#readme",
+  "bugs": {
+    "url": "https://github.com/vzakharchenko/dev-workgraph/issues"
+  },
+  "keywords": [
+    "git",
+    "cli",
+    "career",
+    "cv",
+    "resume",
+    "performance-review",
+    "interview-prep",
+    "ollama",
+    "llm",
+    "rag",
+    "developer-tools",
+    "code-analysis",
+    "git-history"
   ],
   "scripts": {
     "build": "tsx scripts/generate-version.ts && tsc -p tsconfig.json",

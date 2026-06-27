@@ -6,7 +6,7 @@ You point the CLI at a repo where you actually worked. It reads your commits and
 
 ## Why this exists
 
-**The problem.** Every few months you must explain your work: to your manager, on a review form, on a resume, to a recruiter, to an ATS. You were busy — but memory fades. Git remembers *diffs*; it does not remember *why*, *whether it shipped*, *who owned the design*, or *how it maps to impact*. Generic AI can polish prose, but it invents or drifts because it never saw your repo or your answers.
+**The problem.** Sooner or later you must explain your work — at a half-yearly or annual review, on a resume, to a recruiter, to an ATS, or for a project you shipped years ago. You were busy — but memory fades. Git remembers *diffs*; it does not remember *why*, *whether it shipped*, *who owned the design*, or *how it maps to impact*. Generic AI can polish prose, but it invents or drifts because it never saw your repo or your answers.
 
 **What dev-workgraph does instead.** It **reconstructs** work from **your** Git history plus **your** confirmations:
 
@@ -29,6 +29,8 @@ See real outputs in [`examples/`](./examples/) — e.g. [Forge Secure Notes](exa
 
 ## Quick start
 
+**Prerequisites:** [Node.js](https://nodejs.org) 20+, Git, and [Ollama](https://ollama.com) running locally.
+
 ```bash
 brew install ollama
 ollama pull qwen2.5-coder:14b
@@ -47,6 +49,17 @@ The pipeline ends with **`final`**: you answer up to four questions interactivel
 Example outputs: [`examples/Forge-Secure-Notes-for-Jira/`](./examples/Forge-Secure-Notes-for-Jira/) · [`examples/keycloak-radius-plugin/`](./examples/keycloak-radius-plugin/) · [`examples/dev-workgraph/`](./examples/dev-workgraph/).
 
 See **[`dev-workgraph-cli/README.md`](./dev-workgraph-cli/README.md)** for commands, data layout, and development.
+
+## Review periods
+
+Doing a **periodic review** ("what did I do in 2024?")? Scope the whole pipeline to a date window with `--period`:
+
+```bash
+dev-workgraph init:period ./repo --period 2024 --from 2024-01-01 --to 2025-01-01
+dev-workgraph run:period  ./repo --period 2024
+```
+
+The deliverable is written with a period suffix — `RECONSTRUCTION.<project>.2024.md` — so a period review never overwrites your all-time reconstruction. Period data lives in its own subtree and inherits the project context from `init`. Every pipeline command accepts `--period <id>`.
 
 ## How it runs
 
@@ -77,3 +90,11 @@ Use strong models for real runs — weak ones work for smoke tests but hurt long
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | Architecture overview + diagrams from `img/` |
 | [`REQUIREMENTS.md`](./REQUIREMENTS.md) | Full product & pipeline specification |
 | [`uml/`](./uml/) | Pipeline diagrams (PlantUML, Graphviz) — PNG: `./scripts/generatePNGFromSchemas.sh` → [`img/`](./img/) |
+
+## The work graph
+
+Under the hood, dev-workgraph builds a **directed graph from your Git history and your answers**. Every commit, work session, report, question, and answer is a vertex; the edges carry meaning — build order, provenance links back to the evidence, the project context injected into each LLM step, and your Q&A. The final narrative is a fold over this graph, so every claim stays traceable to the commit or answer it came from.
+
+This graph is also a natural foundation for future work: it could be loaded into a **vector database** to power a **RAG** system over your own history. The whole pipeline safely builds the **grounded knowledge base — the "R" of RAG** — from real Git evidence and human-confirmed context: traceable end to end and never inflated with impact you did not state. Generation can come later; the retrievable corpus is one you can defend.
+
+![dev-workgraph pipeline graph — built from Git evidence and your answers (example N=3)](img/pipeline-graph.png)
