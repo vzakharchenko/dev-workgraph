@@ -33,7 +33,7 @@ rectangle "**final**" #FCE4EC {
 
 rectangle "**Deliverables**" #E8F5E9 {
   card "**cwd:** RECONSTRUCTION.<project>.md\n(or .vN.md extension/deepen)" as MD
-  card "finish/<preparedId>.{md,json}\nor .vN (extension / deepen)" as FIN
+  card "finish/<id>.{md,json}\n+ <id>.question.json (v1)\n+ .question.vN.json (deepen/ext)" as FIN
 }
 
 PREP --> S1
@@ -56,8 +56,11 @@ E .. S1
 note bottom of S1
   **Interactive** in `run` — questions exist only after prepare.
   `--answers-file` for non-interactive.
-  **Extension mode:** prior finish Q&A + up to 4 new.
-  Same prepared: reuse saved answers.
+  **Question text** -> `*.question.json` / `*.question.vN.json`.
+  **Answers** -> finish `answers[]` (`questionId` refs).
+  **sourceQuestions** -> `{ finishId: ["v1","v2",…] }`.
+  **Extension:** prior finish Q&A + up to 4 new.
+  Same prepared: reuse saved answers (no re-prompt).
 end note
 
 note bottom of MD
@@ -88,21 +91,23 @@ endif
 
 if (Prior finish with answers\nAND new prepared file?) then (yes — **extension mode**)
   partition "**Extension — Step 1 (H)**" {
-    :Load cumulative Q&A from **latestFinish()**;
+    :Load cumulative Q&A from **latestFinish()**\nresolve via **sourceQuestions** + question files;
     :Ask **new** questions only\n(dedupe by normalized text, up to 4);
+    :Write **<id>.question.vN.json**\n{ id, question } x up to 4;
     :Merge prior + new -> **allQa**;
-    :Persist full answers[] on prepared;
+    :Persist **answers[]** + extend **sourceQuestions**\non new finish archive vN+1;
   }
 else (first run / same prepared)
   partition "**Step 1 — Collect answers (H, no LLM)**" {
     if (--answers-file?) then (yes)
-      :Load Q&A from JSON file;
-    else if (saved answers?) then (yes)
-      :Reuse answers from prepared record;
+      :Load answers from JSON file;
+    else if (saved answers on finish\nfor this round?) then (yes)
+      :Reuse answers from finish archive\n+ existing question file;
     else (no)
       :Interactive editor:\nup to 4 questions\n(multi-line allowed);
     endif
-    :Persist answers + answeredAt\n**in-place** on prepared/<id>.json;
+    :Write **<id>.question.json**\n{ id, question } x up to 4;
+    :Persist **answers[]** (`questionId` refs)\n+ **sourceQuestions: { id: ["v1"] }**\non finish/<id>.json;
   }
 endif
 
@@ -135,11 +140,12 @@ partition "**Step 3 — Write markdown (D)**" {
 
 partition "**Step 4 — Archive (D)**" {
   if (extension mode?) then (yes)
-    :Append finish/<preparedId>.vN.{md,json}\nsourcePreviousFinish, version N+1;
+    :Append finish/<id>.vN.{md,json}\n+ <id>.question.vN.json\nsourcePreviousFinish, version N+1;
+    :Extend **sourceQuestions** e.g. ["v1","v2"];
     :Write RECONSTRUCTION.<project>.vN.md;
   else (no)
-    :Copy markdown -> finish/<preparedId>.md;
-    :Write FinishRecord -> finish/<preparedId>.json\n(version 1);
+    :Copy markdown -> finish/<id>.md;
+    :Write FinishRecord -> finish/<id>.json\n+ <id>.question.json (version 1);
   endif
 }
 
@@ -157,9 +163,10 @@ skinparam shadowing false
 title **final** — inputs and provenance chain (file names only)
 
 rectangle "**Read by final**" #FFF8E1 {
-  card "prepared/<reportId>.json" as P
+  card "prepared/<reportId>.json\n(questionsAnalyses only — no answers)" as P
   card "project.json" as PJ
   card "finish/ latest\n(extension mode)" as PF #FCE4EC
+  card "finish/*.question.json\n+ .question.vN.json" as QF #FCE4EC
 }
 
 rectangle "**From prepared**" #FFF3E0 {
@@ -183,6 +190,7 @@ rectangle "**Not loaded**" #ECEFF1 {
 }
 
 PF --> Q : prior answers\n(extension only)
+QF --> Q : question text\nby questionId
 P --> H
 P --> Q
 P --> R
@@ -218,7 +226,8 @@ rectangle "**System asked (prepare)**" #FFF3E0 {
 
 rectangle "**Human confirms (final)**" #FCE4EC {
   card "Answer each question\n(editor, multi-line)" as A
-  card "Persist to prepared record:\nanswers[] + answeredAt" as P
+  card "Write question file:\n<id>.question[.vN].json" as QF
+  card "Persist on finish archive:\nanswers[] + sourceQuestions" as P
 }
 
 rectangle "**System refines with answers (M:n)**" as REF #E1F5FE {
@@ -227,7 +236,8 @@ rectangle "**System refines with answers (M:n)**" as REF #E1F5FE {
 }
 
 Q --> A : interactive\n(or --answers-file)
-A --> P
+A --> QF
+QF --> P
 P --> REF
 
 note as RULE
@@ -345,19 +355,30 @@ class "FinishRecord" as FR #E1F5FE {
   finishId = prepared.preparedId
   sourcePrepared — prepared file name
   sourceReport — report file name (traceability)
+  sourceQuestions — { finishId: ["v1","v2",…] }
   project — repo basename
   role
   technologies
   history — refined impactHistory
   narrative — 4 Role Narrative bullets
-  answers — Q&A pairs
+  cvBullets — 4 CV lines
+  answers — { questionId, answer }[] cumulative
   outputMarkdown — finish/<id>.md
+  version — finish-chain cursor
   provenance { model, generatedAt }
 }
 
+class "FinishQuestionsRecord" as FQR #FCE4EC {
+  sourceFinal — paired finish json file
+  sourceReport — traceability
+  questions — { id, question }[]\nid = Unix-ms timestamp
+}
+
 class "On disk" as DISK {
-  finish/<preparedId>.md — copy of markdown
-  finish/<preparedId>.json — this record
+  finish/<id>.md — copy of markdown
+  finish/<id>.json — FinishRecord
+  finish/<id>.question.json — v1 questions
+  finish/<id>.question.vN.json — deepen / extension
 }
 
 class "Also on disk" as CWD {
@@ -365,12 +386,14 @@ class "Also on disk" as CWD {
 }
 
 FR *-- DISK
+FR o-- FQR : sourceQuestions labels\n-> question files on disk
 FR .. CWD : same content
 
 note bottom of FR
+  **answers[]** references question ids only.
+  **sourceQuestions** lists rounds (v1, v2, …) — not file paths.
   Links back through prepared -> report by **file name**.
-  No commit hashes. v1: same prepared reuses answers.
-  Extension: append vN+1 (never overwrite v1..vN).
+  Extension / deepen: append vN+1 (never overwrite v1..vN).
 end note
 
 @enduml
@@ -388,6 +411,7 @@ database "project.json" as PJ
 participant "**final**" as FIN
 participant "Ollama\nnarrativeModel" as LLM
 database "cwd/RECONSTRUCTION.*.md" as MD
+database "finish/*.question.json" as QFILE
 database "finish/" as ARCH
 
 DEV -> FIN : final ./repo [--answers-file]
@@ -398,17 +422,21 @@ FIN -> PREP : latestPrepared()
 FIN -> ARCH : latestFinish() (if any)
 
 alt extension mode (new prepared + prior finish)
+  FIN -> ARCH : resolve prior Q&A\n(sourceQuestions + question files)
   FIN -> DEV : new questions only (up to 4)
   DEV --> FIN : new answers
+  FIN -> QFILE : write <id>.question.vN.json
   FIN -> FIN : allQa = prior + new
 else no saved answers
   FIN -> DEV : up to 4 interactive questions
   DEV --> FIN : answers
+  FIN -> QFILE : write <id>.question.json
 else reuse or answers-file
-  FIN -> FIN : load existing Q&A
+  FIN -> ARCH : load existing answers
+  FIN -> QFILE : load existing question file
 end
 
-FIN -> PREP : persist answers + answeredAt
+FIN -> ARCH : persist answers[] +\nsourceQuestions on finish record
 
 FIN -> LLM : [2a] refine IMPACT narrative\n(history + Q&A + project context)
 LLM --> FIN : impactHistory
@@ -418,7 +446,7 @@ LLM --> FIN : narrative x4
 
 FIN -> FIN : assemble markdown (D)
 FIN -> MD : write RECONSTRUCTION.<project>.md
-FIN -> ARCH : finish/<id>.md + .json\nor <id>.vN (extension)
+FIN -> ARCH : finish/<id>.md + .json\n+ .question.json\nor <id>.vN + .question.vN
 
 FIN --> DEV : path to deliverable
 
@@ -432,18 +460,22 @@ skinparam shadowing false
 
 title **final** — extension mode after incremental `run` (§11)
 
-database "finish/<id>.v10.json\n40 Q&A pairs" as F10
+database "finish/<id>.v10.json\n40 answers (questionId)" as F10
+database "finish/<id>.question.v10.json" as Q10
 database "prepared/<newReportId>.json\n4 new questions" as PNEW
 participant "**final**" as FIN
 actor "Developer" as DEV
-database "finish/<id>.v11.json\n44 Q&A pairs" as F11
+database "finish/<id>.v11.json\n44 answers" as F11
+database "finish/<id>.question.v11.json" as Q11
 
-F10 --> FIN : latestFinish()\nprior answers
+F10 --> FIN : latestFinish()\nanswers[] + sourceQuestions
+Q10 .. FIN : prior question catalog
 PNEW --> FIN : new prepared
 FIN -> DEV : ask 4 **new** questions only
 DEV --> FIN : new answers
+FIN -> Q11 : write new question file
 FIN -> FIN : merge 40 + 4\nrefine IMPACT (combined history)
-FIN -> F11 : append v11\nsourcePreviousFinish
+FIN -> F11 : append v11\nsourcePreviousFinish\nsourceQuestions: ["v1"…"v11"]
 
 note over F11
   Same version chain as **deepen**.
@@ -485,6 +517,60 @@ note bottom of OUT
   System: reconstruct what changed, ask what Git cannot know.
   Human: confirm ownership, intent, scope via answers.
   Output: claim-safe narrative — not auto-scored achievements.
+end note
+
+@enduml
+
+
+@startuml final-qa-artifacts
+!theme plain
+skinparam shadowing false
+skinparam classBackgroundColor #FAFAFA
+
+title **Q&A artifact model** (§7, §11) — not stored in prepared/
+
+left to right direction
+
+package "**prepared/** (no answers)" #FFF3E0 {
+  class "PreparedRecord" as PR {
+    model.questionsAnalyses
+    model.history
+    **no answers field**
+  }
+}
+
+package "**finish/** question files" #FCE4EC {
+  class "FinishQuestionsRecord" as FQ1 {
+    <<v1>>
+    questions: { id, question }[]
+  }
+  class "FinishQuestionsRecord" as FQ2 {
+    <<v2>>
+    questions: { id, question }[]
+  }
+}
+
+package "**finish/** archive" #E1F5FE {
+  class "FinishRecord" as FR {
+    sourceQuestions
+    **{ finishId: ["v1","v2"] }**
+    answers: { questionId, answer }[]
+    version
+  }
+}
+
+PR ..> FQ1 : final writes\nquestion text
+PR ..> FQ2 : deepen / extension\nwrites new round
+
+FQ1 <-- FR : v1 -> <id>.question.json
+FQ2 <-- FR : v2 -> <id>.question.vN.json
+
+note bottom of FR
+  **prepare** reads prior Q&A by resolving
+  answers[] against question files for all
+  labels in sourceQuestions (latest finish).
+  Re-running final reuses saved answers;
+  prepared record stays clean.
 end note
 
 @enduml

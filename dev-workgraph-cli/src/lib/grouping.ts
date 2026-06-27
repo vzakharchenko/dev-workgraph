@@ -3,7 +3,16 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { CommitRecord, DeterministicLayer, GroupRecord, GroupTiers, Tier } from "./records.js";
+import type { ModelLayer } from "./model.js";
+import type {
+  CommitEvidenceRecord,
+  CommitRecord,
+  CommitSummaryRecord,
+  DeterministicLayer,
+  GroupRecord,
+  GroupTiers,
+  Tier,
+} from "./records.js";
 
 const SECONDS_PER_DAY = 86400;
 
@@ -11,19 +20,89 @@ const SECONDS_PER_DAY = 86400;
 const uniqSorted = (values: string[]): string[] => [...new Set(values)].sort();
 
 /**
- * Loads every exported commit record for a repo, oldest commit first.
- * @param commitsDir - The repo's commits directory.
+ * Walks `/<ts>/<hash>.json` under a repo data directory.
+ * @param dir - Root directory (`commits` or `summaries`).
  */
-export function loadCommitRecords(commitsDir: string): CommitRecord[] {
-  if (!fs.existsSync(commitsDir)) return [];
-  const records: CommitRecord[] = [];
-  for (const tsDir of fs.readdirSync(commitsDir)) {
-    const sub = path.join(commitsDir, tsDir);
+function listTimestampHashJsonFiles(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  const files: string[] = [];
+  for (const entry of fs.readdirSync(dir)) {
+    const sub = path.join(dir, entry);
     if (!fs.statSync(sub).isDirectory()) continue;
     for (const f of fs.readdirSync(sub)) {
-      if (!f.endsWith(".json")) continue;
-      records.push(JSON.parse(fs.readFileSync(path.join(sub, f), "utf8")) as CommitRecord);
+      if (f.endsWith(".json")) files.push(path.join(sub, f));
     }
+  }
+  return files.sort();
+}
+
+/**
+ * Absolute path to a per-commit summary JSON file.
+ * @param summariesDir - The repo's summaries directory.
+ * @param timestamp - Commit author timestamp (directory name).
+ * @param commitHash - Full commit hash (file basename).
+ */
+export function commitSummaryPath(
+  summariesDir: string,
+  timestamp: number,
+  commitHash: string,
+): string {
+  return path.join(summariesDir, String(timestamp), `${commitHash}.json`);
+}
+
+/** Evidence directory key under `commits/` (author Unix timestamp as string). */
+export function commitEvidenceTimestamp(timestamp: number): string {
+  return String(timestamp);
+}
+
+/** Repo-relative path to a commit summary JSON file (POSIX separators). */
+function commitSummaryRelPath(timestamp: number, commitHash: string): string {
+  return path.posix.join("summaries", String(timestamp), `${commitHash}.json`);
+}
+
+/**
+ * Loads per-commit summary records keyed by commit hash.
+ * @param summariesDir - The repo's summaries directory.
+ */
+function loadSummaryRecords(summariesDir: string): Map<string, CommitSummaryRecord> {
+  const byHash = new Map<string, CommitSummaryRecord>();
+  for (const file of listTimestampHashJsonFiles(summariesDir)) {
+    const record = JSON.parse(fs.readFileSync(file, "utf8")) as CommitSummaryRecord;
+    byHash.set(record.commitHash, record);
+  }
+  return byHash;
+}
+
+/**
+ * Loads every exported commit record for a repo, oldest commit first.
+ * Evidence comes from `commits/`; model layers from `summaries/` when given.
+ * Legacy evidence files that still inline `model` are supported when no summary
+ * file exists for that hash.
+ * @param commitsDir - The repo's commits directory.
+ * @param summariesDir - Optional summaries directory written by `summarize`.
+ */
+export function loadCommitRecords(commitsDir: string, summariesDir?: string): CommitRecord[] {
+  if (!fs.existsSync(commitsDir)) return [];
+  const summaries = summariesDir
+    ? loadSummaryRecords(summariesDir)
+    : new Map<string, CommitSummaryRecord>();
+  const records: CommitRecord[] = [];
+  for (const file of listTimestampHashJsonFiles(commitsDir)) {
+    const raw = JSON.parse(fs.readFileSync(file, "utf8")) as CommitEvidenceRecord & {
+      model?: ModelLayer | null;
+    };
+    const { model: legacyModel, ...evidence } = raw;
+    const summaryRec = summaries.get(evidence.commitHash);
+    const model = summaryRec?.model ?? legacyModel ?? null;
+    const sourceEvidence = commitEvidenceTimestamp(evidence.timestamp);
+    records.push({
+      ...evidence,
+      model,
+      sourceEvidence,
+      sourceSummary: summaryRec
+        ? commitSummaryRelPath(evidence.timestamp, evidence.commitHash)
+        : null,
+    });
   }
   return records.sort((a, b) => a.timestamp - b.timestamp);
 }

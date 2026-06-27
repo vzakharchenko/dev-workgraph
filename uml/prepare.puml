@@ -115,7 +115,7 @@ partition "**[3/4] Collapse reasons (M:n)**" {
 }
 
 partition "**[4/4] Reframe questions (M:n)**" {
-  :Input: composed history + 4 reasons\n+ report.questionsAnalyses\n+ **prior finish Q&A** (latestFinish)\n+ project context;
+  :Input: composed history + 4 reasons\n+ report.questionsAnalyses\n+ **prior finish Q&A**\n(latestFinish -> sourceQuestions\n+ question files)\n+ project context;
   :Output: **up to 4** new role-aware questions\n(do not repeat prior Q&A);\nre-assess **confidence**;
 }
 
@@ -203,7 +203,7 @@ title **prepare** — processing steps in detail
 rectangle "**Inputs**" as IN {
   card "project.json\n(role, story, profile)" as PJ #FFF8E1
   card "latest report.model + history[]" as REP #E3F2FD
-  card "finish/ latest\n(prior Q&A, optional)" as FIN #FCE4EC
+  card "finish/ latest + question files\n(prior Q&A via sourceQuestions)" as FIN #FCE4EC
 }
 
 rectangle "**Step 0 (D)**" as S0 #E8F5E9 {
@@ -231,7 +231,7 @@ rectangle "**[3/4] signalReasons (M:n)**" as S3 #FFF3E0 {
 }
 
 rectangle "**[4/4] questions (M:n)**" as S4 #FFF3E0 {
-  card "Report questionsAnalyses\n+ prior finish Q&A\n-> **up to 4** new"
+  card "Report questionsAnalyses\n+ prior finish Q&A\n(resolve question files)\n-> **up to 4** new"
   card "Role-aware; skip story/README\n+ already-answered threads"
   card "Target what Git cannot know"
   card "**confidence** re-assessed"
@@ -281,7 +281,7 @@ class "PreparedModelLayer (M:n + D copy)" as MOD #FFF3E0 {
   **history** — single unified narrative (step 1)
   **technologies** — max 5 cleaned (step 2)
   **signalReasons** — exactly 4 strings (step 3)
-  **questions** — exactly 4 strings (step 4)
+  **questionsAnalyses** — up to 4 threads (step 4)
   **confidence** — re-assessed (step 4)
   --
   **changeTypes** — copied from report (D)
@@ -295,14 +295,16 @@ class "Not present (vs report)" as ABS #ECEFF1 {
   no historySource / sourceGroups
   no hiContext / mediumContext / lowContext
   no mergeCursor
+  **no answers** — Q&A in finish/
 }
 
 PR *-- MOD
 PR .. ABS
 
 note bottom of MOD
-  After write: **answers** block added later by **final**
-  (interactive Q&A persisted in-place).
+  Human answers are collected in **final** / **deepen**
+  and stored on the finish archive + question files —
+  **not** on the prepared record (§7).
 end note
 
 @enduml
@@ -326,8 +328,9 @@ rectangle "**Console preview (D)**" as PREV #FFFDE7 {
 }
 
 rectangle "**final (next step)**" #FCE4EC {
+  card "Write finish/*.question.json"
   card "Present 4 questions interactively"
-  card "Persist answers to prepared record"
+  card "Persist answers on finish archive\n(questionId refs + sourceQuestions)"
   card "Refine history with answers (M:n)"
   card "Role Narrative 4 bullets (M:n)"
   card "RECONSTRUCTION.<project>.md"
@@ -380,12 +383,12 @@ end
 PRE -> LLM : [3/4] collapse signalReasons -> 4
 LLM --> PRE : signalReasons[4]
 
-PRE -> LLM : [4/4] reframe questions + confidence
-LLM --> PRE : questions[4], confidence
+PRE -> LLM : [4/4] reframe questions + confidence\n(+ prior finish Q&A if any)
+LLM --> PRE : questionsAnalyses, confidence
 
 PRE -> PRE : copy changeTypes + signals from report (D)
 
-PRE -> OUT : write PreparedRecord
+PRE -> OUT : write PreparedRecord\n(no answers)
 
 PRE --> DEV : console preview\n(history + questions)
 

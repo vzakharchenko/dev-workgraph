@@ -84,6 +84,9 @@ describe("final", () => {
     expect(md).toContain("Built CLI tooling");
     expect(md).toContain("Staging only.");
     expect(fs.existsSync(path.join(repoFinishDir(FAKE_REPO), "1700000000.json"))).toBe(true);
+    expect(fs.existsSync(path.join(repoFinishDir(FAKE_REPO), "1700000000.question.json"))).toBe(
+      true,
+    );
   });
 
   it("writes period-suffixed reconstruction markdown for final", async () => {
@@ -164,16 +167,21 @@ describe("final", () => {
     expect(fs.existsSync(finishV2)).toBe(true);
     const finish = JSON.parse(fs.readFileSync(finishV2, "utf8")) as {
       version: number;
-      answers: { question: string; answer: string }[];
+      answers: { questionId: string; answer: string }[];
       sourcePrepared: string;
       sourcePreviousFinish: string;
+      sourceQuestions: Record<number, string[]>;
     };
     expect(finish.version).toBe(2);
     expect(finish.sourcePrepared).toBe("1700345600.json");
     expect(finish.sourcePreviousFinish).toBe("1700000000.json");
+    expect(finish.sourceQuestions).toEqual({ 1700000000: ["v1", "v2"] });
     expect(finish.answers).toHaveLength(8);
     expect(finish.answers[0]?.answer).toBe("Staging only.");
     expect(finish.answers[7]?.answer).toBe("Yes.");
+    expect(
+      fs.existsSync(path.join(repoFinishDir(FAKE_REPO), "1700000000.question.v2.json")),
+    ).toBe(true);
 
     expect(
       fs.existsSync(path.join(cwd, `RECONSTRUCTION.${path.basename(FAKE_REPO)}.v2.md`)),

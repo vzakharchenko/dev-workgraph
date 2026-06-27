@@ -8,6 +8,7 @@ import {
   loadConfig,
   repoCommitsDir,
   repoDataDir,
+  repoSummariesDir,
   setOllamaConfig,
   setPeriod,
   setRepoConfig,
@@ -61,6 +62,7 @@ describe("config", () => {
     expect(repoDataDir(repo)).toContain(tmpHome);
     expect(repoCommitsDir(repo)).toContain("commits");
     expect(repoCommitsDir(repo, "2022")).toContain(`${path.sep}periods${path.sep}2022`);
+    expect(repoSummariesDir(repo)).toContain("summaries");
   });
 
   it("returns empty config when the file is corrupt", () => {

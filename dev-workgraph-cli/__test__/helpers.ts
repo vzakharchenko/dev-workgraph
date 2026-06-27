@@ -35,13 +35,17 @@ export function sampleModel(overrides: Partial<ModelLayer> = {}): ModelLayer {
 }
 
 export function sampleCommit(overrides: Partial<CommitRecord> & { commitHash: string }): CommitRecord {
+  const timestamp = overrides.timestamp ?? 1_700_000_000;
+  const commitHash = overrides.commitHash;
   return {
-    commitHash: overrides.commitHash,
-    timestamp: overrides.timestamp ?? 1_700_000_000,
+    commitHash,
+    timestamp,
     title: overrides.title ?? "test commit",
     author: overrides.author ?? "dev@example.com",
     deterministic: overrides.deterministic ?? emptyDeterministic(),
     model: overrides.model ?? null,
+    sourceEvidence: overrides.sourceEvidence ?? String(timestamp),
+    sourceSummary: overrides.sourceSummary ?? null,
   };
 }
 
@@ -112,6 +116,9 @@ export function sampleGroup(overrides: Partial<GroupRecord> = {}): GroupRecord {
     groups: {
       commits: ["abc", "def"],
       tiers: { hi: ["abc"], medium: ["def"], low: [] },
+      sourceEvidence: ["1700000000", "1700864000"],
+      sourceSummaries: [null, null],
+      ...(overrides.groups ?? {}),
     },
     deterministic: emptyDeterministic({
       areas: ["src"],

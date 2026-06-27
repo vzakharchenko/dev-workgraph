@@ -144,12 +144,12 @@ digraph pipeline {
 
   // ── prepare → 4 questions → 4 answers (H) → final ─────────────────
 
-  v_prep [label="prepare\n(M:n)\nsourceReport" fillcolor="#F3E5F5" width=1.35 height=1.0]
+  v_prep [label="prepare\n(M:n)\nsourceReport\n(no answers)" fillcolor="#F3E5F5" width=1.45 height=1.05]
 
   v_r2 -> v_prep [label=" 1:1\nread "]
 
   subgraph cluster_ask_final {
-    label="ask user (final)\n4 questions/round (H) · **extension:** prior finish Q&A + up to 4 new"
+    label="ask user (final / deepen)\n4 questions/round (H) · text in *.question.*.json · answers on finish"
     style=rounded
     color="#AD1457"
     bgcolor="#FCE4EC"
@@ -187,8 +187,8 @@ digraph pipeline {
     bgcolor="#FCE4EC"
     penwidth=1.2
 
-    v_fin [label="final v1\n(finish)\n(M:n+H)" fillcolor="#FCE4EC" width=1.35 height=1.0]
-    v_fext [label="final vN+1\n(extension run)\n(M:n+H)" fillcolor="#FCE4EC" width=1.45 height=1.0 penwidth=2 color="#AD1457"]
+    v_fin [label="final v1\n(finish)\n(M:n+H)\nsourceQuestions:\n{v1}" fillcolor="#FCE4EC" width=1.45 height=1.1]
+    v_fext [label="final vN+1\n(extension run)\n(M:n+H)\nsourceQuestions:\n{v1..vN+1}" fillcolor="#FCE4EC" width=1.55 height=1.1 penwidth=2 color="#AD1457"]
 
     { rank=same; v_fin; v_fext; }
 
@@ -197,7 +197,7 @@ digraph pipeline {
 
   v_prep -> v_fin [label=" prepared\nrecord ", style=dashed color="#666666"]
 
-  v_fin -> v_a1 [label=" answers[] "]
+  v_fin -> v_a1 [label=" answers[]\n(questionId) "]
   v_fin -> v_a2
   v_fin -> v_a3
   v_fin -> v_a4
@@ -249,7 +249,7 @@ digraph pipeline {
       v_nq4 -> v_na4
     }
 
-    v_fin2 [label="final v2\n(finish)\n(M:n+H)\n+ recalled context" fillcolor="#FCE4EC" width=1.45 height=1.05 penwidth=2]
+    v_fin2 [label="final v2\n(finish)\n(M:n+H)\n+ recalled context\nsourceQuestions:\n{v1,v2}" fillcolor="#FCE4EC" width=1.55 height=1.15 penwidth=2]
     v_finN [label="final vN\n(latest)\n…" fillcolor="#FCE4EC" width=1.25 height=0.9 style="filled,dashed" color="#AD1457"]
 
     v_recall -> v_combine [label=" merges with "]
@@ -284,7 +284,7 @@ digraph pipeline {
   v_prep -> v_combine [label=" prepare\nhistory ", color="#AD1457"]
   v_fin -> v_combine [label=" prior\nfinal ", color="#AD1457"]
   v_fin -> v_deepen [label=" prior\nQ&A ", color="#AD1457" style=dashed]
-  v_finN -> v_prep [label=" prior Q&A\n(prepare step 4) ", style=dashed color="#AD1457" constraint=false]
+  v_finN -> v_prep [label=" prior Q&A\n(resolve finish +\nquestion files) ", style=dashed color="#AD1457" constraint=false]
   v_prep -> v_fin2 [label=" prepared\nrecord ", style=dashed color="#AD1457"]
   v_fin -> v_fin2 [label=" extends\nv1 ", color="#AD1457"]
 

@@ -3,15 +3,39 @@
 
 import type { ModelLayer, QuestionAnalyses, Signal } from "./model.js";
 
-/** One question–answer pair on a finish archive; `id` is stable across deepen versions. */
-export interface QAPair {
-  /** Monotonic id within a finish chain (`q1`, `q2`, …); preserved from v1 through vN. */
+/** One question stored in a finish question file; `id` is the creation Unix-ms timestamp. */
+export interface FinishQuestion {
+  id: string;
+  question: string;
+}
+
+/** Questions paired with a finish archive (`<id>.question.json` or `<id>.question.vN.json`). */
+export interface FinishQuestionsRecord {
+  /** Encoded package semver when written; absent on legacy files. */
+  schemaVersion?: number;
+  /** Finish JSON file this question set belongs to. */
+  sourceFinal: string;
+  /** Report JSON the questions were grounded in. */
+  sourceReport: string;
+  questions: FinishQuestion[];
+}
+
+/** Answer on a finish archive — references {@link FinishQuestion.id}. */
+export interface FinishAnswer {
+  questionId: string;
+  answer: string;
+}
+
+/** Maps finish id → question-file version labels (`v1`, `v2`, …). */
+export type FinishSourceQuestions = Record<number, string[]>;
+
+/** @deprecated Legacy Q&A shape; use {@link FinishAnswer} + finish question files. */
+interface QAPair {
+  /** @deprecated Legacy `qN` ids; new questions use Unix-ms timestamps in question files. */
   id: string;
   question: string;
   answer: string;
-  /** Finish JSON file where this pair was collected (`<preparedId>.json` or `.vN.json`). */
   sourceFinal: string;
-  /** Report JSON this question round was grounded in. */
   sourceReport: string;
 }
 
@@ -56,8 +80,12 @@ export interface PreparedRecord {
   sourceReport: string;
   groupCount: number;
   model: PreparedModelLayer;
-  /** Human answers to prepared questions, collected by `final`. */
+  /**
+   * @deprecated Answers live on the finish archive + `<finish>.question.json`.
+   * Legacy prepared files may still carry this field; readers ignore it.
+   */
   answers?: { question: string; answer: string }[];
+  /** @deprecated Use finish archive timestamps instead. */
   answeredAt?: string;
 }
 
@@ -82,7 +110,10 @@ export interface FinishRecord {
   narrative: string[];
   /** Four impersonal CV/resume bullets (action-oriented, no "I"). */
   cvBullets: string[];
-  answers: { question: string; answer: string }[];
+  /** Cumulative answers; each entry references a question id from a finish question file. */
+  answers: FinishAnswer[];
+  /** Question rounds by finish id, e.g. `{ 1759696393: ["v1", "v2"] }`. */
+  sourceQuestions: FinishSourceQuestions;
   /** File name of the result markdown written next to this record. */
   outputMarkdown: string;
   /** Prior finish archive this record extended (`deepen`). */
@@ -179,10 +210,10 @@ export interface DeterministicLayer {
 }
 
 /**
- * One exported commit on disk (written by `export`, model filled by
- * `summarize`).
+ * Pure commit evidence on disk (written by `evidence`). The model layer lives in
+ * a sibling `summaries/` file (written by `summarize`).
  */
-export interface CommitRecord {
+export interface CommitEvidenceRecord {
   /** Encoded package semver when written; absent on legacy files. */
   schemaVersion?: number;
   commitHash: string;
@@ -190,7 +221,32 @@ export interface CommitRecord {
   title: string;
   author: string;
   deterministic: DeterministicLayer;
+}
+
+/**
+ * Per-commit model interpretation on disk (written by `summarize`), stored next
+ * to evidence under `summaries/<timestamp>/<hash>.json`.
+ */
+export interface CommitSummaryRecord {
+  /** Encoded package semver when written; absent on legacy files. */
+  schemaVersion?: number;
+  commitHash: string;
+  timestamp: number;
+  /** `commits/<sourceEvidence>/<commitHash>.json` — author Unix timestamp directory name. */
+  sourceEvidence: string;
+  model: ModelLayer;
+}
+
+/**
+ * Merged commit view: evidence plus an optional model layer (from `summaries/`
+ * or, for legacy data, inlined on the evidence file).
+ */
+export interface CommitRecord extends CommitEvidenceRecord {
   model: ModelLayer | null;
+  /** `commits/<sourceEvidence>/<commitHash>.json` — author Unix timestamp directory name. */
+  sourceEvidence: string;
+  /** Repo-relative path to this commit's summary file (`summaries/…`), if present. */
+  sourceSummary: string | null;
 }
 
 /** Signal tiers a commit can fall into within a group. */
@@ -208,11 +264,16 @@ export interface GroupTiers {
 }
 
 /**
- * The `groups` block: all member hashes plus their deterministic tier partition.
+ * The `groups` block: all member hashes plus their deterministic tier partition
+ * and repo-relative paths back to per-commit evidence and summary files.
  */
 interface GroupsBlock {
   commits: string[];
   tiers: GroupTiers;
+  /** `commits/<sourceEvidence>/<hash>.json` per member, same order as `commits`. */
+  sourceEvidence: string[];
+  /** Repo-relative summary paths (`summaries/…`), same order as `commits`; `null` when absent. */
+  sourceSummaries: (string | null)[];
 }
 
 /**

@@ -7,12 +7,25 @@ import inquirer from "inquirer";
 import { loadConfig, repoFinishDir, repoPreparedDir, setOllamaConfig } from "../lib/config.js";
 import {
   defaultReconstructionName,
+  extendSourceQuestions,
   finishJsonFileName,
   finishMdFileName,
+  finishQuestionsJsonFileName,
   latestFinish,
   nextFinishVersion,
   versionedReconstructionName,
 } from "../lib/finish-load.js";
+import {
+  allQuestionsAnswered,
+  collectFinishAnswers,
+  createFinishQuestions,
+  loadFinishQuestions,
+  normalizeFinishAnswers,
+  questionsNotYetAnswered,
+  readFinishAnswersFile,
+  resolveAnswersToQa,
+  writeFinishQuestions,
+} from "../lib/finish-questions.js";
 import { resolveRepo } from "../lib/git.js";
 import {
   cvBulletsJsonSchema,
@@ -33,15 +46,13 @@ import {
   ROLE_NARRATIVE_SYSTEM,
   withProjectContext,
 } from "../lib/prompts.js";
-import {
-  collectAnswersInteractive,
-  ensureQaIds,
-  qaPairsToLegacyAnswers,
-  questionsNotYetAnswered,
-  readAnswersFile,
-} from "../lib/qa.js";
 import { writeRecordJson } from "../lib/record-io.js";
-import type { FinishRecord, PreparedRecord, QAPair } from "../lib/records.js";
+import type {
+  FinishAnswer,
+  FinishQuestionsRecord,
+  FinishRecord,
+  PreparedRecord,
+} from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
@@ -107,7 +118,6 @@ export async function final(options: FinalOptions): Promise<void> {
     return;
   }
   const prepared = latest.record;
-  const preparedPath = path.join(preparedDir, latest.file);
 
   const finishDir = repoFinishDir(repoPath, options.period);
   const priorFinish = latestFinish(finishDir);
@@ -126,59 +136,82 @@ export async function final(options: FinalOptions): Promise<void> {
           mdFile: finishMdFileName(prepared.preparedId, 1),
         };
 
-  const provenance = {
-    sourceFinal: archive.jsonFile,
-    sourceReport: prepared.sourceReport,
-  };
+  const questionsJsonFile = finishQuestionsJsonFileName(archive.baseFinishId, archive.version);
+  const questionsPath = path.join(finishDir, questionsJsonFile);
+  const finishJsonPath = path.join(finishDir, archive.jsonFile);
 
   const preparedQuestions = flattenQuestions(prepared.model.questionsAnalyses).slice(0, 4);
-  const priorQa: QAPair[] =
+  const priorQa =
     isExtension && priorFinish
-      ? ensureQaIds(priorFinish.record.answers, {
-          sourceFinal: priorFinish.file,
-          sourceReport: priorFinish.record.sourceReport,
-        })
+      ? resolveAnswersToQa(
+          finishDir,
+          archive.baseFinishId,
+          archive.version - 1,
+          normalizeFinishAnswers(priorFinish.record.answers),
+        )
       : [];
 
   const questionsToAsk = isExtension
     ? questionsNotYetAnswered(preparedQuestions, priorQa)
     : preparedQuestions;
 
-  // Step 1 — collect (or reuse) answers.
-  let allQa: QAPair[];
-  if (isExtension) {
-    console.log(
-      `Continuing from finish ${priorFinish?.file} — ${priorQa.length} prior Q&A` +
-        `${questionsToAsk.length > 0 ? `, ${questionsToAsk.length} new question(s)` : ""}.`,
-    );
-    let newQa: QAPair[];
-    if (options.answersFile) {
-      newQa = readAnswersFile(options.answersFile, questionsToAsk, priorQa, provenance);
-    } else if (questionsToAsk.length === 0) {
-      console.log("All prepared questions already answered — regenerating narrative only.");
-      newQa = [];
-    } else {
-      console.log("\nAnswer the new questions:");
-      newQa = await collectAnswersInteractive(questionsToAsk, priorQa, inquirer.prompt, provenance);
-    }
-    allQa = [...priorQa, ...newQa];
-  } else if (options.answersFile) {
-    allQa = readAnswersFile(options.answersFile, preparedQuestions, [], provenance);
-  } else if (prepared.answers && prepared.answers.length > 0) {
-    console.log("Reusing saved answers.");
-    allQa = ensureQaIds(prepared.answers, provenance);
+  let questionsRecord: FinishQuestionsRecord;
+  if (fs.existsSync(questionsPath)) {
+    questionsRecord = loadFinishQuestions(questionsPath);
   } else {
-    allQa = await collectAnswersInteractive(preparedQuestions, [], inquirer.prompt, provenance);
+    const texts = isExtension ? questionsToAsk : preparedQuestions;
+    questionsRecord = createFinishQuestions(texts, {
+      sourceFinal: archive.jsonFile,
+      sourceReport: prepared.sourceReport,
+    });
+    fs.mkdirSync(finishDir, { recursive: true });
+    writeFinishQuestions(questionsPath, questionsRecord);
   }
 
-  const qa = qaPairsToLegacyAnswers(allQa);
+  let roundAnswers: FinishAnswer[] = [];
+  if (fs.existsSync(finishJsonPath) && !options.answersFile && !isExtension) {
+    const existing = JSON.parse(fs.readFileSync(finishJsonPath, "utf8")) as FinishRecord;
+    const existingAnswers = normalizeFinishAnswers(existing.answers);
+    if (allQuestionsAnswered(questionsRecord.questions, existingAnswers)) {
+      console.log("Reusing saved answers.");
+      roundAnswers = existingAnswers;
+    }
+  }
 
-  // Persist cumulative Q&A on the prepared record.
-  prepared.answers = qa;
-  prepared.answeredAt = new Date().toISOString();
-  writeRecordJson(preparedPath, prepared);
+  if (roundAnswers.length === 0) {
+    if (isExtension) {
+      console.log(
+        `Continuing from finish ${priorFinish?.file} — ${priorQa.length} prior Q&A` +
+          `${questionsToAsk.length > 0 ? `, ${questionsToAsk.length} new question(s)` : ""}.`,
+      );
+    }
+    if (options.answersFile) {
+      roundAnswers = readFinishAnswersFile(options.answersFile, questionsRecord.questions);
+    } else if (questionsRecord.questions.length === 0) {
+      console.log("All prepared questions already answered — regenerating narrative only.");
+      roundAnswers = [];
+    } else {
+      console.log("\nAnswer the questions:");
+      roundAnswers = await collectFinishAnswers(questionsRecord.questions, inquirer.prompt);
+    }
+  }
 
-  // Step 2 — Role Narrative (one LLM session, narrativeModel).
+  const priorAnswers =
+    isExtension && priorFinish ? normalizeFinishAnswers(priorFinish.record.answers) : [];
+  const allAnswers = isExtension ? [...priorAnswers, ...roundAnswers] : roundAnswers;
+  const sourceQuestions = extendSourceQuestions(
+    isExtension && priorFinish ? priorFinish.record.sourceQuestions : undefined,
+    archive.baseFinishId,
+    archive.version,
+  );
+  const qa = resolveAnswersToQa(
+    finishDir,
+    archive.baseFinishId,
+    archive.version,
+    allAnswers,
+    sourceQuestions,
+  );
+
   const baseUrl = resolveBaseUrl(options.url);
   const savedOllama = loadConfig().ollama;
   const model = await resolveModel(baseUrl, options.model, {
@@ -197,8 +230,6 @@ export async function final(options: FinalOptions): Promise<void> {
   let cvBullets: string[] = [];
 
   try {
-    // Step 2a — refine "Your IMPACT" prose so it reflects the human's answers, not
-    // just the Git reconstruction. Falls back to the prepared history on failure.
     process.stdout.write(
       isExtension
         ? "Refining Your IMPACT with all answers ... "
@@ -219,7 +250,6 @@ export async function final(options: FinalOptions): Promise<void> {
     impactHistory = refined.history?.trim() || prepared.model.history;
     console.log("ok");
 
-    // Step 2b — Role Narrative bullets.
     process.stdout.write("Writing Role Narrative ... ");
     const result = (await chatJson({
       baseUrl,
@@ -232,7 +262,6 @@ export async function final(options: FinalOptions): Promise<void> {
     narrative = asStringArray(result.narrative).slice(0, 4);
     console.log(`ok (${narrative.length} bullets)`);
 
-    // Step 2c — CV bullets (impersonal, action-oriented).
     process.stdout.write("Writing CV bullets ... ");
     const cvResult = (await chatJson({
       baseUrl,
@@ -254,7 +283,6 @@ export async function final(options: FinalOptions): Promise<void> {
     tracker.endStep();
   }
 
-  // Step 3 — assemble RECONSTRUCTION.<project>.md in the current working directory.
   const projectName = path.basename(repoPath);
   const role = project.role;
   const p = project.profile;
@@ -301,16 +329,15 @@ export async function final(options: FinalOptions): Promise<void> {
       (isExtension ? ` (${qa.length} Q&A pairs, finish v${archive.version})` : ""),
   );
 
-  // Step 4 — archive the result under the repo's finish dir.
   fs.mkdirSync(finishDir, { recursive: true });
   const finishMdPath = path.join(finishDir, archive.mdFile);
-  const finishJsonPath = path.join(finishDir, archive.jsonFile);
   fs.writeFileSync(finishMdPath, `${md}\n`, "utf8");
 
   const finishRecord: FinishRecord = {
     finishId: archive.baseFinishId,
     sourcePrepared: latest.file,
     sourceReport: prepared.sourceReport,
+    sourceQuestions,
     ...(isExtension && priorFinish ? { sourcePreviousFinish: priorFinish.file } : {}),
     version: archive.version,
     round: archive.version,
@@ -320,7 +347,7 @@ export async function final(options: FinalOptions): Promise<void> {
     history: impactHistory,
     narrative,
     cvBullets,
-    answers: qa,
+    answers: allAnswers,
     outputMarkdown: path.basename(finishMdPath),
     provenance: { model, generatedAt: new Date().toISOString() },
   };

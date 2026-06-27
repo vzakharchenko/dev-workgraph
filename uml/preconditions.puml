@@ -38,7 +38,7 @@ INIT -down-> REP
 INIT -down-> PRE
 INIT -down-> FIN
 
-FIN ..> PRE : optional\nprior Q&A (extension)
+FIN ..> PRE : optional\nprior Q&A via finish\n(sourceQuestions + question files)
 FIN ..> FIN : extension mode\n(latestFinish chain)
 
 INITP .up.> INIT : inherits repo-level\nproject.json by default

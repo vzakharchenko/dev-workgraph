@@ -3,7 +3,52 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { FinishRecord, PreparedRecord, ReportRecord } from "./records.js";
+import type {
+  FinishRecord,
+  FinishSourceQuestions,
+  PreparedRecord,
+  ReportRecord,
+} from "./records.js";
+
+/** Question-file version label (`v1` = initial `final`, `v2+` = deepen / extension). */
+export function finishQuestionVersionLabel(version: number): string {
+  return version <= 1 ? "v1" : `v${version}`;
+}
+
+/** Parses `v1`, `v2`, … into a finish-chain version number. */
+export function parseFinishQuestionVersionLabel(label: string): number {
+  const match = /^v(\d+)$/.exec(label.trim());
+  if (!match) throw new Error(`Invalid question version label: ${label}`);
+  return Number(match[1]);
+}
+
+/** Normalizes legacy `*.question.json` file names into {@link FinishSourceQuestions}. */
+export function normalizeSourceQuestions(
+  value: FinishSourceQuestions | string | undefined,
+): FinishSourceQuestions {
+  if (!value) return {};
+  if (typeof value === "string") {
+    const match = value.match(/^(\d+)\.question(?:\.v(\d+))?\.json$/);
+    if (!match) return {};
+    const baseFinishId = Number(match[1]);
+    const version = match[2] ? Number(match[2]) : 1;
+    return { [baseFinishId]: [finishQuestionVersionLabel(version)] };
+  }
+  return value;
+}
+
+/** Appends a question round label for `baseFinishId` (deduped, order preserved). */
+export function extendSourceQuestions(
+  prior: FinishSourceQuestions | string | undefined,
+  baseFinishId: number,
+  version: number,
+): FinishSourceQuestions {
+  const label = finishQuestionVersionLabel(version);
+  const normalized = normalizeSourceQuestions(prior);
+  const existing = normalized[baseFinishId] ?? [];
+  if (existing.includes(label)) return { ...normalized, [baseFinishId]: existing };
+  return { ...normalized, [baseFinishId]: [...existing, label] };
+}
 
 /** Parses `1700000000.json` (v1) or `1700000000.v2.json` (v2+). */
 export function parseFinishFileName(file: string): { baseFinishId: number; version: number } {
@@ -28,6 +73,12 @@ export function finishJsonFileName(baseFinishId: number, version: number): strin
 /** Archive markdown file name paired with {@link finishJsonFileName}. */
 export function finishMdFileName(baseFinishId: number, version: number): string {
   return finishJsonFileName(baseFinishId, version).replace(/\.json$/i, ".md");
+}
+
+/** Question file paired with a finish archive (`<id>.question.json` or `<id>.question.vN.json`). */
+export function finishQuestionsJsonFileName(baseFinishId: number, version: number): string {
+  if (version <= 1) return `${baseFinishId}.question.json`;
+  return `${baseFinishId}.question.v${version}.json`;
 }
 
 /** Version cursor on a finish record (falls back to the file name). */
@@ -58,7 +109,15 @@ export function latestFinish(finishDir: string): { file: string; record: FinishR
 
   const ranked = fs
     .readdirSync(finishDir)
-    .filter((f) => f.endsWith(".json"))
+    .filter((f) => {
+      if (!f.endsWith(".json") || f.includes(".question.")) return false;
+      try {
+        parseFinishFileName(f);
+        return true;
+      } catch {
+        return false;
+      }
+    })
     .map((file) => {
       const full = path.join(finishDir, file);
       const record = JSON.parse(fs.readFileSync(full, "utf8")) as FinishRecord;

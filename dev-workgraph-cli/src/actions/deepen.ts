@@ -12,12 +12,24 @@ import {
   setOllamaConfig,
 } from "../lib/config.js";
 import {
+  extendSourceQuestions,
+  finishQuestionsJsonFileName,
   latestFinish,
   loadPreparedRecord,
   loadReportRecord,
   nextFinishVersion,
   versionedReconstructionName,
 } from "../lib/finish-load.js";
+import type { ResolvedQa } from "../lib/finish-questions.js";
+import {
+  collectFinishAnswers,
+  createFinishQuestions,
+  normalizeFinishAnswers,
+  readFinishAnswersFile,
+  resolveAnswersToQa,
+  resolveFinishQa,
+  writeFinishQuestions,
+} from "../lib/finish-questions.js";
 import { resolveRepo } from "../lib/git.js";
 import {
   cleanQuestionAnalyses,
@@ -43,7 +55,7 @@ import {
   withProjectContext,
 } from "../lib/prompts.js";
 import { writeRecordJson } from "../lib/record-io.js";
-import type { FinishRecord, ProjectContext } from "../lib/records.js";
+import type { FinishAnswer, FinishRecord, ProjectContext } from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
@@ -75,11 +87,8 @@ export interface DeepenOptions {
   period?: string;
 }
 
-/** One question-answer pair collected from the developer. */
-interface QA {
-  question: string;
-  answer: string;
-}
+/** One question-answer pair for markdown assembly. */
+type QA = ResolvedQa;
 
 /** Coerces an unknown JSON value to a non-empty string array. */
 const asStringArray = (value: unknown): string[] =>
@@ -87,30 +96,19 @@ const asStringArray = (value: unknown): string[] =>
     ? value.filter((v): v is string => typeof v === "string" && v.length > 0)
     : [];
 
-/** Loads Q&A for the four new deepen questions from JSON (array or `{ answers: [...] }`). */
-function readAnswersFile(p: string, questions: string[]): QA[] {
-  const parsed = JSON.parse(fs.readFileSync(p, "utf8")) as unknown;
-  const arr = Array.isArray(parsed) ? parsed : ((parsed as { answers?: unknown }).answers ?? []);
-  return (arr as { question?: string; answer?: string }[]).map((x, i) => ({
-    question: x.question ?? questions[i] ?? `Question ${i + 1}`,
-    answer: x.answer ?? "",
-  }));
+/** Loads answers for the four new deepen questions from JSON (array or `{ answers: [...] }`). */
+function readDeepenAnswersFile(
+  p: string,
+  questions: { id: string; question: string }[],
+): { questionId: string; answer: string }[] {
+  return readFinishAnswersFile(p, questions);
 }
 
 /** Collects answers to the four new deepen questions interactively (multi-line editor). */
-async function collectAnswers(questions: string[]): Promise<QA[]> {
-  const pairs: QA[] = [];
-  for (const [i, question] of questions.entries()) {
-    const { answer } = await inquirer.prompt<{ answer: string }>([
-      {
-        type: "editor",
-        name: "answer",
-        message: `(${i + 1}/${questions.length}) ${question}`,
-      },
-    ]);
-    pairs.push({ question, answer: (answer ?? "").trim() });
-  }
-  return pairs;
+async function collectDeepenAnswers(
+  questions: { id: string; question: string }[],
+): Promise<{ questionId: string; answer: string }[]> {
+  return collectFinishAnswers(questions, inquirer.prompt);
 }
 
 /**
@@ -266,12 +264,14 @@ export async function deepen(options: DeepenOptions): Promise<void> {
   }
 
   const prior = priorFinish.record;
-  const priorQa = prior.answers ?? [];
-  if (priorQa.length === 0) {
+  const priorAnswers = normalizeFinishAnswers(prior.answers);
+  if (priorAnswers.length === 0) {
     console.error("✖ Latest finish has no saved answers. Run `dev-workgraph final` first.");
     process.exitCode = 1;
     return;
   }
+
+  const priorQa = resolveFinishQa(finishDir, prior, priorFinish.file);
 
   const existing = nextFinishExists(finishDir, priorFinish.file);
   if (existing) {
@@ -318,6 +318,7 @@ export async function deepen(options: DeepenOptions): Promise<void> {
   let narrative: string[] = [];
   let cvBullets: string[] = [];
   let allQa: QA[] = [...priorQa];
+  let allAnswers = [...priorAnswers];
 
   try {
     process.stdout.write("Generating four new follow-up questions ... ");
@@ -352,15 +353,33 @@ export async function deepen(options: DeepenOptions): Promise<void> {
       console.log(`   ${i + 1}. ${q}`);
     });
 
-    let newQa: QA[];
+    const questionsJsonFile = finishQuestionsJsonFileName(
+      nextArchive.baseFinishId,
+      nextArchive.version,
+    );
+    const questionsPath = path.join(finishDir, questionsJsonFile);
+    const questionsRecord = createFinishQuestions(newQuestions, {
+      sourceFinal: nextArchive.jsonFile,
+      sourceReport: prepared.record.sourceReport,
+    });
+    fs.mkdirSync(finishDir, { recursive: true });
+    writeFinishQuestions(questionsPath, questionsRecord);
+
+    let newAnswers: FinishAnswer[];
     if (options.answersFile) {
-      newQa = readAnswersFile(options.answersFile, newQuestions);
+      newAnswers = readDeepenAnswersFile(options.answersFile, questionsRecord.questions);
     } else {
       console.log("\nAnswer the four new questions:");
-      newQa = await collectAnswers(newQuestions);
+      newAnswers = await collectDeepenAnswers(questionsRecord.questions);
     }
 
-    allQa = [...priorQa, ...newQa];
+    allAnswers = [...priorAnswers, ...newAnswers];
+    allQa = resolveAnswersToQa(
+      finishDir,
+      nextArchive.baseFinishId,
+      nextArchive.version,
+      allAnswers,
+    );
 
     process.stdout.write("\nRefining Your IMPACT with all answers ... ");
     const refined = (await chatJson({
@@ -441,11 +460,18 @@ export async function deepen(options: DeepenOptions): Promise<void> {
   const finishJsonPath = path.join(finishDir, nextArchive.jsonFile);
   fs.writeFileSync(finishMdPath, `${md}\n`, "utf8");
 
+  const sourceQuestions = extendSourceQuestions(
+    priorFinish.record.sourceQuestions,
+    nextArchive.baseFinishId,
+    nextArchive.version,
+  );
+
   const finishRecord: FinishRecord = {
     finishId: nextArchive.baseFinishId,
     sourcePrepared: prepared.file,
     sourceReport: prepared.record.sourceReport,
     sourcePreviousFinish: priorFinish.file,
+    sourceQuestions,
     version: nextArchive.version,
     round: nextArchive.version,
     project: projectName,
@@ -454,7 +480,7 @@ export async function deepen(options: DeepenOptions): Promise<void> {
     history: impactHistory,
     narrative,
     cvBullets,
-    answers: allQa,
+    answers: allAnswers,
     outputMarkdown: path.basename(finishMdPath),
     ...(recalledContext ? { recalledContext } : {}),
     provenance: { model, generatedAt },

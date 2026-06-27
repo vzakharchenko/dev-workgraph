@@ -6,7 +6,13 @@
 
 import { tierOf } from "./grouping.js";
 import type { QuestionAnalyses } from "./model.js";
-import type { CommitRecord, GroupRecord, ProjectContext, ReportRecord } from "./records.js";
+import type {
+  CommitEvidenceRecord,
+  CommitRecord,
+  GroupRecord,
+  ProjectContext,
+  ReportRecord,
+} from "./records.js";
 import { MAX_HISTORY_ENTRIES } from "./report-provenance.js";
 
 export { MAX_HISTORY_ENTRIES };
@@ -246,7 +252,7 @@ export const COMMIT_SUMMARY_SYSTEM = [
  * @param patch - The raw patch text.
  */
 export function buildCommitUserPrompt(
-  record: CommitRecord,
+  record: CommitEvidenceRecord,
   patch: string,
 ): { prompt: string; truncated: boolean } {
   const truncated = patch.length > MAX_PATCH_CHARS;

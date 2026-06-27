@@ -9,6 +9,7 @@ import {
   loadConfig,
   repoCommitsDir,
   repoGroupsDir,
+  repoSummariesDir,
   setOllamaConfig,
   setRepoConfig,
 } from "../lib/config.js";
@@ -142,6 +143,8 @@ function buildGroupRecord(members: CommitRecord[]): GroupRecord {
     groups: {
       commits: members.map((c) => c.commitHash),
       tiers: partitionTiers(members),
+      sourceEvidence: members.map((c) => c.sourceEvidence),
+      sourceSummaries: members.map((c) => c.sourceSummary),
     },
     deterministic: aggregateDeterministic(members),
     model: null,
@@ -155,9 +158,12 @@ function buildGroupRecord(members: CommitRecord[]): GroupRecord {
  */
 export async function commitGroup(options: CommitGroupOptions): Promise<void> {
   const repoPath = resolveRepo(options.repo);
-  const commits = loadCommitRecords(repoCommitsDir(repoPath, options.period));
+  const commits = loadCommitRecords(
+    repoCommitsDir(repoPath, options.period),
+    repoSummariesDir(repoPath, options.period),
+  );
   if (commits.length === 0) {
-    console.log(`No exported commits found for ${repoPath}. Run \`dev-workgraph export\` first.`);
+    console.log(`No exported commits found for ${repoPath}. Run \`dev-workgraph evidence\` first.`);
     return;
   }
 

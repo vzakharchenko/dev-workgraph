@@ -73,8 +73,13 @@ describe("commitGroup", () => {
     expect(fs.existsSync(groupFile)).toBe(true);
     const record = JSON.parse(fs.readFileSync(groupFile, "utf8")) as {
       model: { history: string } | null;
+      groups: { sourceEvidence: string[]; sourceSummaries: (string | null)[] };
     };
     expect(record.model?.history).toBe("Session history narrative.");
+    expect(record.groups.sourceEvidence).toEqual(["1700000000"]);
+    expect(record.groups.sourceSummaries).toEqual([
+      "summaries/1700000000/abc1234567890abc1234567890abc1234567890.json",
+    ]);
   });
 
   it("skips groups that already have a model layer", async () => {

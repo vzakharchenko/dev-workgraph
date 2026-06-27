@@ -11,6 +11,7 @@ import {
   setOllamaConfig,
 } from "../lib/config.js";
 import { latestFinish } from "../lib/finish-load.js";
+import { resolveFinishQa } from "../lib/finish-questions.js";
 import { resolveRepo } from "../lib/git.js";
 import {
   cleanQuestionAnalyses,
@@ -180,7 +181,14 @@ export async function prepare(options: PrepareOptions): Promise<void> {
 
     // Step 5 — reframe role-aware questionsAnalyses + confidence.
     process.stdout.write("   [4/4] reframe open questions → 4 ... ");
-    const priorQa = latestFinish(repoFinishDir(repoPath, options.period))?.record.answers ?? [];
+    const priorFinish = latestFinish(repoFinishDir(repoPath, options.period));
+    const priorQa = priorFinish
+      ? resolveFinishQa(
+          repoFinishDir(repoPath, options.period),
+          priorFinish.record,
+          priorFinish.file,
+        )
+      : [];
     const reframed = (await chatJson({
       baseUrl,
       model,

@@ -113,6 +113,17 @@ export function repoCommitsDir(repoPath: string, period?: string): string {
 }
 
 /**
+ * Absolute path to per-commit model summaries
+ * (`~/.workgraph/data/repos/<repo-id>[/periods/<period>]/summaries`), written by
+ * `summarize` alongside the evidence in `commits`.
+ * @param repoPath - Absolute path to the repository (top-level).
+ * @param period - Optional review period to scope under.
+ */
+export function repoSummariesDir(repoPath: string, period?: string): string {
+  return path.join(repoRoot(repoPath, period), "summaries");
+}
+
+/**
  * Absolute path to a repository's work-session groups directory
  * (`~/.workgraph/data/repos/<repo-id>[/periods/<period>]/groups`).
  * @param repoPath - Absolute path to the repository (top-level).

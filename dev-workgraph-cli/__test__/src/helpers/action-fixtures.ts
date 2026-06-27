@@ -8,9 +8,15 @@ import {
   repoPreparedDir,
   repoProjectPath,
   repoReportsDir,
+  repoSummariesDir,
 } from "../../../src/lib/config.js";
+import { finishJsonFileName, finishQuestionsJsonFileName, finishQuestionVersionLabel } from "../../../src/lib/finish-load.js";
+import { createFinishQuestions, writeFinishQuestions } from "../../../src/lib/finish-questions.js";
+import { commitEvidenceTimestamp } from "../../../src/lib/grouping.js";
 import type {
+  CommitEvidenceRecord,
   CommitRecord,
+  CommitSummaryRecord,
   FinishRecord,
   GroupRecord,
   PreparedRecord,
@@ -66,18 +72,49 @@ export function seedCommit(
   repoPath: string,
   overrides: Partial<CommitRecord> & { commitHash: string },
   period?: string,
-): { jsonPath: string; patchPath: string } {
-  const record = sampleCommit({
-    ...overrides,
-    model: overrides.model ?? null,
-  });
+): { jsonPath: string; patchPath: string; summaryPath?: string } {
+  const { model, ...rest } = overrides;
+  const record = sampleCommit({ ...rest, model: null });
   const dir = path.join(repoCommitsDir(repoPath, period), String(record.timestamp));
   fs.mkdirSync(dir, { recursive: true });
   const jsonPath = path.join(dir, `${record.commitHash}.json`);
   const patchPath = path.join(dir, `${record.commitHash}.patch`);
-  fs.writeFileSync(jsonPath, `${JSON.stringify(record, null, 2)}\n`);
+  const evidence: CommitEvidenceRecord = {
+    commitHash: record.commitHash,
+    timestamp: record.timestamp,
+    title: record.title,
+    author: record.author,
+    deterministic: record.deterministic,
+  };
+  fs.writeFileSync(jsonPath, `${JSON.stringify(evidence, null, 2)}\n`);
   fs.writeFileSync(patchPath, "diff --git a/src/a.ts\n+export const x = 1;\n");
+  if (model) {
+    const summaryPath = seedSummary(repoPath, record, model, period);
+    return { jsonPath, patchPath, summaryPath };
+  }
   return { jsonPath, patchPath };
+}
+
+export function seedSummary(
+  repoPath: string,
+  commit: Pick<CommitRecord, "commitHash" | "timestamp">,
+  model: NonNullable<CommitRecord["model"]>,
+  period?: string,
+): string {
+  const summary: CommitSummaryRecord = {
+    commitHash: commit.commitHash,
+    timestamp: commit.timestamp,
+    sourceEvidence: commitEvidenceTimestamp(commit.timestamp),
+    model,
+  };
+  const summaryPath = path.join(
+    repoSummariesDir(repoPath, period),
+    String(commit.timestamp),
+    `${commit.commitHash}.json`,
+  );
+  fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
+  fs.writeFileSync(summaryPath, `${JSON.stringify(summary, null, 2)}\n`);
+  return summaryPath;
 }
 
 export function seedGroup(
@@ -148,10 +185,41 @@ export function seedFinish(
   version = 1,
 ): string {
   const finishId = overrides.finishId ?? 1_700_000_000;
+  const defaultQuestions = [
+    "Was it production?",
+    "Who designed it?",
+    "Any security impact?",
+    "Customer driven?",
+  ];
+  const defaultAnswers = ["Staging only.", "I did.", "No.", "Internal."];
+  const legacyAnswers = overrides.answers as { question: string; answer: string }[] | undefined;
+  const questionTexts = legacyAnswers?.map((a) => a.question) ?? defaultQuestions;
+  const jsonFile = finishJsonFileName(finishId, version);
+  const questionsFile = finishQuestionsJsonFileName(finishId, version);
+  const questionsRecord = createFinishQuestions(
+    questionTexts,
+    { sourceFinal: jsonFile, sourceReport: "1700000000.json" },
+    1_700_000_000_000,
+  );
+  const dir = repoFinishDir(repoPath, period);
+  fs.mkdirSync(dir, { recursive: true });
+  writeFinishQuestions(path.join(dir, questionsFile), questionsRecord);
+  const answers =
+    legacyAnswers?.map((entry, i) => ({
+      questionId: questionsRecord.questions[i]?.id ?? questionsRecord.questions[0]!.id,
+      answer: entry.answer,
+    })) ??
+    questionsRecord.questions.map((q, i) => ({
+      questionId: q.id,
+      answer: defaultAnswers[i] ?? "",
+    }));
   const record: FinishRecord = {
     finishId,
     sourcePrepared: preparedFile,
     sourceReport: "1700000000.json",
+    sourceQuestions: {
+      [finishId]: Array.from({ length: version }, (_, i) => finishQuestionVersionLabel(i + 1)),
+    },
     round: version,
     version,
     project: path.basename(repoPath),
@@ -165,20 +233,12 @@ export function seedFinish(
       "Implemented token usage tracking across pipeline steps.",
       "Refactored report merge for append-only resume semantics.",
     ],
-    answers: [
-      { question: "Was it production?", answer: "Staging only." },
-      { question: "Who designed it?", answer: "I did." },
-      { question: "Any security impact?", answer: "No." },
-      { question: "Customer driven?", answer: "Internal." },
-    ],
+    answers,
     outputMarkdown: version <= 1 ? `${finishId}.md` : `${finishId}.v${version}.md`,
     provenance: { model: "test-model", generatedAt: "2026-01-01T00:00:00Z" },
     ...overrides,
+    answers,
   };
-  const dir = repoFinishDir(repoPath, period);
-  fs.mkdirSync(dir, { recursive: true });
-  const jsonFile =
-    version <= 1 ? `${finishId}.json` : `${finishId}.v${version}.json`;
   const file = path.join(dir, jsonFile);
   fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
   fs.writeFileSync(

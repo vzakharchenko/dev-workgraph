@@ -48,16 +48,14 @@ interface DeterministicLayer {
 }
 
 /**
- * The full on-disk JSON record for one commit. The model layer is null until
- * the (optional) `summarize` step fills it in.
+ * Pure evidence on disk. The model layer is written separately by `summarize`.
  */
-interface CommitRecord {
+interface CommitEvidenceRecord {
   commitHash: string;
   timestamp: number;
   title: string;
   author: string;
   deterministic: DeterministicLayer;
-  model: null;
 }
 
 /** Sorted unique helper. */
@@ -152,13 +150,12 @@ function extractOne(repoPath: string, outDir: string, commit: Commit): "extracte
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(patchPath, `${getPatch(repoPath, commit.hash)}\n`, "utf8");
 
-  const record: CommitRecord = {
+  const record: CommitEvidenceRecord = {
     commitHash: commit.hash,
     timestamp: commit.timestamp,
     title: commit.subject,
     author: commit.email,
     deterministic: buildDeterministic(repoPath, commit.hash),
-    model: null,
   };
   writeRecordJson(jsonPath, record);
 

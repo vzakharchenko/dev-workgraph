@@ -3,8 +3,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { loadConfig, repoCommitsDir, setOllamaConfig } from "../lib/config.js";
+import { loadConfig, repoCommitsDir, repoSummariesDir, setOllamaConfig } from "../lib/config.js";
 import { resolveRepo } from "../lib/git.js";
+import { commitEvidenceTimestamp, commitSummaryPath } from "../lib/grouping.js";
 import {
   cleanQuestionAnalysis,
   enforceSignalReasons,
@@ -20,7 +21,7 @@ import {
   withProjectContext,
 } from "../lib/prompts.js";
 import { writeRecordJson } from "../lib/record-io.js";
-import type { CommitRecord } from "../lib/records.js";
+import type { CommitEvidenceRecord, CommitSummaryRecord } from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
@@ -41,10 +42,10 @@ export interface SummarizeOptions {
 }
 
 /**
- * Recursively lists every commit JSON file under the commits directory.
+ * Recursively lists every commit evidence JSON file under the commits directory.
  * @param dir - The commits directory.
  */
-function listCommitJsonFiles(dir: string): string[] {
+function listEvidenceJsonFiles(dir: string): string[] {
   if (!fs.existsSync(dir)) return [];
   const files: string[] = [];
   for (const entry of fs.readdirSync(dir)) {
@@ -63,12 +64,13 @@ function listCommitJsonFiles(dir: string): string[] {
  */
 export async function summarize(options: SummarizeOptions): Promise<void> {
   const repoPath = resolveRepo(options.repo);
-  const dir = repoCommitsDir(repoPath, options.period);
+  const evidenceDir = repoCommitsDir(repoPath, options.period);
+  const summariesDir = repoSummariesDir(repoPath, options.period);
   const baseUrl = resolveBaseUrl(options.url);
 
-  const allFiles = listCommitJsonFiles(dir);
+  const allFiles = listEvidenceJsonFiles(evidenceDir);
   if (allFiles.length === 0) {
-    console.log(`No exported commits found for ${repoPath}. Run \`dev-workgraph export\` first.`);
+    console.log(`No exported commits found for ${repoPath}. Run \`dev-workgraph evidence\` first.`);
     return;
   }
 
@@ -86,12 +88,16 @@ export async function summarize(options: SummarizeOptions): Promise<void> {
   }
   const system = withProjectContext(projectBlock, COMMIT_SUMMARY_SYSTEM);
 
-  // Pending = not yet summarized (append-only).
-  const pending: { file: string; record: CommitRecord }[] = [];
+  // Pending = no summary file yet (append-only). Legacy evidence with inlined model counts as done.
+  const pending: { evidence: CommitEvidenceRecord; summaryPath: string }[] = [];
   for (const file of allFiles) {
-    const record = JSON.parse(fs.readFileSync(file, "utf8")) as CommitRecord;
-    if (record.model) continue;
-    pending.push({ file, record });
+    const raw = JSON.parse(fs.readFileSync(file, "utf8")) as CommitEvidenceRecord & {
+      model?: ModelLayer | null;
+    };
+    const { model: legacyModel, ...evidence } = raw;
+    const summaryPath = commitSummaryPath(summariesDir, evidence.timestamp, evidence.commitHash);
+    if (fs.existsSync(summaryPath) || legacyModel) continue;
+    pending.push({ evidence, summaryPath });
   }
 
   const total = allFiles.length;
@@ -116,14 +122,19 @@ export async function summarize(options: SummarizeOptions): Promise<void> {
   let failed = 0;
   try {
     for (const [i, item] of work.entries()) {
-      const short = item.record.commitHash.slice(0, 8);
+      const short = item.evidence.commitHash.slice(0, 8);
       process.stdout.write(
-        `[${i + 1}/${work.length}] ${short} ${item.record.title.slice(0, 50)} ... `,
+        `[${i + 1}/${work.length}] ${short} ${item.evidence.title.slice(0, 50)} ... `,
       );
 
-      const patchPath = item.file.replace(/\.json$/, ".patch");
+      const evidenceJsonPath = path.join(
+        evidenceDir,
+        String(item.evidence.timestamp),
+        `${item.evidence.commitHash}.json`,
+      );
+      const patchPath = evidenceJsonPath.replace(/\.json$/, ".patch");
       const patch = fs.existsSync(patchPath) ? fs.readFileSync(patchPath, "utf8") : "";
-      const { prompt, truncated } = buildCommitUserPrompt(item.record, patch);
+      const { prompt, truncated } = buildCommitUserPrompt(item.evidence, patch);
 
       try {
         const raw = (await chatJson({
@@ -143,8 +154,14 @@ export async function summarize(options: SummarizeOptions): Promise<void> {
           patchTruncated: truncated,
         };
 
-        item.record.model = layer;
-        writeRecordJson(item.file, item.record);
+        const summary: CommitSummaryRecord = {
+          commitHash: item.evidence.commitHash,
+          timestamp: item.evidence.timestamp,
+          sourceEvidence: commitEvidenceTimestamp(item.evidence.timestamp),
+          model: layer,
+        };
+        fs.mkdirSync(path.dirname(item.summaryPath), { recursive: true });
+        writeRecordJson(item.summaryPath, summary);
         console.log("ok");
         done += 1;
       } catch (err) {
@@ -156,5 +173,5 @@ export async function summarize(options: SummarizeOptions): Promise<void> {
     tracker.endStep();
   }
 
-  console.log(`\n✅ Summarized ${done}, failed ${failed}. Records updated in ${dir}.`);
+  console.log(`\n✅ Summarized ${done}, failed ${failed}. Summaries written to ${summariesDir}.`);
 }

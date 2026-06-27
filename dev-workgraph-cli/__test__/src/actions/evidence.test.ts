@@ -44,8 +44,8 @@ describe("evidence", () => {
       `${sampleGitCommit.hash}.json`,
     );
     expect(fs.existsSync(jsonPath)).toBe(true);
-    const record = JSON.parse(fs.readFileSync(jsonPath, "utf8")) as { model: null; title: string };
-    expect(record.model).toBeNull();
+    const record = JSON.parse(fs.readFileSync(jsonPath, "utf8")) as { title: string; model?: unknown };
+    expect(record.model).toBeUndefined();
     expect(record.title).toBe("Add feature");
   });
 

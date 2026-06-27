@@ -97,15 +97,18 @@ partition "Prepared narrative (§10)" {
 }
 
 partition "Final deliverable (§11)" {
-  :(H) **final** — collect answers\nUp to 4 questions/round;\n**extension:** prior finish Q&A + new;
-  :(M:n) **final** — refine IMPACT\nWeave **all** Q&A; combined history in extension;
+  :(H) **final** — collect answers\nUp to 4 questions/round;\nwrite **.question.json** / **.question.vN.json**;
+  :(M:n) **final** — refine IMPACT\nWeave **all** Q&A (resolve question files);
   :(M:n) **final** — Role Narrative\n4 claim-safe impact bullets;
   :(D) **final** — write markdown\nRECONSTRUCTION.<project>.md or .vN.md;
   note right
     **cwd:** RECONSTRUCTION.<project>.md (v1)
     or .vN.md (extension / after deepen)
-    **archive:** finish/<preparedId>.{md,json}
-    or <preparedId>.vN.{md,json}
+    **archive:** finish/<id>.{md,json}
+    + <id>.question.json (v1)
+    + <id>.question.vN.json (round N)
+    **answers[]** on finish: { questionId, answer }
+    **sourceQuestions:** { id: ["v1","v2",…] }
     **extension:** append-only vN+1
   end note
 }
@@ -114,6 +117,7 @@ partition "Narrative extension (§11.5) — optional, not in run" {
   :(H) **deepen** — recalled context\nNon-code context Git cannot show;\n--context-file optional;
   :(M:n) **deepen** — 4 new questions\nMust not repeat prior Q&A;\nuses combined history baseline;
   :(H) **deepen** — collect 4 new answers\ncumulative answers[] (8, 12, …);
+  :(D) **deepen** — write **.question.vN.json**\nextend sourceQuestions;
   :(M:n) **deepen** — refine IMPACT\nprepare history + prior finish history\n+ all Q&A + recalled context;
   :(M:n) **deepen** — Role Narrative\nsame inputs as IMPACT refine;
   :(D) **deepen** — versioned markdown\nAppend-only finish archive;
@@ -125,7 +129,9 @@ partition "Narrative extension (§11.5) — optional, not in run" {
     **cwd:** RECONSTRUCTION.<project>.v2.md (vN)
     (or .<period>.vN.md)
     **archive:** finish/<preparedId>.vN.{md,json}
-    **sourcePreviousFinish** → prior version
+    + <preparedId>.question.vN.json
+    **sourcePreviousFinish** -> prior version
+    **sourceQuestions** extended each round
     v1 never overwritten
   end note
 }
@@ -224,7 +230,8 @@ LLM --> DEP : newQuestions x4
 DEP -> H : 4 new questions (interactive)\n--answers-file optional
 H --> DEP : new answers
 
-DEP -> DEP : allQa = prior answers + new
+DEP -> DEP : write <id>.question.vN.json\nextend sourceQuestions
+DEP -> DEP : allQa = prior answers + new\n(resolve question files)
 
 DEP -> LLM : refine IMPACT\n(combined history + allQa + recalled)
 LLM --> DEP : impactHistory
@@ -233,7 +240,7 @@ DEP -> LLM : Role Narrative x4\n(impactHistory + signalReasons + allQa)
 LLM --> DEP : narrative x4
 
 DEP -> MD : RECONSTRUCTION.<project>.vN+1.md
-DEP -> FIN2 : finish/<preparedId>.vN+1.{md,json}\nsourcePreviousFinish, recalledContext,\ncumulative answers[]
+DEP -> FIN2 : finish/<preparedId>.vN+1.{md,json}\n+ .question.vN+1.json\nsourcePreviousFinish, recalledContext,\ncumulative answers[], sourceQuestions
 
 note over FIN, FIN2
   Never overwrites v1 or prior versions.
@@ -272,12 +279,14 @@ folder "data/repos/<repo-id>/" as REPO {
     file "<timestampEnd>.json"
   }
   folder "prepared/" as PREP {
-    file "<reportId>.json\n(+ answers after final)"
+    file "<reportId>.json\n(questionsAnalyses only)"
   }
   folder "finish/" as FIN {
-    file "<preparedId>.md + .json\n(version 1, from final)"
-    file "<preparedId>.v2.md + .v2.json\n(deepen append-only)"
-    file "<preparedId>.vN…"
+    file "<id>.md + .json\n(version 1, from final)"
+    file "<id>.question.json\n(v1 question text)"
+    file "<id>.v2.md + .v2.json\n(deepen / extension)"
+    file "<id>.question.v2.json\n(v2 questions)"
+    file "<id>.vN…"
   }
   folder "periods/<period>/" as PER {
     note bottom
@@ -292,8 +301,8 @@ PJ --> COMM : project context for LLM
 COMM --> GRP : per-commit JSONs
 GRP --> RPT : fold chain
 RPT --> PREP : latest report
-PREP --> FIN : prepared + Q&A
-FIN --> FIN : deepen or extension final\n→ v2, v3, … (sourcePreviousFinish)
+PREP --> FIN : prepared narrative\n(answers on finish only)
+FIN --> FIN : deepen or extension final\n-> v2, v3, … (sourcePreviousFinish)
 
 note bottom of REPO
   **export** bundles data/repos/<repo-id>/ + config entry → .tar.gz
@@ -327,7 +336,7 @@ rectangle "Interpretation (may be wrong;\nmust cite signal reasons)" #FFF3E0 {
 }
 
 rectangle "Primary product" #FCE4EC {
-  card "**questions** → human **answers**" as Q
+  card "**questions** -> finish/*.question.json\n+ human **answers** on finish archive" as Q
   card "**RECONSTRUCTION.<project>.md**" as OUT
   card "**RECONSTRUCTION.<project>.vN.md**\n(deepen, append-only)" as OUTV
 }

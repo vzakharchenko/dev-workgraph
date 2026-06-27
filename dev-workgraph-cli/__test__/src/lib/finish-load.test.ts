@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   defaultReconstructionName,
+  extendSourceQuestions,
   finishJsonFileName,
   finishMdFileName,
+  finishQuestionVersionLabel,
+  finishQuestionsJsonFileName,
   latestFinish,
   loadPreparedRecord,
   loadReportRecord,
   nextFinishVersion,
+  normalizeSourceQuestions,
   parseFinishFileName,
   versionedReconstructionName,
 } from "../../../src/lib/finish-load.js";
@@ -26,10 +30,9 @@ describe("finish-load versioning", () => {
     });
   });
 
-  it("builds next version file names without overwriting v1", () => {
-    expect(finishJsonFileName(1_700_000_000, 1)).toBe("1700000000.json");
-    expect(finishJsonFileName(1_700_000_000, 2)).toBe("1700000000.v2.json");
-    expect(finishMdFileName(1_700_000_000, 2)).toBe("1700000000.v2.md");
+  it("builds question file names like finish archives", () => {
+    expect(finishQuestionsJsonFileName(1_700_000_000, 1)).toBe("1700000000.question.json");
+    expect(finishQuestionsJsonFileName(1_700_000_000, 2)).toBe("1700000000.question.v2.json");
     expect(nextFinishVersion("1700000000.json")).toEqual({
       baseFinishId: 1_700_000_000,
       version: 2,
@@ -91,5 +94,19 @@ describe("finish-load versioning", () => {
 
   it("latestFinish returns null when finish dir is missing", () => {
     expect(latestFinish(path.join(os.tmpdir(), "no-such-finish-dir"))).toBeNull();
+  });
+
+  it("builds cumulative sourceQuestions version labels", () => {
+    expect(finishQuestionVersionLabel(1)).toBe("v1");
+    expect(finishQuestionVersionLabel(2)).toBe("v2");
+    expect(extendSourceQuestions(undefined, 1_759_696_393, 1)).toEqual({
+      1759696393: ["v1"],
+    });
+    expect(extendSourceQuestions({ 1759696393: ["v1"] }, 1_759_696_393, 2)).toEqual({
+      1759696393: ["v1", "v2"],
+    });
+    expect(normalizeSourceQuestions("1759696393.question.v2.json")).toEqual({
+      1759696393: ["v2"],
+    });
   });
 });

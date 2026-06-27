@@ -126,10 +126,14 @@ describe("partitionTiers", () => {
 });
 
 describe("loadCommitRecords", () => {
-  let tmpDir: string;
+  let tmpDir: string | undefined;
+  let extraDirs: string[] = [];
 
   afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    for (const dir of extraDirs) fs.rmSync(dir, { recursive: true, force: true });
+    tmpDir = undefined;
+    extraDirs = [];
   });
 
   it("loads commit JSON files sorted by timestamp", () => {
@@ -141,6 +145,48 @@ describe("loadCommitRecords", () => {
     fs.writeFileSync(path.join(tmpDir, "100/older.json"), JSON.stringify(older));
     fs.writeFileSync(path.join(tmpDir, "200/newer.json"), JSON.stringify(newer));
     expect(loadCommitRecords(tmpDir).map((c) => c.commitHash)).toEqual(["older", "newer"]);
+  });
+
+  it("merges evidence with summaries from a sibling directory", () => {
+    const commitsDir = fs.mkdtempSync(path.join(os.tmpdir(), "wg-commits-"));
+    const summariesDir = fs.mkdtempSync(path.join(os.tmpdir(), "wg-summaries-"));
+    tmpDir = commitsDir;
+    extraDirs = [summariesDir];
+    const evidence = sampleCommit({ commitHash: "abc", timestamp: 100, model: null });
+    fs.mkdirSync(path.join(commitsDir, "100"), { recursive: true });
+    fs.writeFileSync(
+      path.join(commitsDir, "100/abc.json"),
+      JSON.stringify({
+        commitHash: evidence.commitHash,
+        timestamp: evidence.timestamp,
+        title: evidence.title,
+        author: evidence.author,
+        deterministic: evidence.deterministic,
+      }),
+    );
+    fs.mkdirSync(path.join(summariesDir, "100"), { recursive: true });
+    fs.writeFileSync(
+      path.join(summariesDir, "100/abc.json"),
+      JSON.stringify({
+        commitHash: "abc",
+        timestamp: 100,
+        model: sampleModel({ summary: "from summary file" }),
+      }),
+    );
+    const merged = loadCommitRecords(commitsDir, summariesDir)[0];
+    expect(merged?.model?.summary).toBe("from summary file");
+  });
+
+  it("falls back to legacy inlined model when no summary file exists", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wg-commits-legacy-"));
+    const legacy = sampleCommit({
+      commitHash: "legacy",
+      timestamp: 100,
+      model: sampleModel({ summary: "legacy inline" }),
+    });
+    fs.mkdirSync(path.join(tmpDir, "100"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "100/legacy.json"), JSON.stringify(legacy));
+    expect(loadCommitRecords(tmpDir)[0]?.model?.summary).toBe("legacy inline");
   });
 
   it("returns empty array for missing directory", () => {

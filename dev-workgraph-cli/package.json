@@ -24,7 +24,10 @@
     "test": "tsx scripts/generate-version.ts && vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "knip": "knip"
+    "knip": "knip",
+    "quality": "npm run lint:fix && npm run format && npm run knip && npm run test:coverage",
+    "reconstruct": "npm run build && node dist/cli.js run .",
+    "reconstruct:deepen": "npm run build && node dist/cli.js deepen ."
   },
   "dependencies": {
     "commander": "^15.0.0",

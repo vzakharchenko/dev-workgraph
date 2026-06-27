@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { repoSummariesDir } from "../../../src/lib/config.js";
 import {
   chatJsonFromSchema,
   FAKE_REPO,
@@ -51,13 +52,27 @@ describe("summarize", () => {
   });
 
   it("fills the model layer for pending commits", async () => {
-    const { jsonPath } = seedCommit(FAKE_REPO, { commitHash: "abc1234567890abc1234567890abc1234567890" });
+    const hash = "abc1234567890abc1234567890abc1234567890";
+    seedCommit(FAKE_REPO, { commitHash: hash });
     await summarize({ repo: FAKE_REPO, model: "test-model" });
-    const record = JSON.parse(fs.readFileSync(jsonPath, "utf8")) as {
-      model: { summary: string; provenance: { model: string } } | null;
+    const summaryPath = path.join(repoSummariesDir(FAKE_REPO), "1700000000", `${hash}.json`);
+    const summary = JSON.parse(fs.readFileSync(summaryPath, "utf8")) as {
+      commitHash: string;
+      sourceEvidence: string;
+      model: { summary: string; provenance: { model: string } };
     };
-    expect(record.model?.summary).toBe("Changed src/a.ts");
-    expect(record.model?.provenance.model).toBe("test-model");
+    expect(summary.commitHash).toBe(hash);
+    expect(summary.sourceEvidence).toBe("1700000000");
+    expect(summary.model.summary).toBe("Changed src/a.ts");
+    expect(summary.model.provenance.model).toBe("test-model");
+  });
+
+  it("does not modify evidence JSON", async () => {
+    const hash = "abc1234567890abc1234567890abc1234567890";
+    const { jsonPath } = seedCommit(FAKE_REPO, { commitHash: hash });
+    const before = fs.readFileSync(jsonPath, "utf8");
+    await summarize({ repo: FAKE_REPO, model: "test-model" });
+    expect(fs.readFileSync(jsonPath, "utf8")).toBe(before);
   });
 
   it("skips already summarized commits", async () => {
