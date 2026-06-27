@@ -80,8 +80,9 @@ describe("chatJson", () => {
     expect(result).toEqual({ routine: true, reason: "deps" });
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining("prompt 120"));
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
-    expect(body.options.num_predict).toBe(8192);
-    expect(body.options.num_ctx).toBe(16384);
+    expect(body.options).toEqual({ temperature: 0.2 });
+    expect(body.options.num_predict).toBeUndefined();
+    expect(body.options.num_ctx).toBeUndefined();
   });
 
   it("retries on HTTP failure then succeeds", async () => {
@@ -109,7 +110,34 @@ describe("chatJson", () => {
     vi.useRealTimers();
   });
 
-  it("escalates num_ctx and num_predict on truncation retries", async () => {
+  it("accepts valid JSON when done_reason is length", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        done_reason: "length",
+        message: { content: '{"routine": true, "reason": "ok"}' },
+        prompt_eval_count: 1000,
+        eval_count: 500,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      chatJson({
+        baseUrl: "http://127.0.0.1:11434",
+        model: "test",
+        system: "sys",
+        user: "user",
+        schema: routineCheckJsonSchema(),
+      }),
+    ).resolves.toEqual({ routine: true, reason: "ok" });
+    expect(stderr).toHaveBeenCalledWith(
+      "   warning: Ollama done_reason=length but response validated OK\n",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries on invalid JSON then succeeds", async () => {
     vi.useFakeTimers();
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const fetchMock = vi
@@ -119,25 +147,12 @@ describe("chatJson", () => {
         json: async () => ({
           done_reason: "length",
           message: { content: '{"routine":' },
-          prompt_eval_count: 1000,
-          eval_count: 500,
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          done_reason: "length",
-          message: { content: '{"routine":' },
-          prompt_eval_count: 2000,
-          eval_count: 800,
         }),
       })
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
           message: { content: '{"routine": true, "reason": "ok"}' },
-          prompt_eval_count: 3000,
-          eval_count: 100,
         }),
       });
     vi.stubGlobal("fetch", fetchMock);
@@ -150,16 +165,7 @@ describe("chatJson", () => {
     });
     await vi.runAllTimersAsync();
     await expect(promise).resolves.toEqual({ routine: true, reason: "ok" });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    const options = fetchMock.mock.calls.map((call) => {
-      const body = JSON.parse(String(call[1]?.body));
-      return { num_ctx: body.options.num_ctx, num_predict: body.options.num_predict };
-    });
-    expect(options).toEqual([
-      { num_ctx: 16384, num_predict: 8192 },
-      { num_ctx: 32768, num_predict: 16384 },
-      { num_ctx: 65536, num_predict: -1 },
-    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
   });
 });

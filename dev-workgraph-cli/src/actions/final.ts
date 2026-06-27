@@ -14,13 +14,20 @@ import {
   versionedReconstructionName,
 } from "../lib/finish-load.js";
 import { resolveRepo } from "../lib/git.js";
-import { flattenQuestions, groupHistoryJsonSchema, roleNarrativeJsonSchema } from "../lib/model.js";
+import {
+  cvBulletsJsonSchema,
+  flattenQuestions,
+  groupHistoryJsonSchema,
+  roleNarrativeJsonSchema,
+} from "../lib/model.js";
 import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
 import { loadProjectContext } from "../lib/project.js";
 import {
+  buildCvBulletsPrompt,
   buildDeepenImpactNarrativePrompt,
   buildImpactNarrativePrompt,
   buildRoleNarrativePrompt,
+  CV_BULLETS_SYSTEM,
   IMPACT_NARRATIVE_SYSTEM,
   projectContextBlock,
   ROLE_NARRATIVE_SYSTEM,
@@ -187,6 +194,7 @@ export async function final(options: FinalOptions): Promise<void> {
 
   let impactHistory = prepared.model.history;
   let narrative: string[] = [];
+  let cvBullets: string[] = [];
 
   try {
     // Step 2a — refine "Your IMPACT" prose so it reflects the human's answers, not
@@ -223,6 +231,25 @@ export async function final(options: FinalOptions): Promise<void> {
     })) as { narrative?: unknown };
     narrative = asStringArray(result.narrative).slice(0, 4);
     console.log(`ok (${narrative.length} bullets)`);
+
+    // Step 2c — CV bullets (impersonal, action-oriented).
+    process.stdout.write("Writing CV bullets ... ");
+    const cvResult = (await chatJson({
+      baseUrl,
+      model,
+      system: withProjectContext(projectBlock, CV_BULLETS_SYSTEM),
+      user: buildCvBulletsPrompt(
+        project.role,
+        impactHistory,
+        prepared.model.signalReasons,
+        qa,
+        narrative,
+      ),
+      schema: cvBulletsJsonSchema(),
+      tracker,
+    })) as { cvBullets?: unknown };
+    cvBullets = asStringArray(cvResult.cvBullets).slice(0, 4);
+    console.log(`ok (${cvBullets.length} bullets)`);
   } finally {
     tracker.endStep();
   }
@@ -250,6 +277,10 @@ export async function final(options: FinalOptions): Promise<void> {
     "## Impact bullet points (Role Narrative)",
     "",
     ...(narrative.length > 0 ? narrative.map((b) => `- ${b}`) : ["- (none)"]),
+    "",
+    "## CV bullets",
+    "",
+    ...(cvBullets.length > 0 ? cvBullets.map((b) => `- ${b}`) : ["- (none)"]),
     "",
     "## Possible questions",
     "",
@@ -288,6 +319,7 @@ export async function final(options: FinalOptions): Promise<void> {
     technologies: prepared.model.technologies,
     history: impactHistory,
     narrative,
+    cvBullets,
     answers: qa,
     outputMarkdown: path.basename(finishMdPath),
     provenance: { model, generatedAt: new Date().toISOString() },

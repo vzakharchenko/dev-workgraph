@@ -113,8 +113,6 @@ export class TokenUsageTracker {
   private readonly projectPath: string;
   private usage: ProjectTokenUsage;
   private currentStep: PipelineStep | null = null;
-  private runStartLifetime = emptyTotals();
-  private runStartLifetimeByModel: Record<string, TokenTotals> = {};
   private runStartStep: TokenTotals | null = null;
   private runStartStepByModel: Record<string, TokenTotals> = {};
 
@@ -130,12 +128,11 @@ export class TokenUsageTracker {
 
   beginStep(step: PipelineStep): void {
     this.currentStep = step;
-    if (!this.usage.steps[step]) {
-      this.usage.steps[step] = { ...emptyTotals(), lastRunAt: "", byModel: {} };
+    let stepUsage = this.usage.steps[step];
+    if (!stepUsage) {
+      stepUsage = { ...emptyTotals(), lastRunAt: "", byModel: {} };
+      this.usage.steps[step] = stepUsage;
     }
-    this.runStartLifetime = cloneTotals(this.usage.lifetime);
-    this.runStartLifetimeByModel = cloneByModel(this.usage.lifetime.byModel);
-    const stepUsage = this.usage.steps[step]!;
     this.runStartStep = cloneTotals(stepUsage);
     this.runStartStepByModel = cloneByModel(stepUsage.byModel);
   }
@@ -144,10 +141,12 @@ export class TokenUsageTracker {
     const { model, promptTokens, completionTokens } = opts;
     addToTotals(this.usage.lifetime, promptTokens, completionTokens);
     addToByModel(this.usage.lifetime.byModel, model, promptTokens, completionTokens);
-    if (!this.currentStep) return;
-    const step = this.usage.steps[this.currentStep]!;
-    addToTotals(step, promptTokens, completionTokens);
-    addToByModel(step.byModel, model, promptTokens, completionTokens);
+    const stepKey = this.currentStep;
+    if (!stepKey) return;
+    const stepUsage = this.usage.steps[stepKey];
+    if (!stepUsage) return;
+    addToTotals(stepUsage, promptTokens, completionTokens);
+    addToByModel(stepUsage.byModel, model, promptTokens, completionTokens);
   }
 
   /** Snapshot of accumulated usage (for embedding in a new `project.json`). */
@@ -162,9 +161,9 @@ export class TokenUsageTracker {
   endStep(opts?: { persist?: boolean }): void {
     if (!this.currentStep || !this.runStartStep) return;
     const step = this.currentStep;
-    this.usage.steps[step]!.lastRunAt = new Date().toISOString();
-
-    const stepUsage = this.usage.steps[step]!;
+    const stepUsage = this.usage.steps[step];
+    if (!stepUsage) return;
+    stepUsage.lastRunAt = new Date().toISOString();
     const runStep = subtractTotals(stepUsage, this.runStartStep);
     const runStepByModel = subtractByModel(stepUsage.byModel, this.runStartStepByModel);
 

@@ -260,6 +260,15 @@ export function roleNarrativeJsonSchema(): Record<string, unknown> {
   };
 }
 
+/** JSON Schema for `final`: four impersonal CV/resume bullet points. */
+export function cvBulletsJsonSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: { cvBullets: { type: "array", items: { type: "string" } } },
+    required: ["cvBullets"],
+  };
+}
+
 /**
  * Case-insensitively unions technology lists, preserving the first-seen casing
  * and order. Used to accumulate `technologies` across commits → groups → report

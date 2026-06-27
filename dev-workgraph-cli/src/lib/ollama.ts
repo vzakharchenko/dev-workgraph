@@ -56,43 +56,14 @@ export async function listModels(baseUrl: string): Promise<string[]> {
  * @param opts.schema - JSON Schema for the `format` parameter.
  */
 /** Total attempts for a chat call before giving up (HTTP/parse failures are retried). */
-const MAX_ATTEMPTS = 3;
+const MAX_ATTEMPTS = 2;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** num_predict escalates on each retry; last attempt uses -1 (Ollama: no output cap). */
-const NUM_PREDICT_BY_ATTEMPT = [8192, 16384, -1] as const;
-
-/** num_ctx escalates on each retry; last attempt uses the largest supported window. */
-const NUM_CTX_BY_ATTEMPT = [16384, 32768, 65536] as const;
-
-function numPredictForAttempt(attempt: number): number {
-  const idx = attempt - 1;
-  return NUM_PREDICT_BY_ATTEMPT[idx] ?? -1;
-}
-
-function numCtxForAttempt(attempt: number): number {
-  const idx = attempt - 1;
-  const last = NUM_CTX_BY_ATTEMPT[NUM_CTX_BY_ATTEMPT.length - 1] ?? 65536;
-  return NUM_CTX_BY_ATTEMPT[idx] ?? last;
-}
-
-/** Default Ollama generation options (num_ctx / num_predict set per attempt in chatJson). */
+/** Default Ollama generation options; num_ctx / num_predict come from the model Modelfile. */
 const DEFAULT_CHAT_OPTIONS = {
   temperature: 0.2,
 } as const;
-
-export class ChatJsonError extends Error {
-  readonly promptTokens: number;
-  readonly completionTokens: number;
-
-  constructor(message: string, promptTokens: number, completionTokens: number) {
-    super(message);
-    this.name = "ChatJsonError";
-    this.promptTokens = promptTokens;
-    this.completionTokens = completionTokens;
-  }
-}
 
 function recordAndLogUsage(
   tracker: TokenUsageTracker | undefined,
@@ -148,18 +119,11 @@ async function chatJsonOnce(opts: {
   const content = data.message?.content ?? "";
   const promptTokens = data.prompt_eval_count ?? 0;
   const completionTokens = data.eval_count ?? 0;
+  const parsed = parseAndValidateModelJson(content, opts.schema);
   if (data.done_reason === "length") {
-    throw new ChatJsonError(
-      `model output truncated (token limit); content starts: ${content.slice(0, 120)}`,
-      promptTokens,
-      completionTokens,
-    );
+    process.stderr.write("   warning: Ollama done_reason=length but response validated OK\n");
   }
-  return {
-    data: parseAndValidateModelJson(content, opts.schema),
-    promptTokens,
-    completionTokens,
-  };
+  return { data: parsed, promptTokens, completionTokens };
 }
 
 export async function chatJson(opts: {
@@ -175,25 +139,18 @@ export async function chatJson(opts: {
   const maxAttempts = opts.maxAttempts ?? MAX_ATTEMPTS;
   let lastError: Error | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const num_predict = numPredictForAttempt(attempt);
-    const num_ctx = numCtxForAttempt(attempt);
     try {
       const { data, promptTokens, completionTokens } = await chatJsonOnce({
         ...opts,
-        ollamaOptions: { ...opts.ollamaOptions, num_predict, num_ctx },
+        ollamaOptions: { ...opts.ollamaOptions },
       });
       recordAndLogUsage(opts.tracker, opts.model, promptTokens, completionTokens);
       return data;
     } catch (err) {
-      if (err instanceof ChatJsonError) {
-        recordAndLogUsage(opts.tracker, opts.model, err.promptTokens, err.completionTokens);
-      }
       lastError = err as Error;
       if (attempt < maxAttempts) {
-        const nextPredict = numPredictForAttempt(attempt + 1);
-        const nextCtx = numCtxForAttempt(attempt + 1);
         process.stderr.write(
-          `\n   retry ${attempt}/${maxAttempts - 1} (${lastError.message.slice(0, 80)}) num_ctx→${nextCtx} num_predict→${nextPredict} `,
+          `\n   retry ${attempt}/${maxAttempts - 1} (${lastError.message.slice(0, 80)}) `,
         );
         await sleep(750 * attempt);
       }

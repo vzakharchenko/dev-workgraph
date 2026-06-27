@@ -159,6 +159,12 @@ export function seedFinish(
     technologies: ["TypeScript"],
     history: "I implemented the feature in staging.",
     narrative: ["Bullet one", "Bullet two", "Bullet three", "Bullet four"],
+    cvBullets: [
+      "Built CLI tooling for git history reconstruction.",
+      "Designed LLM pipeline stages for commit summarization.",
+      "Implemented token usage tracking across pipeline steps.",
+      "Refactored report merge for append-only resume semantics.",
+    ],
     answers: [
       { question: "Was it production?", answer: "Staging only." },
       { question: "Who designed it?", answer: "I did." },
@@ -273,6 +279,16 @@ export function chatJsonFromSchema(schema: Record<string, unknown>): unknown {
   }
   if (required.includes("narrative")) {
     return { narrative: ["Bullet one", "Bullet two", "Bullet three", "Bullet four"] };
+  }
+  if (required.includes("cvBullets")) {
+    return {
+      cvBullets: [
+        "Built CLI tooling for git history reconstruction.",
+        "Designed LLM pipeline stages for commit summarization.",
+        "Implemented token usage tracking across pipeline steps.",
+        "Refactored report merge for append-only resume semantics.",
+      ],
+    };
   }
   return modelLayerPayload();
 }

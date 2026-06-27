@@ -14,6 +14,7 @@ import {
   reportHistoryJsonSchema,
   reportMergeJsonSchema,
   reportNewHistoryJsonSchema,
+  cvBulletsJsonSchema,
   roleNarrativeJsonSchema,
   routineCheckJsonSchema,
   storyPrepareJsonSchema,
@@ -139,6 +140,15 @@ describe("json schemas", () => {
     expect(
       parseAndValidateModelJson('{"narrative":["Impact one","Impact two"]}', roleNarrativeJsonSchema()),
     ).toEqual({ narrative: ["Impact one", "Impact two"] });
+  });
+
+  it("cvBulletsJsonSchema accepts cvBullets array", () => {
+    expect(
+      parseAndValidateModelJson(
+        '{"cvBullets":["Built API","Designed schema"]}',
+        cvBulletsJsonSchema(),
+      ),
+    ).toEqual({ cvBullets: ["Built API", "Designed schema"] });
   });
 
   it("prepareTechnologiesJsonSchema accepts technologies array", () => {

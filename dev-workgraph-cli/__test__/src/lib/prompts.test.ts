@@ -34,8 +34,11 @@ import {
   buildReportMergePrompt,
   buildReportNewHistoryPrompt,
   buildRoleNarrativePrompt,
+  buildCvBulletsPrompt,
   buildRoutineCheckPrompt,
   buildStoryPreparePrompt,
+  CV_BULLETS_SYSTEM,
+  cvEmphasisForRole,
   projectContextBlock,
   withProjectContext,
 } from "../../../src/lib/prompts.js";
@@ -70,6 +73,17 @@ describe("projectContextBlock", () => {
   it("uses generic emphasis for unknown roles", () => {
     const block = projectContextBlock({ ...sampleContext(), role: "Consultant" });
     expect(block).toContain("what Git cannot show");
+  });
+});
+
+describe("cvEmphasisForRole", () => {
+  it("returns role-specific CV framing", () => {
+    expect(cvEmphasisForRole("Principal Developer")).toContain("system boundaries");
+    expect(cvEmphasisForRole("Junior Frontend Developer")).toContain("UI tasks");
+  });
+
+  it("falls back for unknown roles", () => {
+    expect(cvEmphasisForRole("Consultant")).toContain("no seniority inflation");
   });
 });
 
@@ -349,9 +363,23 @@ describe("final prompts", () => {
 
   it("exports final system prompts", () => {
     expect(ROLE_NARRATIVE_SYSTEM).toContain("ROLE NARRATIVE");
+    expect(CV_BULLETS_SYSTEM).toContain("ROLE FRAMING");
     expect(IMPACT_NARRATIVE_SYSTEM).toContain("HUMAN ANSWERS");
     expect(STORY_PREPARE_SYSTEM).toContain("preparedContext");
     expect(PROJECT_PROFILE_SYSTEM).toContain("PROFILE");
+  });
+
+  it("buildCvBulletsPrompt embeds role and CV emphasis", () => {
+    const prompt = buildCvBulletsPrompt(
+      "Senior Developer",
+      "I built the API.",
+      ["Reason one"],
+      [{ question: "Production?", answer: "Staging only." }],
+      ["I owned the API design."],
+    );
+    expect(prompt).toContain("Developer role: Senior Developer");
+    expect(prompt).toContain("end-to-end feature");
+    expect(prompt).toContain("I owned the API design.");
   });
 });
 

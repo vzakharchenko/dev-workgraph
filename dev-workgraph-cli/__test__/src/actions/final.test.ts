@@ -80,6 +80,8 @@ describe("final", () => {
     expect(fs.existsSync(mdPath)).toBe(true);
     const md = fs.readFileSync(mdPath, "utf8");
     expect(md).toContain("Your IMPACT");
+    expect(md).toContain("## CV bullets");
+    expect(md).toContain("Built CLI tooling");
     expect(md).toContain("Staging only.");
     expect(fs.existsSync(path.join(repoFinishDir(FAKE_REPO), "1700000000.json"))).toBe(true);
   });

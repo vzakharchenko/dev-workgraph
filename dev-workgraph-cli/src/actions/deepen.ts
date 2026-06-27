@@ -21,6 +21,7 @@ import {
 import { resolveRepo } from "../lib/git.js";
 import {
   cleanQuestionAnalyses,
+  cvBulletsJsonSchema,
   flattenQuestions,
   groupHistoryJsonSchema,
   prepareQuestionsJsonSchema,
@@ -29,9 +30,11 @@ import {
 import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
 import { loadProjectContext } from "../lib/project.js";
 import {
+  buildCvBulletsPrompt,
   buildDeepenImpactNarrativePrompt,
   buildDeepenQuestionsPrompt,
   buildRoleNarrativePrompt,
+  CV_BULLETS_SYSTEM,
   combinePreparedAndPriorHistory,
   DEEPEN_QUESTIONS_SYSTEM,
   IMPACT_NARRATIVE_SYSTEM,
@@ -147,6 +150,7 @@ async function resolveRecalledContext(contextFile?: string): Promise<string> {
  * @param impactHistory - Refined "Your IMPACT" prose from step 4a.
  * @param technologies - Copied from the prepared record.
  * @param narrative - Four Role Narrative bullets from step 4b.
+ * @param cvBullets - Four impersonal CV bullets from step 4c.
  * @param qa - Cumulative Q&A (prior finish answers + four new pairs).
  * @param recalledContext - Optional non-code context for this deepen round; omitted from
  *   markdown and finish JSON when empty.
@@ -157,6 +161,7 @@ function assembleMarkdown(
   impactHistory: string,
   technologies: string[],
   narrative: string[],
+  cvBullets: string[],
   qa: QA[],
   recalledContext?: string,
 ): string {
@@ -184,6 +189,10 @@ function assembleMarkdown(
     "## Impact bullet points (Role Narrative)",
     "",
     ...(narrative.length > 0 ? narrative.map((b) => `- ${b}`) : ["- (none)"]),
+    "",
+    "## CV bullets",
+    "",
+    ...(cvBullets.length > 0 ? cvBullets.map((b) => `- ${b}`) : ["- (none)"]),
     "",
     "## Possible questions",
     "",
@@ -217,6 +226,7 @@ function nextFinishExists(finishDir: string, priorFile: string): string | null {
  * 3. Interactive (or `--answers-file`) — four new answers; merged into cumulative `answers[]`.
  * 4a. `narrativeModel` — refine IMPACT from prepare baseline + prior final history + all Q&A.
  * 4b. `narrativeModel` — four Role Narrative bullets (same inputs + recalled context).
+ * 4c. `narrativeModel` — four impersonal CV bullets (role-calibrated).
  * 5. Write `RECONSTRUCTION.<project>.vN.md` to cwd and append-only `finish/<id>.vN.{md,json}`.
  *
  * Skips when no finish exists, prior finish has no answers, or the next version file
@@ -306,6 +316,7 @@ export async function deepen(options: DeepenOptions): Promise<void> {
 
   let impactHistory = historyBase;
   let narrative: string[] = [];
+  let cvBullets: string[] = [];
   let allQa: QA[] = [...priorQa];
 
   try {
@@ -379,6 +390,24 @@ export async function deepen(options: DeepenOptions): Promise<void> {
     })) as { narrative?: unknown };
     narrative = asStringArray(result.narrative).slice(0, 4);
     console.log(`ok (${narrative.length} bullets)`);
+
+    process.stdout.write("Writing CV bullets ... ");
+    const cvResult = (await chatJson({
+      baseUrl,
+      model,
+      system: withProjectContext(projectBlock, CV_BULLETS_SYSTEM),
+      user: buildCvBulletsPrompt(
+        project.role,
+        impactHistory,
+        prepared.record.model.signalReasons,
+        allQa,
+        narrative,
+      ),
+      schema: cvBulletsJsonSchema(),
+      tracker,
+    })) as { cvBullets?: unknown };
+    cvBullets = asStringArray(cvResult.cvBullets).slice(0, 4);
+    console.log(`ok (${cvBullets.length} bullets)`);
   } finally {
     tracker.endStep();
   }
@@ -393,6 +422,7 @@ export async function deepen(options: DeepenOptions): Promise<void> {
     impactHistory,
     prepared.record.model.technologies,
     narrative,
+    cvBullets,
     allQa,
     recalledContext,
   );
@@ -423,6 +453,7 @@ export async function deepen(options: DeepenOptions): Promise<void> {
     technologies: prepared.record.model.technologies,
     history: impactHistory,
     narrative,
+    cvBullets,
     answers: allQa,
     outputMarkdown: path.basename(finishMdPath),
     ...(recalledContext ? { recalledContext } : {}),

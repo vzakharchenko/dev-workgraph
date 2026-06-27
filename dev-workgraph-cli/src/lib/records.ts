@@ -80,6 +80,8 @@ export interface FinishRecord {
   history: string;
   /** The four Role Narrative impact bullets. */
   narrative: string[];
+  /** Four impersonal CV/resume bullets (action-oriented, no "I"). */
+  cvBullets: string[];
   answers: { question: string; answer: string }[];
   /** File name of the result markdown written next to this record. */
   outputMarkdown: string;

@@ -25,6 +25,38 @@ const ROLE_QUESTION_EMPHASIS: Record<string, string> = {
     "assigned vs self-directed work, learning context, scope of autonomy, who reviewed or unblocked",
 };
 
+/** Per-role guidance for CV bullet emphasis (impersonal, seniority-calibrated). */
+const ROLE_CV_EMPHASIS: Record<string, string> = {
+  "Principal Developer":
+    "system boundaries, cross-team architecture, long-term platform direction, org-scale consequences — not line-level implementation unless that is all the evidence shows",
+  "Staff Developer":
+    "design ownership across subsystems, platform/integration direction, technical standards that others build on",
+  "Senior Developer":
+    "end-to-end feature or module ownership, concrete design decisions, product/driver context, mentoring or review scope when stated",
+  "Middle Developer":
+    "delivered features or modules with clear scope, collaboration on design, owned flows or components — no principal/staff-level platform claims",
+  "Junior Developer":
+    "implemented assigned work, contributed under review, bounded autonomy, learning context — honest scope without inflated leadership",
+  "Principal Frontend Developer":
+    "frontend architecture across products, design-system/platform direction, cross-team UI standards, performance and accessibility at scale",
+  "Staff Frontend Developer":
+    "frontend subsystem ownership, design-system or platform direction, integration with backend/API contracts",
+  "Senior Frontend Developer":
+    "feature-level UI ownership, component architecture, UX/product driver context, mentoring or review scope when stated",
+  "Middle Frontend Developer":
+    "shipped UI features or flows with clear scope, component/module ownership, collaboration on design — no staff-level platform claims",
+  "Junior Frontend Developer":
+    "implemented UI tasks under review, contributed to components, bounded autonomy — honest scope without inflated leadership",
+};
+
+/** CV bullet framing for a role; falls back to a generic seniority-safe line. */
+export function cvEmphasisForRole(role: string): string {
+  return (
+    ROLE_CV_EMPHASIS[role] ??
+    "ownership, scope, and technical decisions appropriate to the stated role — no seniority inflation"
+  );
+}
+
 /**
  * Renders the project-context grounding block to prepend to later prompts.
  * Returns "" when `init` has not run (so prompts behave as before).
@@ -121,10 +153,10 @@ export function buildProjectProfilePrompt(
 }
 
 /** Max patch characters sent to the per-commit model; longer patches are truncated. */
-const MAX_PATCH_CHARS = 12000;
+const MAX_PATCH_CHARS = 24000;
 
 /** Char budget for the serialized member commits in the group prompt. */
-const MAX_MEMBERS_CHARS = 16000;
+const MAX_MEMBERS_CHARS = 32000;
 
 // Shared across every stage: routine upkeep is named, never detailed; substantive work wins.
 const ROUTINE_RULE = [
@@ -871,6 +903,56 @@ export function buildRoleNarrativePrompt(
     qa.map((p) => `Q: ${p.question}\nA: ${p.answer || "(no answer)"}`).join("\n\n") || "(none)",
   );
   return blocks.join("\n");
+}
+
+// One session: distill four impersonal, action-oriented CV bullets from the Role Narrative.
+export const CV_BULLETS_SYSTEM = [
+  "You write EXACTLY FOUR CV/resume bullet points for a developer, based on their prepared history,",
+  "signal reasons, answers, and Role Narrative bullets.",
+  'Return JSON { "cvBullets": ["..." x4] }.',
+  "STYLE — impersonal and concise:",
+  "- NO first person: never use I, my, me, we, our, or the team.",
+  "- Start each bullet with a strong past-tense action verb (Built, Designed, Implemented,",
+  "  Refactored, Migrated, Evaluated, Prototyped, Automated, etc.).",
+  "- One line each; shorter than the Role Narrative — aim for ~12–22 words.",
+  "- Action-oriented: lead with what was done, then scope, component, or technology.",
+  "ROLE FRAMING — calibrate emphasis to seniority (see PROJECT CONTEXT and the role line in the user prompt):",
+  "- Frame what to highlight and what NOT to inflate, matching the developer's role.",
+  "- Principal/Staff: boundaries, platform direction, cross-system design — not ticket-level detail unless that is all the evidence shows.",
+  "- Senior: ownership, design decisions, end-to-end delivery.",
+  "- Middle/Junior: implemented/contributed scope, honest autonomy — no fabricated leadership or org-wide impact.",
+  "CLAIM SAFETY — same bar as the Role Narrative:",
+  "- Never invent production usage, customer impact, org-wide adoption, or completed migration",
+  "  unless explicitly confirmed in the answers.",
+  "- If work was a POC, prototype, or evaluation, say so directly.",
+  "- Prefer plain verbs over marketing hype (no spearheaded, leveraged, robust, seamless).",
+  "- Name concrete components/mechanisms where the history supports it.",
+].join("\n");
+
+/** Builds the CV bullets prompt from history, reasons, Q&A, Role Narrative, and role emphasis. */
+export function buildCvBulletsPrompt(
+  role: string,
+  history: string,
+  reasons: string[],
+  qa: { question: string; answer: string }[],
+  narrative: string[],
+): string {
+  return [
+    `Developer role: ${role}`,
+    `CV emphasis for this role: ${cvEmphasisForRole(role)}`,
+    "",
+    "Prepared history:",
+    history || "(none)",
+    "",
+    "Signal reasons:",
+    bulletList(reasons),
+    "",
+    "My answers to the open questions:",
+    qa.map((p) => `Q: ${p.question}\nA: ${p.answer || "(no answer)"}`).join("\n\n") || "(none)",
+    "",
+    "Role Narrative bullets (first-person reference — rewrite impersonal and shorter):",
+    bulletList(narrative),
+  ].join("\n");
 }
 
 // `final` step: refine the prepared history into the "Your IMPACT" prose, now that

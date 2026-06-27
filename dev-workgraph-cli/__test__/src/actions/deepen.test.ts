@@ -219,6 +219,8 @@ describe("deepen", () => {
     expect(md).toContain("New answer four.");
     expect(md).toContain("security review");
     expect(md).toContain("Recalled context (this deepen round)");
+    expect(md).toContain("## CV bullets");
+    expect(md).toContain("Built CLI tooling");
   });
 
   it("collects recalled context and new answers interactively", async () => {
