@@ -25,6 +25,8 @@ This is **not** a commit counter, activity heatmap, or auto-scored achievement t
 3. **Confirm** — you answer; answers are stored on the finish archive, separate from the prepared narrative.
 4. **Deliver** — `RECONSTRUCTION.<project>.md` (+ optional `.v2.md` after **`deepen`** when you recall more team context, pivots, or review framing).
 
+See real outputs on GitHub: [Forge Secure Notes for Jira](https://github.com/vzakharchenko/dev-workgraph/blob/master/examples/Forge-Secure-Notes-for-Jira/RECONSTRUCTION.Forge-Secure-Notes-for-Jira.v2.md) (Principal) and [keycloak-radius-plugin](https://github.com/vzakharchenko/dev-workgraph/blob/master/examples/keycloak-radius-plugin/RECONSTRUCTION.keycloak-radius-plugin.v2.md) (Staff, open-source IAM).
+
 ### Evidence pipeline, not a resume generator
 
 The goal is **not** “generate a resume from Git.” dev-workgraph builds an **evidence-based career reconstruction pipeline**:
@@ -66,6 +68,17 @@ npx dev-workgraph run .
 ```
 
 The pipeline ends with **`final`**: you answer up to four questions interactively. The markdown deliverable is written to your **current working directory**. Everything before that can run unattended and be resumed.
+
+## Example outputs
+
+Real **`RECONSTRUCTION.*.md`** files from dogfooding on production repos (local Ollama, interactive `final` + **`deepen`**):
+
+| Project | Role | Output |
+|---------|------|--------|
+| [Forge Secure Notes for Jira](https://github.com/ForgeRock/Forge-Secure-Notes-for-Jira) | Principal Developer | [RECONSTRUCTION.Forge-Secure-Notes-for-Jira.v2.md](https://github.com/vzakharchenko/dev-workgraph/blob/master/examples/Forge-Secure-Notes-for-Jira/RECONSTRUCTION.Forge-Secure-Notes-for-Jira.v2.md) — zero-trust Jira Forge app, encryption, ~300 commits |
+| [keycloak-radius-plugin](https://github.com/vzakharchenko/keycloak-radius-plugin) | Staff Developer | [RECONSTRUCTION.keycloak-radius-plugin.v2.md](https://github.com/vzakharchenko/dev-workgraph/blob/master/examples/keycloak-radius-plugin/RECONSTRUCTION.keycloak-radius-plugin.v2.md) — open-source Keycloak RADIUS plugin, IAM / platform migrations |
+
+More examples: [examples/](https://github.com/vzakharchenko/dev-workgraph/tree/master/examples) on GitHub.
 
 ## Review periods
 
