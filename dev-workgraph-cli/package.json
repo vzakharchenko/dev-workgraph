@@ -10,7 +10,9 @@
     "dev-workgraph": "dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "tsconfig.json",
+    "README.md"
   ],
   "engines": {
     "node": ">=20"
