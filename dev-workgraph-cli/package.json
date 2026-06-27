@@ -11,8 +11,8 @@
   },
   "files": [
     "dist",
-    "tsconfig.json",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20"
@@ -49,6 +49,7 @@
     "format": "biome format --write src",
     "format:check": "biome format src",
     "verify": "npm run lint && npm run typecheck && npm run knip",
+    "prepublishOnly": "npm run verify && npm test && npm run build",
     "start": "node dist/cli.js",
     "test": "tsx scripts/generate-version.ts && vitest run",
     "test:watch": "vitest",
