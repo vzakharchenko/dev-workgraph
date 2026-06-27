@@ -29,16 +29,6 @@ export interface FinishAnswer {
 /** Maps finish id → question-file version labels (`v1`, `v2`, …). */
 export type FinishSourceQuestions = Record<number, string[]>;
 
-/** @deprecated Legacy Q&A shape; use {@link FinishAnswer} + finish question files. */
-interface QAPair {
-  /** @deprecated Legacy `qN` ids; new questions use Unix-ms timestamps in question files. */
-  id: string;
-  question: string;
-  answer: string;
-  sourceFinal: string;
-  sourceReport: string;
-}
-
 /** The model's interpretation of what the project is (from README + story). */
 export interface ProjectProfile {
   summary: string;

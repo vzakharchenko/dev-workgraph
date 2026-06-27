@@ -49,12 +49,6 @@ function isFinishAnswer(value: unknown): value is FinishAnswer {
   );
 }
 
-/** Question file name paired with a finish archive JSON file. */
-function finishQuestionsFileForFinishJson(finishJsonFile: string): string {
-  const { baseFinishId, version } = parseFinishFileName(finishJsonFile);
-  return finishQuestionsJsonFileName(baseFinishId, version);
-}
-
 /** Creates questions with unique Unix-ms ids (base + index). */
 export function createFinishQuestions(
   questionTexts: string[],
