@@ -355,14 +355,14 @@ class "FinishRecord" as FR #E1F5FE {
   finishId = prepared.preparedId
   sourcePrepared — prepared file name
   sourceReport — report file name (traceability)
-  sourceQuestions — { finishId: ["v1","v2",…] }
+  sourceQuestions — finishId: v1, v2, ...
   project — repo basename
   role
   technologies
   history — refined impactHistory
   narrative — 4 Role Narrative bullets
   cvBullets — 4 CV lines
-  answers — { questionId, answer }[] cumulative
+  answers — questionId + answer (cumulative)
   outputMarkdown — finish/<id>.md
   version — finish-chain cursor
   provenance { model, generatedAt }
@@ -371,7 +371,7 @@ class "FinishRecord" as FR #E1F5FE {
 class "FinishQuestionsRecord" as FQR #FCE4EC {
   sourceFinal — paired finish json file
   sourceReport — traceability
-  questions — { id, question }[]\nid = Unix-ms timestamp
+  questions — id + question\nid = Unix-ms timestamp
 }
 
 class "On disk" as DISK {
@@ -461,21 +461,16 @@ skinparam shadowing false
 title **final** — extension mode after incremental `run` (§11)
 
 database "finish/<id>.v10.json\n40 answers (questionId)" as F10
-database "finish/<id>.question.v10.json" as Q10
 database "prepared/<newReportId>.json\n4 new questions" as PNEW
 participant "**final**" as FIN
 actor "Developer" as DEV
 database "finish/<id>.v11.json\n44 answers" as F11
-database "finish/<id>.question.v11.json" as Q11
 
-F10 --> FIN : latestFinish()\nanswers[] + sourceQuestions
-Q10 .. FIN : prior question catalog
+F10 --> FIN : latestFinish()\nanswers[] + sourceQuestions\n+ question file catalog
 PNEW --> FIN : new prepared
 FIN -> DEV : ask 4 **new** questions only
 DEV --> FIN : new answers
-FIN -> Q11 : write new question file
-FIN -> FIN : merge 40 + 4\nrefine IMPACT (combined history)
-FIN -> F11 : append v11\nsourcePreviousFinish\nsourceQuestions: ["v1"…"v11"]
+FIN -> F11 : append v11 + question file\nsourcePreviousFinish\nsourceQuestions v1-v11
 
 note over F11
   Same version chain as **deepen**.
@@ -535,26 +530,26 @@ package "**prepared/** (no answers)" #FFF3E0 {
   class "PreparedRecord" as PR {
     model.questionsAnalyses
     model.history
-    **no answers field**
+    no answers field
   }
 }
 
 package "**finish/** question files" #FCE4EC {
   class "FinishQuestionsRecord" as FQ1 {
     <<v1>>
-    questions: { id, question }[]
+    questions: id + question
   }
   class "FinishQuestionsRecord" as FQ2 {
     <<v2>>
-    questions: { id, question }[]
+    questions: id + question
   }
 }
 
 package "**finish/** archive" #E1F5FE {
   class "FinishRecord" as FR {
     sourceQuestions
-    **{ finishId: ["v1","v2"] }**
-    answers: { questionId, answer }[]
+    finishId -> v1, v2
+    answers: questionId + answer
     version
   }
 }
