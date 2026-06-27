@@ -1,0 +1,282 @@
+# dev-workgraph — Architecture
+
+High-level architecture of the **dev-workgraph-cli** pipeline: how Git evidence becomes a defensible career narrative (`RECONSTRUCTION.<project>.md`). Product rules and field-level specs live in [`REQUIREMENTS.md`](REQUIREMENTS.md). Diagram sources: [`uml/`](uml/) — regenerate PNGs with [`scripts/generatePNGFromSchemas.sh`](scripts/generatePNGFromSchemas.sh) → [`img/`](img/).
+
+## Purpose
+
+dev-workgraph is a **local CLI** (Node.js + TypeScript + Ollama) that:
+
+- reconstructs *what* changed and *where* from **your** Git history;
+- asks **role-aware questions** about what Git cannot know (ownership, intent, production, design vs implementation);
+- weaves **your answers** into IMPACT narrative, role bullets, and CV bullets;
+- writes a personal artifact for **performance review**, **CV**, or **interview prep** — without inventing impact you did not confirm.
+
+It is **not** a commit counter, portfolio generator, or cloud SaaS. All analysis stays under `~/.workgraph/` unless you `export` a bundle.
+
+## Architectural principles
+
+Evidence, interpretation, and missing context stay separate:
+
+![Evidence vs interpretation](img/dev-workgraph-evidence-principle.png)
+
+| Layer | Trust | Examples |
+|-------|--------|----------|
+| **Evidence** | High | patches, deterministic JSON (files, churn, areas), commit timestamps |
+| **Interpretation** | May be wrong; must cite signal reasons | commit/group/report model summaries, prepared narrative |
+| **Missing context** | Recovered via human | `questionsAnalyses` → interactive Q&A → finish archive |
+
+**Core rule:** never overclaim production usage, customer impact, or org-wide adoption unless the developer stated it in an answer.
+
+Every LLM step after `init` receives a **project context block** (role, prepared story, profile from README + story). Questions are framed by seniority (Principal / Staff / Senior / Junior).
+
+## System context
+
+```text
+┌─────────────┐     HTTP      ┌──────────────┐
+│ dev-workgraph│ ────────────► │ Ollama (local)│
+│ CLI (Node)  │   chatJson    │ 3 model slots │
+└──────┬──────┘               └──────────────┘
+       │ read/write
+       ▼
+┌──────────────────────────────────────────────┐
+│ ~/.workgraph/                                 │
+│   config.json          — authors, models, role │
+│   data/repos/<repo-id>/ — pipeline artifacts   │
+└──────────────────────────────────────────────┘
+       │ git
+       ▼
+┌─────────────┐
+│ Your repo   │
+└─────────────┘
+```
+
+**Stack:** `commander` (CLI), `inquirer` (prompts), structured JSON via Ollama `format` + schema validation (`chatJson` → `parseAndValidateModelJson`). Each written JSON artifact carries `schemaVersion` (encoded CLI semver).
+
+## End-to-end pipeline
+
+![Pipeline activity](img/dev-workgraph-pipeline.png)
+
+![Pipeline graph (example N=3)](img/pipeline-graph.png)
+
+Stages run in order; `run` orchestrates through `final`. **`deepen`** is optional and **not** part of `run`.
+
+| Phase | Commands | LLM slot | Resume |
+|-------|----------|----------|--------|
+| Preflight | `check` | — | — |
+| Preconditions | `authors`, `init` | narrative (`init`) | idempotent |
+| Evidence | `evidence`, `summarize` | commit (`summarize`) | append-only |
+| Work sessions | `commit-group` | commit | extension groups |
+| Cumulative report | `report` | report | fold chain resume |
+| Prepared narrative | `prepare` | narrative | idempotent per report |
+| Deliverable | `final` | narrative | reuse or append vN |
+| Extension | `deepen` | narrative | append-only vN+1 |
+
+![Run orchestrator](img/dev-workgraph-run-orchestrator.png)
+
+### Three Ollama models
+
+| Slot | Commands | Typical use |
+|------|----------|-------------|
+| `commitModel` | `summarize`, `commit-group` | High volume per-commit / per-session |
+| `reportModel` | `report` | Cumulative fold over groups |
+| `narrativeModel` | `init`, `prepare`, `final`, `deepen` | Prose, claim-safe narrative |
+
+Saved in `~/.workgraph/config.json` under `ollama`. `run` asks once upfront.
+
+## On-disk layout
+
+Each Git repository gets an isolated namespace: `~/.workgraph/data/repos/<repo-id>/` where `<repo-id>` = `<basename>-<hash8>`.
+
+![Data layout](img/dev-workgraph-data-layout.png)
+
+```text
+data/repos/<repo-id>/
+  project.json                 # role, story, profile, tokenUsage
+  commits/<ts>/<hash>.{patch,json}    # evidence (deterministic)
+  summaries/<ts>/<hash>.json          # commit model layer
+  groups/<timestampEnd>.json
+  reports/<reportId>.json
+  prepared/<reportId>.json            # questions only — no answers
+  finish/
+    <id>.json                         # FinishRecord
+    <id>.question.json                # v1 questions
+    <id>.v2.json / .question.v2.json  # deepen / extension
+    <id>.md
+```
+
+**Review periods** (`--period <id>`) mirror this tree under `periods/<id>/`. Config (authors, grouping thresholds) lives in `config.json` outside the data dir; `export` bundles both.
+
+## Phase 1 — Preconditions
+
+![Preconditions overview](img/preconditions-overview.png)
+
+- **`authors`** — filter commits by selected author emails (required before `evidence`).
+- **`init`** — role + project story + README → `project.json` (required before model layers on commits/groups/report).
+- **`check`** — Ollama reachable, models installed.
+
+![Project context block](img/preconditions-project-context.png)
+
+The context block is prepended to every later LLM prompt so summaries and questions respect role and project backstory.
+
+## Phase 2 — Commit evidence
+
+**`evidence`** (deterministic): `git show` → patch + JSON with files, churn, areas, noise filtering.
+
+**`summarize`** (`commitModel`): per-commit model layer — summary, signals + reasons, `questionsAnalysis`.
+
+![Evidence overview](img/evidence-overview.png)
+
+![Evidence + summarize](img/evidence-summarize.png)
+
+Commit evidence and summaries are **separate files** (`commits/` vs `summaries/`) so evidence stays stable when models or prompts change.
+
+## Phase 3 — Work sessions (`commit-group`)
+
+Groups commits into **work sessions** by day gap (`groupThresholdDays`) and optional `groupMaxCommits`.
+
+1. **Deterministic** — union membership, aggregate churn/areas, `groups.tiers` (hi / medium / low).
+2. **Model** (`commitModel`) — session signals, context bullets, `questionsAnalyses`, first-person `history`.
+
+![Commit-group overview](img/commit-group-overview.png)
+
+On incremental re-run, only **uncovered** commits get **extension groups** — prior groups are not rewritten.
+
+![Incremental extension](img/commit-group-incremental.png)
+
+## Phase 4 — Cumulative report (`report`)
+
+Incremental **fold** over groups (oldest first): `report_k = merge(report_{k-1}, group_k)`.
+
+- **Routine gate** — cheap LLM call; upkeep-only groups fold deterministically (one call, skip heavy merge).
+- **Substantive groups** — merge model fields, add-if-new history, rolling compaction (`mergeCursor`, cap ≤ 12 history entries).
+- **Resumable** — each fold writes `reports/<timestampEnd>.json`; re-run continues from longest prefix.
+
+![Report fold chain](img/report-fold-chain.png)
+
+![Report overview](img/report-overview.png)
+
+Provenance: `sourceGroups[]` lists contributing group files; `history[i]` ↔ `deterministic.historySource[i]`.
+
+## Phase 5 — Prepared narrative (`prepare`)
+
+Distills the **latest** report into one role-aligned artifact — sole direct input to `final`.
+
+Four `narrativeModel` sessions + deterministic copies:
+
+1. Compose unified **history** (one string).
+2. Clean **technologies** (max 5).
+3. Collapse **signalReasons** → 4 strings.
+4. Reframe **questionsAnalyses** → up to 4 threads (skips threads already answered in latest finish).
+
+![Prepare overview](img/prepare-overview.png)
+
+![Prepare → final handoff](img/prepare-to-final.png)
+
+**No `answers` on prepared** — human Q&A lives only under `finish/` so incremental `prepare` does not treat old questions as already handled incorrectly.
+
+## Phase 6 — Final deliverable (`final`)
+
+Closes the loop: human answers → refined IMPACT → Role Narrative → CV bullets → markdown.
+
+![Final overview](img/final-overview.png)
+
+![Human Q&A loop](img/final-human-loop.png)
+
+### Q&A artifact model
+
+Three cooperating pieces on the **finish** chain:
+
+![Q&A artifacts](img/final-qa-artifacts.png)
+
+| Piece | Location | Content |
+|-------|----------|---------|
+| Question text | `finish/<id>.question.json`, `.question.vN.json` | `{ id, question }[]` — id = Unix-ms |
+| Answers | `finish/<id>.json` | Cumulative `{ questionId, answer }[]` |
+| Rounds | `sourceQuestions` on finish record | `{ "<finishId>": ["v1", "v2", …] }` |
+
+![FinishRecord schema](img/final-finish-record.png)
+
+**Extension mode** (new commits → new `prepared/`): load prior finish Q&A, ask only **new** deduped questions, append `finish/<id>.vN.json` — never overwrite v1.
+
+![Extension mode](img/final-extension-mode.png)
+
+Deliverable: `RECONSTRUCTION.<project>.md` in **cwd** (not repo path) + copy under `finish/`.
+
+![Markdown sections](img/final-markdown.png)
+
+Three `narrativeModel` sessions in `final`: refine IMPACT → Role Narrative (4 bullets) → CV bullets (4 lines).
+
+![Final LLM sessions](img/final-llm-sessions.png)
+
+## Phase 7 — Narrative extension (`deepen`)
+
+Optional post-`final`: recalled non-code context → 4 new questions → cumulative Q&A → refined narrative → **`RECONSTRUCTION.<project>.v2.md`** (append-only).
+
+![Deepen flow](img/dev-workgraph-deepen.png)
+
+Combined history baseline: `prepared.model.history` + prior `finish.history`. Does not re-read commits/evidence — only finish → prepared → report chain.
+
+## Cross-cutting concerns
+
+### Provenance
+
+Links are **file names only** (no commit hashes on finish/prepared):  
+`finish` → `sourcePrepared` → `prepared` → `sourceReport` → `report` → `sourceGroups[]` → groups → summaries/commits.
+
+### Token usage
+
+Each `chatJson` call logs tokens to stderr; `project.json` accumulates `tokenUsage` by step and model.
+
+### Portability
+
+`export` / `import` move `data/repos/<repo-id>/` + config entry as `.workgraph.tar.gz` — no LLM calls.
+
+### Resilience
+
+- JSON Schema validation on every model response; retries (2×) with backoff.
+- `temperature: 0.2` only; `num_ctx` / `num_predict` left to Modelfile defaults.
+- Append-only / resumable stages — safe to stop mid-pipeline and re-run `dev-workgraph run .`.
+
+## CLI module map
+
+Implementation lives in [`dev-workgraph-cli/src/`](dev-workgraph-cli/src/):
+
+| Area | Path |
+|------|------|
+| Commands | `src/actions/*.ts` — one file per pipeline stage |
+| Records / types | `src/lib/records.ts`, `model.ts` |
+| Ollama + validation | `src/lib/ollama.ts`, `json-response.ts` |
+| Grouping / evidence merge | `src/lib/grouping.ts` |
+| Finish + Q&A | `src/lib/finish-questions.ts`, `finish-load.ts` |
+| Config / paths | `src/lib/config.ts` |
+| Prompts | `src/lib/prompts.ts` |
+
+## Diagram index
+
+| Topic | Source | PNG |
+|-------|--------|-----|
+| Full pipeline | `uml/pipeline.puml` | `img/dev-workgraph-pipeline.png` |
+| Pipeline graph | `uml/pipeline-graph.dot` | `img/pipeline-graph.png` |
+| Data layout | `uml/pipeline.puml` | `img/dev-workgraph-data-layout.png` |
+| Evidence principle | `uml/pipeline.puml` | `img/dev-workgraph-evidence-principle.png` |
+| Preconditions | `uml/preconditions.puml` | `img/preconditions-*.png` |
+| Evidence | `uml/evidence.puml` | `img/evidence-*.png` |
+| Summarize | `uml/summarize.puml` | `img/summarize-*.png` |
+| Commit-group | `uml/commit-group.puml` | `img/commit-group-*.png` |
+| Report | `uml/report.puml` | `img/report-*.png` |
+| Prepare | `uml/prepare.puml` | `img/prepare-*.png` |
+| Final | `uml/final.puml` | `img/final-*.png` |
+| Deepen / run | `uml/pipeline.puml` | `img/dev-workgraph-deepen.png`, `dev-workgraph-run-orchestrator.png` |
+
+Regenerate all PNGs:
+
+```bash
+./scripts/generatePNGFromSchemas.sh
+```
+
+## Further reading
+
+- [`REQUIREMENTS.md`](REQUIREMENTS.md) — full specification (schemas, prompts, edge cases)
+- [`README.md`](README.md) — quick start and motivation
+- [`examples/`](examples/) — sample `RECONSTRUCTION.*.md` outputs
+- [`dev-workgraph-cli/README.md`](dev-workgraph-cli/README.md) — install and commands

@@ -11,7 +11,7 @@ Use them to see what a performance-review / CV narrative looks like when it is g
 
 Files here are **copies for documentation**; your own runs write `RECONSTRUCTION.*.md` to the directory where you invoke the CLI.
 
-Runs referenced in the root [README](../README.md) used a **MacBook Pro M4 Pro (48 GB)** and local Ollama (`qwen2.5-coder:14b` / `gpt-oss:latest` / `gemma-4-31B`).
+Runs referenced in the root [README](../README.md) used a **MacBook Pro M4 Pro (48 GB)** and local Ollama (`qwen2.5-coder:14b` / `gpt-oss:latest` / `gemma4:31b`).
 
 ---
 
@@ -29,6 +29,21 @@ Zero-trust Jira Forge app for sharing ephemeral encrypted notes inside issues �
 **Scale:** ~**300 commits** in the analyzed history; unattended pipeline stages took **~6 hours** on the hardware above before interactive questions.
 
 Good reference for a **large, security-heavy product repo** — architectural steering, encryption boundaries, CI/CD, and long-form Q&A under **Possible questions**.
+
+---
+
+## [keycloak-radius-plugin](keycloak-radius-plugin/)
+
+**Repository:** [github.com/vzakharchenko/keycloak-radius-plugin](https://github.com/vzakharchenko/keycloak-radius-plugin)
+
+Open-source Java plugin that embeds a RADIUS server in Keycloak — RadSec, CoA, OTP/WebAuthn, vendor SPI (Mikrotik, Cisco, ChilliSpot), Docker/CI releases, and continuous migration across Keycloak 9.x–26.x (WildFly → Quarkus).
+
+| File | Role | Notes |
+|------|------|--------|
+| [RECONSTRUCTION.keycloak-radius-plugin.md](keycloak-radius-plugin/RECONSTRUCTION.keycloak-radius-plugin.md) | Staff Developer | v1 after `final` |
+| [RECONSTRUCTION.keycloak-radius-plugin.v2.md](keycloak-radius-plugin/RECONSTRUCTION.keycloak-radius-plugin.v2.md) | Staff Developer | v2 after `deepen` — open-source adoption, release flow, Mikrotik/Hetzner validation vs community vendor integrations |
+
+Good reference for a **long-lived open-source infrastructure project** — protocol design, platform migrations, extensibility (SPI), and honest scope in answers (what you validated vs what the community contributed).
 
 ---
 

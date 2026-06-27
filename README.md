@@ -25,7 +25,7 @@ This is **not** a commit counter, activity heatmap, or auto-scored achievement t
 3. **Confirm** — you answer; answers are stored on the finish archive, separate from the prepared narrative.
 4. **Deliver** — `RECONSTRUCTION.<project>.md` (+ optional `.v2.md` after **`deepen`** when you recall more team context, pivots, or review framing).
 
-See real outputs in [`examples/`](./examples/) — e.g. a [~300-commit Forge app](examples/Forge-Secure-Notes-for-Jira/RECONSTRUCTION.Forge-Secure-Notes-for-Jira.v2.md) (Principal Developer) and [this CLI](examples/dev-workgraph/RECONSTRUCTION.dev-workgraph.v2.md) (Staff Developer).
+See real outputs in [`examples/`](./examples/) — e.g. [Forge Secure Notes](examples/Forge-Secure-Notes-for-Jira/RECONSTRUCTION.Forge-Secure-Notes-for-Jira.v2.md) (Principal), [keycloak-radius-plugin](examples/keycloak-radius-plugin/RECONSTRUCTION.keycloak-radius-plugin.v2.md) (Staff, open-source IAM), and [this CLI](examples/dev-workgraph/RECONSTRUCTION.dev-workgraph.v2.md) (Staff).
 
 ## Quick start
 
@@ -44,7 +44,7 @@ npx dev-workgraph run .
 
 The pipeline ends with **`final`**: you answer up to four questions interactively. The markdown deliverable is written to your **current working directory**. Everything before that can run unattended and be resumed.
 
-Example outputs: [`examples/Forge-Secure-Notes-for-Jira/`](./examples/Forge-Secure-Notes-for-Jira/) · [`examples/dev-workgraph/`](./examples/dev-workgraph/).
+Example outputs: [`examples/Forge-Secure-Notes-for-Jira/`](./examples/Forge-Secure-Notes-for-Jira/) · [`examples/keycloak-radius-plugin/`](./examples/keycloak-radius-plugin/) · [`examples/dev-workgraph/`](./examples/dev-workgraph/).
 
 See **[`dev-workgraph-cli/README.md`](./dev-workgraph-cli/README.md)** for commands, data layout, and development.
 
