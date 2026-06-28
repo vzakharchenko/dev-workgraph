@@ -17,11 +17,30 @@ const repoRoot = execFileSync("git", ["-C", cliRoot, "rev-parse", "--show-toplev
   encoding: "utf8",
 }).trim();
 const sampleEmail = "vaszakharchenko@gmail.com";
-const sampleHash = execFileSync(
-  "git",
-  ["-C", repoRoot, "log", "-1", "--format=%H", `--author=${sampleEmail}`],
-  { encoding: "utf8" },
-).trim();
+
+/** Latest non-merge commit by `email` that actually changed files (skips empty commits). */
+function findAuthorCommitWithFiles(repoPath: string, email: string): string {
+  const hashes = execFileSync(
+    "git",
+    ["-C", repoPath, "log", "--format=%H", `--author=${email}`, "--no-merges", "-n", "50"],
+    { encoding: "utf8" },
+  )
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+
+  for (const hash of hashes) {
+    const raw = execFileSync(
+      "git",
+      ["-C", repoPath, "show", "--format=", "--name-status", "--find-renames", hash],
+      { encoding: "utf8" },
+    ).trim();
+    if (raw) return hash;
+  }
+  throw new Error(`No commit with changed files found for author ${email}`);
+}
+
+const sampleHash = findAuthorCommitWithFiles(repoRoot, sampleEmail);
 
 describe("resolveRepo", () => {
   it("resolves the git top-level for this workspace", () => {
