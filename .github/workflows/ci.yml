@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+defaults:
+  run:
+    working-directory: dev-workgraph-cli
+
+jobs:
+  verify:
+    name: dev-workgraph-cli
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.16"
+          cache: npm
+          cache-dependency-path: dev-workgraph-cli/package-lock.json
+
+      - name: Install dependencies
+        run: npm i
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Knip
+        run: npm run knip
+
+      - name: Test coverage
+        run: npm run test:coverage
+
+      - name: Build
+        run: npm run build
+
+      - name: CLI help
+        run: node dist/cli.js --help
