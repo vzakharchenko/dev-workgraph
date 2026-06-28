@@ -149,7 +149,7 @@ async function resolveMaxCommits(repoPath: string, flagMax?: number): Promise<nu
  */
 function buildGroupRecord(members: CommitRecord[]): GroupRecord {
   const first = members[0];
-  const last = members[members.length - 1];
+  const last = members.at(-1);
   if (!first || !last) throw new Error("Empty group");
 
   return {

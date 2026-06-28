@@ -220,7 +220,7 @@ function replaceBraceRenameSegments(pathValue: string): string {
     result += arrow === -1 ? pathValue.slice(open, close + 1) : inner.slice(arrow + 2).trim();
     cursor = close + 1;
   }
-  return result.replace(/\/\//g, "/");
+  return result.replaceAll("//", "/");
 }
 
 /**

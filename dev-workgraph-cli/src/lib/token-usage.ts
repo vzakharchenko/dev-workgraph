@@ -100,7 +100,7 @@ function loadUsageFromDisk(projectPath: string): ProjectTokenUsage {
       lifetime: {
         ...emptyTotals(),
         ...ctx.tokenUsage.lifetime,
-        byModel: { ...(ctx.tokenUsage.lifetime?.byModel ?? {}) },
+        byModel: { ...ctx.tokenUsage.lifetime?.byModel },
       },
       steps: { ...ctx.tokenUsage.steps },
     };

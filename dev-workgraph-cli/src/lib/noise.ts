@@ -16,7 +16,7 @@ export function isNoise(file: string): boolean {
   const segments = file.split("/").filter(Boolean);
   if (segments.some((seg) => NOISE_DIRS.has(seg))) return true;
 
-  const base = segments[segments.length - 1] ?? file;
+  const base = segments.at(-1) ?? file;
   if (NOISE_FILES.has(base)) return true;
   if (base.endsWith(".min.js")) return true;
   return base.endsWith(".map");

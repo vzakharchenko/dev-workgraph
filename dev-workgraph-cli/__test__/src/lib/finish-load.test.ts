@@ -82,7 +82,7 @@ describe("finish-load versioning", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("latestFinish falls back to round when version is absent", () => {
+  it("latestFinish falls back to the file name when version is absent", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "finish-load-round-"));
     fs.writeFileSync(
       path.join(dir, "1700000000.v2.json"),

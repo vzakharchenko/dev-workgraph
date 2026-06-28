@@ -12,7 +12,6 @@ import {
 } from "../../../src/lib/config.js";
 import { finishJsonFileName, finishQuestionsJsonFileName, finishQuestionVersionLabel } from "../../../src/lib/finish-load.js";
 import { createFinishQuestions, writeFinishQuestions } from "../../../src/lib/finish-questions.js";
-import { commitEvidenceTimestamp } from "../../../src/lib/grouping.js";
 import type {
   CommitEvidenceRecord,
   CommitRecord,
@@ -104,7 +103,7 @@ export function seedSummary(
   const summary: CommitSummaryRecord = {
     commitHash: commit.commitHash,
     timestamp: commit.timestamp,
-    sourceEvidence: commitEvidenceTimestamp(commit.timestamp),
+    sourceEvidence: String(commit.timestamp),
     model,
   };
   const summaryPath = path.join(

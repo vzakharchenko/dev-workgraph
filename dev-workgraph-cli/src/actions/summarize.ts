@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, repoCommitsDir, repoSummariesDir, setOllamaConfig } from "../lib/config.js";
 import { resolveRepo } from "../lib/git.js";
-import { commitEvidenceTimestamp, commitSummaryPath } from "../lib/grouping.js";
+import { commitSummaryPath } from "../lib/grouping.js";
 import {
   cleanQuestionAnalysis,
   enforceSignalReasons,
@@ -158,7 +158,7 @@ export async function summarize(options: SummarizeOptions): Promise<void> {
         const summary: CommitSummaryRecord = {
           commitHash: item.evidence.commitHash,
           timestamp: item.evidence.timestamp,
-          sourceEvidence: commitEvidenceTimestamp(item.evidence.timestamp),
+          sourceEvidence: String(item.evidence.timestamp),
           model: layer,
         };
         fs.mkdirSync(path.dirname(item.summaryPath), { recursive: true });

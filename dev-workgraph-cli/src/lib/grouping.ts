@@ -48,11 +48,6 @@ export function commitSummaryPath(
   return path.join(summariesDir, String(timestamp), `${commitHash}.json`);
 }
 
-/** Evidence directory key under `commits/` (author Unix timestamp as string). */
-export function commitEvidenceTimestamp(timestamp: number): string {
-  return String(timestamp);
-}
-
 /** Repo-relative path to a commit summary JSON file (POSIX separators). */
 function commitSummaryRelPath(timestamp: number, commitHash: string): string {
   return path.posix.join("summaries", String(timestamp), `${commitHash}.json`);
@@ -92,7 +87,7 @@ export function loadCommitRecords(commitsDir: string, summariesDir?: string): Co
     const { model: legacyModel, ...evidence } = raw;
     const summaryRec = summaries.get(evidence.commitHash);
     const model = summaryRec?.model ?? legacyModel ?? null;
-    const sourceEvidence = commitEvidenceTimestamp(evidence.timestamp);
+    const sourceEvidence = String(evidence.timestamp);
     records.push({
       ...evidence,
       model,
@@ -123,7 +118,7 @@ export function groupByGap(
   let current: CommitRecord[] = [];
 
   for (const commit of commits) {
-    const prev = current[current.length - 1];
+    const prev = current.at(-1);
     const gapExceeded = prev !== undefined && commit.timestamp - prev.timestamp > gap;
     const full = maxCommits > 0 && current.length >= maxCommits;
     if (current.length > 0 && (gapExceeded || full)) {

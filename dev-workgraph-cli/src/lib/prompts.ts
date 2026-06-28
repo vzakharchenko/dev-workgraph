@@ -13,9 +13,8 @@ import type {
   ProjectContext,
   ReportRecord,
 } from "./records.js";
-import { MAX_HISTORY_ENTRIES } from "./report-provenance.js";
 
-export { MAX_HISTORY_ENTRIES };
+export { MAX_HISTORY_ENTRIES } from "./report-provenance.js";
 
 // ───────────────────────────── project context (from `init`) ─────────────────
 

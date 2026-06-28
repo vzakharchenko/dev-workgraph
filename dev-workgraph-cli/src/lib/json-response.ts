@@ -42,10 +42,12 @@ function scanJsonObjectEnd(candidate: string, start: number): number | null {
 /**
  * Extracts the body of the first markdown JSON code fence, if present.
  */
+const FENCE_OPEN_RE = /^```(?:json)?\s*/i;
+
 function extractFencedJsonBlock(content: string): string | null {
   const fenceMarker = content.indexOf("```");
   if (fenceMarker === -1) return null;
-  const openMatch = content.slice(fenceMarker).match(/^```(?:json)?\s*/i);
+  const openMatch = FENCE_OPEN_RE.exec(content.slice(fenceMarker));
   if (!openMatch) return null;
   const bodyStart = fenceMarker + openMatch[0].length;
   const closeMarker = content.indexOf("```", bodyStart);
@@ -119,7 +121,7 @@ function assertObjectProperties(
 
 function assertObjectSchema(value: unknown, schema: Record<string, unknown>, path: string): void {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`expected object at ${path}`);
+    throw new TypeError(`expected object at ${path}`);
   }
   const obj = value as Record<string, unknown>;
   assertRequiredFields(obj, (schema.required as string[] | undefined) ?? [], path);
@@ -132,7 +134,7 @@ function assertObjectSchema(value: unknown, schema: Record<string, unknown>, pat
 
 function assertArraySchema(value: unknown, schema: Record<string, unknown>, path: string): void {
   if (!Array.isArray(value)) {
-    throw new Error(`expected array at ${path}`);
+    throw new TypeError(`expected array at ${path}`);
   }
   const items = schema.items as Record<string, unknown> | undefined;
   if (!items) return;
@@ -143,7 +145,7 @@ function assertArraySchema(value: unknown, schema: Record<string, unknown>, path
 
 function assertStringSchema(value: unknown, schema: Record<string, unknown>, path: string): void {
   if (typeof value !== "string") {
-    throw new Error(`expected string at ${path}`);
+    throw new TypeError(`expected string at ${path}`);
   }
   const allowed = schema.enum as unknown[] | undefined;
   if (allowed && !allowed.includes(value)) {
@@ -153,7 +155,7 @@ function assertStringSchema(value: unknown, schema: Record<string, unknown>, pat
 
 function assertBooleanSchema(value: unknown, path: string): void {
   if (typeof value !== "boolean") {
-    throw new Error(`expected boolean at ${path}`);
+    throw new TypeError(`expected boolean at ${path}`);
   }
 }
 

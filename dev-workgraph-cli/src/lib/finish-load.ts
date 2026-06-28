@@ -15,6 +15,10 @@ export function finishQuestionVersionLabel(version: number): string {
   return version <= 1 ? "v1" : `v${version}`;
 }
 
+const QUESTION_FILE_NAME_RE = /^(\d+)\.question(?:\.v(\d+))?\.json$/;
+const VERSIONED_FINISH_STEM_RE = /^(\d+)\.v(\d+)$/;
+const PLAIN_FINISH_STEM_RE = /^(\d+)$/;
+
 /** Parses `v1`, `v2`, … into a finish-chain version number. */
 export function parseFinishQuestionVersionLabel(label: string): number {
   const match = /^v(\d+)$/.exec(label.trim());
@@ -28,7 +32,7 @@ export function normalizeSourceQuestions(
 ): FinishSourceQuestions {
   if (!value) return {};
   if (typeof value === "string") {
-    const match = value.match(/^(\d+)\.question(?:\.v(\d+))?\.json$/);
+    const match = QUESTION_FILE_NAME_RE.exec(value);
     if (!match) return {};
     const baseFinishId = Number(match[1]);
     const version = match[2] ? Number(match[2]) : 1;
@@ -53,11 +57,11 @@ export function extendSourceQuestions(
 /** Parses `1700000000.json` (v1) or `1700000000.v2.json` (v2+). */
 export function parseFinishFileName(file: string): { baseFinishId: number; version: number } {
   const stem = file.replace(/\.json$/i, "");
-  const versioned = stem.match(/^(\d+)\.v(\d+)$/);
+  const versioned = VERSIONED_FINISH_STEM_RE.exec(stem);
   if (versioned) {
     return { baseFinishId: Number(versioned[1]), version: Number(versioned[2]) };
   }
-  const plain = stem.match(/^(\d+)$/);
+  const plain = PLAIN_FINISH_STEM_RE.exec(stem);
   if (plain) {
     return { baseFinishId: Number(plain[1]), version: 1 };
   }
@@ -83,7 +87,7 @@ export function finishQuestionsJsonFileName(baseFinishId: number, version: numbe
 
 /** Version cursor on a finish record (falls back to the file name). */
 function finishVersion(file: string, record: FinishRecord): number {
-  return record.version ?? record.round ?? parseFinishFileName(file).version;
+  return record.version ?? parseFinishFileName(file).version;
 }
 
 /** Next versioned finish archive names — never overwrites the prior file. */
