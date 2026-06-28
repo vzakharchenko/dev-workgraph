@@ -27,7 +27,10 @@ jobs:
           cache-dependency-path: dev-workgraph-cli/package-lock.json
 
       - name: Install dependencies
-        run: npm i
+        run: npm ci
+
+      - name: Install Biome Linux binary
+        run: npm install --no-save @biomejs/cli-linux-x64@2.5.1
 
       - name: Format check
         run: npm run format:check
