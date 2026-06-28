@@ -13,11 +13,9 @@ import type {
   GroupTiers,
   Tier,
 } from "./records.js";
+import { compareLocale, uniqSorted } from "./sort.js";
 
 const SECONDS_PER_DAY = 86400;
-
-/** Sorted unique helper. */
-const uniqSorted = (values: string[]): string[] => [...new Set(values)].sort();
 
 /**
  * Walks `/<ts>/<hash>.json` under a repo data directory.
@@ -33,7 +31,7 @@ function listTimestampHashJsonFiles(dir: string): string[] {
       if (f.endsWith(".json")) files.push(path.join(sub, f));
     }
   }
-  return files.sort();
+  return files.sort(compareLocale);
 }
 
 /**

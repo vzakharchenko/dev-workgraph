@@ -23,6 +23,7 @@ import {
 import { writeRecordJson } from "../lib/record-io.js";
 import type { CommitEvidenceRecord, CommitSummaryRecord } from "../lib/records.js";
 import { resolveModel } from "../lib/select.js";
+import { compareLocale } from "../lib/sort.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
@@ -55,7 +56,7 @@ function listEvidenceJsonFiles(dir: string): string[] {
       if (f.endsWith(".json")) files.push(path.join(sub, f));
     }
   }
-  return files.sort();
+  return files.sort(compareLocale);
 }
 
 /**

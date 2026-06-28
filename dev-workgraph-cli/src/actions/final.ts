@@ -94,6 +94,204 @@ function latestPrepared(dir: string): { file: string; record: PreparedRecord } |
   };
 }
 
+interface FinishArchive {
+  baseFinishId: number;
+  version: number;
+  jsonFile: string;
+  mdFile: string;
+}
+
+function isFinalExtension(
+  latestFile: string,
+  priorFinish: ReturnType<typeof latestFinish>,
+): boolean {
+  return (
+    priorFinish !== null &&
+    (priorFinish.record.answers?.length ?? 0) > 0 &&
+    latestFile !== priorFinish.record.sourcePrepared
+  );
+}
+
+function resolveFinishArchive(
+  priorFinish: NonNullable<ReturnType<typeof latestFinish>>,
+): FinishArchive {
+  return nextFinishVersion(priorFinish.file);
+}
+
+function initialFinishArchive(prepared: PreparedRecord): FinishArchive {
+  return {
+    baseFinishId: prepared.preparedId,
+    version: 1,
+    jsonFile: finishJsonFileName(prepared.preparedId, 1),
+    mdFile: finishMdFileName(prepared.preparedId, 1),
+  };
+}
+
+function ensureQuestionsRecord(
+  finishDir: string,
+  questionsPath: string,
+  archive: FinishArchive,
+  prepared: PreparedRecord,
+  isExtension: boolean,
+  questionsToAsk: string[],
+  preparedQuestions: string[],
+): FinishQuestionsRecord {
+  if (fs.existsSync(questionsPath)) return loadFinishQuestions(questionsPath);
+  const texts = isExtension ? questionsToAsk : preparedQuestions;
+  const questionsRecord = createFinishQuestions(texts, {
+    sourceFinal: archive.jsonFile,
+    sourceReport: prepared.sourceReport,
+  });
+  fs.mkdirSync(finishDir, { recursive: true });
+  writeFinishQuestions(questionsPath, questionsRecord);
+  return questionsRecord;
+}
+
+function loadSavedRoundAnswers(
+  finishJsonPath: string,
+  questionsRecord: FinishQuestionsRecord,
+  answersFile: string | undefined,
+  isExtension: boolean,
+): FinishAnswer[] {
+  if (!fs.existsSync(finishJsonPath) || answersFile || isExtension) return [];
+  const existing = JSON.parse(fs.readFileSync(finishJsonPath, "utf8")) as FinishRecord;
+  const existingAnswers = normalizeFinishAnswers(existing.answers);
+  if (!allQuestionsAnswered(questionsRecord.questions, existingAnswers)) return [];
+  console.log("Reusing saved answers.");
+  return existingAnswers;
+}
+
+async function collectRoundAnswers(
+  options: FinalOptions,
+  questionsRecord: FinishQuestionsRecord,
+  isExtension: boolean,
+  priorFinish: ReturnType<typeof latestFinish>,
+  priorQa: { question: string; answer: string }[],
+  questionsToAsk: string[],
+): Promise<FinishAnswer[]> {
+  if (isExtension) {
+    console.log(
+      `Continuing from finish ${priorFinish?.file} — ${priorQa.length} prior Q&A` +
+        `${questionsToAsk.length > 0 ? `, ${questionsToAsk.length} new question(s)` : ""}.`,
+    );
+  }
+  if (options.answersFile) {
+    return readFinishAnswersFile(options.answersFile, questionsRecord.questions);
+  }
+  if (questionsRecord.questions.length === 0) {
+    console.log("All prepared questions already answered — regenerating narrative only.");
+    return [];
+  }
+  console.log("\nAnswer the questions:");
+  return collectFinishAnswers(questionsRecord.questions, inquirer.prompt);
+}
+
+interface FinalNarratives {
+  impactHistory: string;
+  narrative: string[];
+  cvBullets: string[];
+}
+
+async function generateFinalNarratives(
+  prepared: PreparedRecord,
+  project: NonNullable<ReturnType<typeof loadProjectContext>>,
+  qa: { question: string; answer: string }[],
+  isExtension: boolean,
+  priorFinish: ReturnType<typeof latestFinish>,
+  baseUrl: string,
+  model: string,
+  projectBlock: string,
+  tracker: TokenUsageTracker,
+): Promise<FinalNarratives> {
+  process.stdout.write(
+    isExtension
+      ? "Refining Your IMPACT with all answers ... "
+      : "Refining Your IMPACT with answers ... ",
+  );
+  const impactPrompt =
+    isExtension && priorFinish
+      ? buildDeepenImpactNarrativePrompt(prepared.model.history, priorFinish.record.history, qa)
+      : buildImpactNarrativePrompt(prepared.model.history, qa);
+  const refined = (await chatJson({
+    baseUrl,
+    model,
+    system: withProjectContext(projectBlock, IMPACT_NARRATIVE_SYSTEM),
+    user: impactPrompt,
+    schema: groupHistoryJsonSchema(),
+    tracker,
+  })) as { history?: string };
+  const impactHistory = refined.history?.trim() || prepared.model.history;
+  console.log("ok");
+
+  process.stdout.write("Writing Role Narrative ... ");
+  const result = (await chatJson({
+    baseUrl,
+    model,
+    system: withProjectContext(projectBlock, ROLE_NARRATIVE_SYSTEM),
+    user: buildRoleNarrativePrompt(impactHistory, prepared.model.signalReasons, qa),
+    schema: roleNarrativeJsonSchema(),
+    tracker,
+  })) as { narrative?: unknown };
+  const narrative = asStringArray(result.narrative).slice(0, 4);
+  console.log(`ok (${narrative.length} bullets)`);
+
+  process.stdout.write("Writing CV bullets ... ");
+  const cvResult = (await chatJson({
+    baseUrl,
+    model,
+    system: withProjectContext(projectBlock, CV_BULLETS_SYSTEM),
+    user: buildCvBulletsPrompt(
+      project.role,
+      impactHistory,
+      prepared.model.signalReasons,
+      qa,
+      narrative,
+    ),
+    schema: cvBulletsJsonSchema(),
+    tracker,
+  })) as { cvBullets?: unknown };
+  const cvBullets = asStringArray(cvResult.cvBullets).slice(0, 4);
+  console.log(`ok (${cvBullets.length} bullets)`);
+  return { impactHistory, narrative, cvBullets };
+}
+
+function buildFinalMarkdown(
+  project: NonNullable<ReturnType<typeof loadProjectContext>>,
+  prepared: PreparedRecord,
+  narratives: FinalNarratives,
+  qa: { question: string; answer: string }[],
+): string {
+  const role = project.role;
+  const p = project.profile;
+  const context = [p.domains.join(", "), p.apparentStack.join(", ")].filter(Boolean).join(" · ");
+  return [
+    "## PROJECT DESCRIPTION",
+    "",
+    p.summary || "(no summary)",
+    context ? `\n_${context}_` : "",
+    "",
+    `## Your IMPACT as ${role}`,
+    "",
+    narratives.impactHistory || "(no history)",
+    "",
+    "## Technologies",
+    "",
+    prepared.model.technologies.length > 0 ? prepared.model.technologies.join(", ") : "(none)",
+    "",
+    "## Impact bullet points (Role Narrative)",
+    "",
+    ...(narratives.narrative.length > 0 ? narratives.narrative.map((b) => `- ${b}`) : ["- (none)"]),
+    "",
+    "## CV bullets",
+    "",
+    ...(narratives.cvBullets.length > 0 ? narratives.cvBullets.map((b) => `- ${b}`) : ["- (none)"]),
+    "",
+    "## Possible questions",
+    "",
+    ...qa.flatMap((x) => [`**Q:** ${x.question}`, `**A:** ${x.answer || "(no answer)"}`, ""]),
+  ].join("\n");
+}
+
 /**
  * Closes the loop: collect human answers to the prepared questions, produce a
  * Role Narrative, and write RECONSTRUCTION.<project>.md to the current directory.
@@ -101,7 +299,6 @@ function latestPrepared(dir: string): { file: string; record: PreparedRecord } |
  */
 export async function final(options: FinalOptions): Promise<void> {
   const repoPath = resolveRepo(options.repo);
-
   const project = loadProjectContext(repoPath, options.period);
   if (!project) {
     console.error("✖ No project context. Run `dev-workgraph init` first.");
@@ -109,8 +306,7 @@ export async function final(options: FinalOptions): Promise<void> {
     return;
   }
 
-  const preparedDir = repoPreparedDir(repoPath, options.period);
-  const latest = latestPrepared(preparedDir);
+  const latest = latestPrepared(repoPreparedDir(repoPath, options.period));
   if (!latest) {
     console.log(
       `No prepared narrative found for ${repoPath}. Run \`dev-workgraph prepare\` first.`,
@@ -121,25 +317,15 @@ export async function final(options: FinalOptions): Promise<void> {
 
   const finishDir = repoFinishDir(repoPath, options.period);
   const priorFinish = latestFinish(finishDir);
-  const isExtension =
-    priorFinish !== null &&
-    (priorFinish.record.answers?.length ?? 0) > 0 &&
-    latest.file !== priorFinish.record.sourcePrepared;
-
+  const isExtension = isFinalExtension(latest.file, priorFinish);
   const archive =
-    isExtension && priorFinish
-      ? nextFinishVersion(priorFinish.file)
-      : {
-          baseFinishId: prepared.preparedId,
-          version: 1,
-          jsonFile: finishJsonFileName(prepared.preparedId, 1),
-          mdFile: finishMdFileName(prepared.preparedId, 1),
-        };
+    isExtension && priorFinish ? resolveFinishArchive(priorFinish) : initialFinishArchive(prepared);
 
-  const questionsJsonFile = finishQuestionsJsonFileName(archive.baseFinishId, archive.version);
-  const questionsPath = path.join(finishDir, questionsJsonFile);
+  const questionsPath = path.join(
+    finishDir,
+    finishQuestionsJsonFileName(archive.baseFinishId, archive.version),
+  );
   const finishJsonPath = path.join(finishDir, archive.jsonFile);
-
   const preparedQuestions = flattenQuestions(prepared.model.questionsAnalyses).slice(0, 4);
   const priorQa =
     isExtension && priorFinish
@@ -150,50 +336,35 @@ export async function final(options: FinalOptions): Promise<void> {
           normalizeFinishAnswers(priorFinish.record.answers),
         )
       : [];
-
   const questionsToAsk = isExtension
     ? questionsNotYetAnswered(preparedQuestions, priorQa)
     : preparedQuestions;
 
-  let questionsRecord: FinishQuestionsRecord;
-  if (fs.existsSync(questionsPath)) {
-    questionsRecord = loadFinishQuestions(questionsPath);
-  } else {
-    const texts = isExtension ? questionsToAsk : preparedQuestions;
-    questionsRecord = createFinishQuestions(texts, {
-      sourceFinal: archive.jsonFile,
-      sourceReport: prepared.sourceReport,
-    });
-    fs.mkdirSync(finishDir, { recursive: true });
-    writeFinishQuestions(questionsPath, questionsRecord);
-  }
+  const questionsRecord = ensureQuestionsRecord(
+    finishDir,
+    questionsPath,
+    archive,
+    prepared,
+    isExtension,
+    questionsToAsk,
+    preparedQuestions,
+  );
 
-  let roundAnswers: FinishAnswer[] = [];
-  if (fs.existsSync(finishJsonPath) && !options.answersFile && !isExtension) {
-    const existing = JSON.parse(fs.readFileSync(finishJsonPath, "utf8")) as FinishRecord;
-    const existingAnswers = normalizeFinishAnswers(existing.answers);
-    if (allQuestionsAnswered(questionsRecord.questions, existingAnswers)) {
-      console.log("Reusing saved answers.");
-      roundAnswers = existingAnswers;
-    }
-  }
-
+  let roundAnswers = loadSavedRoundAnswers(
+    finishJsonPath,
+    questionsRecord,
+    options.answersFile,
+    isExtension,
+  );
   if (roundAnswers.length === 0) {
-    if (isExtension) {
-      console.log(
-        `Continuing from finish ${priorFinish?.file} — ${priorQa.length} prior Q&A` +
-          `${questionsToAsk.length > 0 ? `, ${questionsToAsk.length} new question(s)` : ""}.`,
-      );
-    }
-    if (options.answersFile) {
-      roundAnswers = readFinishAnswersFile(options.answersFile, questionsRecord.questions);
-    } else if (questionsRecord.questions.length === 0) {
-      console.log("All prepared questions already answered — regenerating narrative only.");
-      roundAnswers = [];
-    } else {
-      console.log("\nAnswer the questions:");
-      roundAnswers = await collectFinishAnswers(questionsRecord.questions, inquirer.prompt);
-    }
+    roundAnswers = await collectRoundAnswers(
+      options,
+      questionsRecord,
+      isExtension,
+      priorFinish,
+      priorQa,
+      questionsToAsk,
+    );
   }
 
   const priorAnswers =
@@ -220,101 +391,26 @@ export async function final(options: FinalOptions): Promise<void> {
   });
   setOllamaConfig({ baseUrl, narrativeModel: model });
 
-  const projectBlock = projectContextBlock(project);
-
   const tracker = new TokenUsageTracker(repoPath, options.period);
   tracker.beginStep("final");
-
-  let impactHistory = prepared.model.history;
-  let narrative: string[] = [];
-  let cvBullets: string[] = [];
-
+  let narratives: FinalNarratives;
   try {
-    process.stdout.write(
-      isExtension
-        ? "Refining Your IMPACT with all answers ... "
-        : "Refining Your IMPACT with answers ... ",
+    narratives = await generateFinalNarratives(
+      prepared,
+      project,
+      qa,
+      isExtension,
+      priorFinish,
+      baseUrl,
+      model,
+      projectContextBlock(project),
+      tracker,
     );
-    const impactPrompt =
-      isExtension && priorFinish
-        ? buildDeepenImpactNarrativePrompt(prepared.model.history, priorFinish.record.history, qa)
-        : buildImpactNarrativePrompt(prepared.model.history, qa);
-    const refined = (await chatJson({
-      baseUrl,
-      model,
-      system: withProjectContext(projectBlock, IMPACT_NARRATIVE_SYSTEM),
-      user: impactPrompt,
-      schema: groupHistoryJsonSchema(),
-      tracker,
-    })) as { history?: string };
-    impactHistory = refined.history?.trim() || prepared.model.history;
-    console.log("ok");
-
-    process.stdout.write("Writing Role Narrative ... ");
-    const result = (await chatJson({
-      baseUrl,
-      model,
-      system: withProjectContext(projectBlock, ROLE_NARRATIVE_SYSTEM),
-      user: buildRoleNarrativePrompt(impactHistory, prepared.model.signalReasons, qa),
-      schema: roleNarrativeJsonSchema(),
-      tracker,
-    })) as { narrative?: unknown };
-    narrative = asStringArray(result.narrative).slice(0, 4);
-    console.log(`ok (${narrative.length} bullets)`);
-
-    process.stdout.write("Writing CV bullets ... ");
-    const cvResult = (await chatJson({
-      baseUrl,
-      model,
-      system: withProjectContext(projectBlock, CV_BULLETS_SYSTEM),
-      user: buildCvBulletsPrompt(
-        project.role,
-        impactHistory,
-        prepared.model.signalReasons,
-        qa,
-        narrative,
-      ),
-      schema: cvBulletsJsonSchema(),
-      tracker,
-    })) as { cvBullets?: unknown };
-    cvBullets = asStringArray(cvResult.cvBullets).slice(0, 4);
-    console.log(`ok (${cvBullets.length} bullets)`);
   } finally {
     tracker.endStep();
   }
 
-  const projectName = path.basename(repoPath);
-  const role = project.role;
-  const p = project.profile;
-  const context = [p.domains.join(", "), p.apparentStack.join(", ")].filter(Boolean).join(" · ");
-
-  const md = [
-    "## PROJECT DESCRIPTION",
-    "",
-    p.summary || "(no summary)",
-    context ? `\n_${context}_` : "",
-    "",
-    `## Your IMPACT as ${role}`,
-    "",
-    impactHistory || "(no history)",
-    "",
-    "## Technologies",
-    "",
-    prepared.model.technologies.length > 0 ? prepared.model.technologies.join(", ") : "(none)",
-    "",
-    "## Impact bullet points (Role Narrative)",
-    "",
-    ...(narrative.length > 0 ? narrative.map((b) => `- ${b}`) : ["- (none)"]),
-    "",
-    "## CV bullets",
-    "",
-    ...(cvBullets.length > 0 ? cvBullets.map((b) => `- ${b}`) : ["- (none)"]),
-    "",
-    "## Possible questions",
-    "",
-    ...qa.flatMap((x) => [`**Q:** ${x.question}`, `**A:** ${x.answer || "(no answer)"}`, ""]),
-  ].join("\n");
-
+  const md = buildFinalMarkdown(project, prepared, narratives, qa);
   const outPath = options.output
     ? path.resolve(options.output)
     : path.join(
@@ -341,12 +437,12 @@ export async function final(options: FinalOptions): Promise<void> {
     ...(isExtension && priorFinish ? { sourcePreviousFinish: priorFinish.file } : {}),
     version: archive.version,
     round: archive.version,
-    project: projectName,
-    role,
+    project: path.basename(repoPath),
+    role: project.role,
     technologies: prepared.model.technologies,
-    history: impactHistory,
-    narrative,
-    cvBullets,
+    history: narratives.impactHistory,
+    narrative: narratives.narrative,
+    cvBullets: narratives.cvBullets,
     answers: allAnswers,
     outputMarkdown: path.basename(finishMdPath),
     provenance: { model, generatedAt: new Date().toISOString() },

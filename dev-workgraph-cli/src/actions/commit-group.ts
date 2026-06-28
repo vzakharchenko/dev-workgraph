@@ -151,6 +151,87 @@ function buildGroupRecord(members: CommitRecord[]): GroupRecord {
   };
 }
 
+interface GroupSummarizeContext {
+  baseUrl: string;
+  model: string;
+  classifySystem: string;
+  composeSystem: string;
+  tracker: TokenUsageTracker;
+}
+
+/** Skips groups that already have a model layer or exceed the trial limit. */
+function groupSkipReason(
+  file: string,
+  limit: number | undefined,
+  summarized: number,
+  failed: number,
+): "already-done" | "limit" | null {
+  if (fs.existsSync(file)) {
+    const existing = JSON.parse(fs.readFileSync(file, "utf8")) as GroupRecord;
+    if (existing.model) return "already-done";
+  }
+  if (limit !== undefined && summarized + failed >= limit) return "limit";
+  return null;
+}
+
+/** Runs the two-stage LLM summarize for one work session. */
+async function summarizeGroupSession(
+  record: GroupRecord,
+  members: CommitRecord[],
+  ctx: GroupSummarizeContext,
+): Promise<GroupRecord> {
+  const classifyPrompt = buildGroupClassifyPrompt(record, members);
+  const rawClassify = (await chatJson({
+    baseUrl: ctx.baseUrl,
+    model: ctx.model,
+    system: ctx.classifySystem,
+    user: classifyPrompt.prompt,
+    schema: groupClassifyJsonSchema(),
+    tracker: ctx.tracker,
+  })) as Record<string, unknown>;
+
+  const { hiContext, mediumContext, lowContext, questionsAnalyses, ...classifyFields } =
+    rawClassify;
+  const signals = enforceSignalReasons(classifyFields as unknown as ModelLayer);
+  const tiers: GroupClassifyView = {
+    technicalSignal: signals.technicalSignal,
+    architectureSignal: signals.architectureSignal,
+    securitySignal: signals.securitySignal,
+    hiContext: asStringArray(hiContext),
+    mediumContext: asStringArray(mediumContext),
+    lowContext: asStringArray(lowContext),
+  };
+
+  const composePrompt = buildGroupComposePrompt(record, tiers, members);
+  const rawCompose = (await chatJson({
+    baseUrl: ctx.baseUrl,
+    model: ctx.model,
+    system: ctx.composeSystem,
+    user: composePrompt.prompt,
+    schema: groupHistoryJsonSchema(),
+    tracker: ctx.tracker,
+  })) as { history?: string };
+
+  const { summary: _omitSummary, ...signalFields } = signals;
+  return {
+    ...record,
+    model: {
+      ...signalFields,
+      technologies: mergeTechnologies(...members.map((m) => m.model?.technologies)),
+      history: rawCompose.history ?? "",
+      hiContext: tiers.hiContext,
+      mediumContext: tiers.mediumContext,
+      lowContext: tiers.lowContext,
+      questionsAnalyses: cleanQuestionAnalyses(questionsAnalyses),
+      provenance: {
+        model: ctx.model,
+        generatedAt: new Date().toISOString(),
+        patchTruncated: classifyPrompt.truncated || composePrompt.truncated,
+      },
+    },
+  };
+}
+
 /**
  * Groups a repository's commits into work sessions and summarizes each session
  * with a local Ollama model.
@@ -202,6 +283,14 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
   const tracker = new TokenUsageTracker(repoPath, options.period);
   tracker.beginStep("commit-group");
 
+  const summarizeCtx: GroupSummarizeContext = {
+    baseUrl,
+    model,
+    classifySystem,
+    composeSystem,
+    tracker,
+  };
+
   let summarized = 0;
   let skipped = 0;
   let failed = 0;
@@ -211,15 +300,8 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
       const record = buildGroupRecord(members);
       const file = path.join(groupsDir, `${record.timestampEnd}.json`);
 
-      if (fs.existsSync(file)) {
-        const existing = JSON.parse(fs.readFileSync(file, "utf8")) as GroupRecord;
-        if (existing.model) {
-          skipped += 1;
-          continue;
-        }
-      }
-
-      if (options.limit !== undefined && summarized + failed >= options.limit) {
+      const skip = groupSkipReason(file, options.limit, summarized, failed);
+      if (skip === "already-done" || skip === "limit") {
         skipped += 1;
         continue;
       }
@@ -228,63 +310,12 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
       process.stdout.write(`${label} ... `);
 
       try {
-        // Stage 1 — classify signals + context tiers (no prose summary).
-        const classifyPrompt = buildGroupClassifyPrompt(record, members);
-        const rawClassify = (await chatJson({
-          baseUrl,
-          model,
-          system: classifySystem,
-          user: classifyPrompt.prompt,
-          schema: groupClassifyJsonSchema(),
-          tracker,
-        })) as Record<string, unknown>;
-
-        const { hiContext, mediumContext, lowContext, questionsAnalyses, ...classifyFields } =
-          rawClassify;
-        const signals = enforceSignalReasons(classifyFields as unknown as ModelLayer);
-        const tiers: GroupClassifyView = {
-          technicalSignal: signals.technicalSignal,
-          architectureSignal: signals.architectureSignal,
-          securitySignal: signals.securitySignal,
-          hiContext: asStringArray(hiContext),
-          mediumContext: asStringArray(mediumContext),
-          lowContext: asStringArray(lowContext),
-        };
-
-        // Stage 2 — merge the commit summaries into one HISTORY, weighted by tier.
-        const composePrompt = buildGroupComposePrompt(record, tiers, members);
-        const rawCompose = (await chatJson({
-          baseUrl,
-          model,
-          system: composeSystem,
-          user: composePrompt.prompt,
-          schema: groupHistoryJsonSchema(),
-          tracker,
-        })) as { history?: string };
-
-        const { summary: _omitSummary, ...signalFields } = signals;
-        record.model = {
-          ...signalFields,
-          // Technologies are a deterministic union of the member commits, not re-derived.
-          technologies: mergeTechnologies(...members.map((m) => m.model?.technologies)),
-          history: rawCompose.history ?? "",
-          hiContext: tiers.hiContext,
-          mediumContext: tiers.mediumContext,
-          lowContext: tiers.lowContext,
-          questionsAnalyses: cleanQuestionAnalyses(questionsAnalyses),
-          provenance: {
-            model,
-            generatedAt: new Date().toISOString(),
-            patchTruncated: classifyPrompt.truncated || composePrompt.truncated,
-          },
-        };
-
-        writeRecordJson(file, record);
+        const summarizedRecord = await summarizeGroupSession(record, members, summarizeCtx);
+        writeRecordJson(file, summarizedRecord);
         for (const c of members) covered.add(c.commitHash);
         console.log("ok");
         summarized += 1;
       } catch (err) {
-        // Save the deterministic group so a later run can retry the model layer.
         writeRecordJson(file, record);
         console.log(`failed (${(err as Error).message})`);
         failed += 1;

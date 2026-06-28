@@ -2,23 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Extracts a JSON object substring from model text (handles fences and prose).
- * @param content - Raw model message content.
+ * Finds the end offset of a balanced `{…}` object in `candidate` starting at `start`.
+ * @returns Exclusive end index, or null when the object is unclosed.
  */
-function extractJsonObject(content: string): string {
-  const trimmed = content.trim();
-  if (!trimmed) {
-    throw new Error("empty model content");
-  }
-
-  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = (fenceMatch?.[1] ?? trimmed).trim();
-
-  const start = candidate.indexOf("{");
-  if (start === -1) {
-    throw new Error(`no JSON object in model content: ${content.slice(0, 200)}`);
-  }
-
+function scanJsonObjectEnd(candidate: string, start: number): number | null {
   let depth = 0;
   let inString = false;
   let isEscaped = false;
@@ -37,11 +24,35 @@ function extractJsonObject(content: string): string {
     if (ch === "{") depth += 1;
     if (ch === "}") {
       depth -= 1;
-      if (depth === 0) return candidate.slice(start, i + 1);
+      if (depth === 0) return i + 1;
     }
   }
+  return null;
+}
 
-  throw new Error(`unclosed JSON object in model content: ${content.slice(0, 200)}`);
+/**
+ * Extracts a JSON object substring from model text (handles fences and prose).
+ * @param content - Raw model message content.
+ */
+function extractJsonObject(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    throw new Error("empty model content");
+  }
+
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenceMatch?.[1] ?? trimmed).trim();
+
+  const start = candidate.indexOf("{");
+  if (start === -1) {
+    throw new Error(`no JSON object in model content: ${content.slice(0, 200)}`);
+  }
+
+  const end = scanJsonObjectEnd(candidate, start);
+  if (end === null) {
+    throw new Error(`unclosed JSON object in model content: ${content.slice(0, 200)}`);
+  }
+  return candidate.slice(start, end);
 }
 
 /**
@@ -59,60 +70,71 @@ function parseModelJson(content: string): unknown {
   }
 }
 
+function assertObjectSchema(value: unknown, schema: Record<string, unknown>, path: string): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`expected object at ${path}`);
+  }
+  const obj = value as Record<string, unknown>;
+  for (const key of (schema.required as string[] | undefined) ?? []) {
+    if (!(key in obj)) {
+      throw new Error(`missing required field ${path}.${key}`);
+    }
+  }
+  const props = (schema.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
+  for (const [key, subSchema] of Object.entries(props)) {
+    if (key in obj) {
+      assertMatchesSchema(obj[key], subSchema, `${path}.${key}`);
+    }
+  }
+}
+
+function assertArraySchema(value: unknown, schema: Record<string, unknown>, path: string): void {
+  if (!Array.isArray(value)) {
+    throw new Error(`expected array at ${path}`);
+  }
+  const items = schema.items as Record<string, unknown> | undefined;
+  if (!items) return;
+  for (let i = 0; i < value.length; i += 1) {
+    assertMatchesSchema(value[i], items, `${path}[${i}]`);
+  }
+}
+
+function assertStringSchema(value: unknown, schema: Record<string, unknown>, path: string): void {
+  if (typeof value !== "string") {
+    throw new Error(`expected string at ${path}`);
+  }
+  const allowed = schema.enum as unknown[] | undefined;
+  if (allowed && !allowed.includes(value)) {
+    throw new Error(`invalid enum at ${path}: ${JSON.stringify(value)}`);
+  }
+}
+
+function assertBooleanSchema(value: unknown, path: string): void {
+  if (typeof value !== "boolean") {
+    throw new Error(`expected boolean at ${path}`);
+  }
+}
+
 /**
  * Validates a parsed value against the JSON Schema subset used by Ollama `format`.
  * Throws when the value does not conform.
  */
 function assertMatchesSchema(value: unknown, schema: Record<string, unknown>, path = "root"): void {
   const type = schema.type as string | undefined;
-
   if (type === "object") {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-      throw new Error(`expected object at ${path}`);
-    }
-    const obj = value as Record<string, unknown>;
-    for (const key of (schema.required as string[] | undefined) ?? []) {
-      if (!(key in obj)) {
-        throw new Error(`missing required field ${path}.${key}`);
-      }
-    }
-    const props = (schema.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
-    for (const [key, subSchema] of Object.entries(props)) {
-      if (key in obj) {
-        assertMatchesSchema(obj[key], subSchema, `${path}.${key}`);
-      }
-    }
+    assertObjectSchema(value, schema, path);
     return;
   }
-
   if (type === "array") {
-    if (!Array.isArray(value)) {
-      throw new Error(`expected array at ${path}`);
-    }
-    const items = schema.items as Record<string, unknown> | undefined;
-    if (items) {
-      for (let i = 0; i < value.length; i += 1) {
-        assertMatchesSchema(value[i], items, `${path}[${i}]`);
-      }
-    }
+    assertArraySchema(value, schema, path);
     return;
   }
-
   if (type === "string") {
-    if (typeof value !== "string") {
-      throw new Error(`expected string at ${path}`);
-    }
-    const allowed = schema.enum as unknown[] | undefined;
-    if (allowed && !allowed.includes(value)) {
-      throw new Error(`invalid enum at ${path}: ${JSON.stringify(value)}`);
-    }
+    assertStringSchema(value, schema, path);
     return;
   }
-
   if (type === "boolean") {
-    if (typeof value !== "boolean") {
-      throw new Error(`expected boolean at ${path}`);
-    }
+    assertBooleanSchema(value, path);
   }
 }
 
