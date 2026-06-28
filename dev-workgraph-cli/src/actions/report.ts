@@ -304,17 +304,21 @@ async function mergeFoldModelLayer(
   };
 }
 
-async function growFoldHistory(
-  prev: ReportRecord,
-  file: string,
-  group: GroupRecord,
-  contexts: Pick<ReportModelLayer, "hiContext" | "mediumContext" | "lowContext">,
-  baseUrl: string,
-  model: string,
-  newSystem: string,
-  tracker: TokenUsageTracker,
-  historySources: string[][],
-): Promise<{ history: ReportHistoryEntry[]; historySources: string[][] }> {
+async function growFoldHistory(input: {
+  prev: ReportRecord;
+  file: string;
+  group: GroupRecord;
+  contexts: Pick<ReportModelLayer, "hiContext" | "mediumContext" | "lowContext">;
+  historySources: string[][];
+  llm: {
+    baseUrl: string;
+    model: string;
+    newSystem: string;
+    tracker: TokenUsageTracker;
+  };
+}): Promise<{ history: ReportHistoryEntry[]; historySources: string[][] }> {
+  const { prev, file, group, contexts, historySources, llm } = input;
+  const { baseUrl, model, newSystem, tracker } = llm;
   const history: ReportHistoryEntry[] = prev.history.map((h) => ({ text: h.text }));
   const candidate = group.model?.history ?? "";
   if (!candidate) {
@@ -459,17 +463,14 @@ async function foldGroup(
   console.log("substantive");
 
   const newModel = await mergeFoldModelLayer(meta, baseUrl, mergeSystem, tracker);
-  const grown = await growFoldHistory(
+  const grown = await growFoldHistory({
     prev,
     file,
     group,
-    newModel,
-    baseUrl,
-    model,
-    newSystem,
-    tracker,
+    contexts: newModel,
     historySources,
-  );
+    llm: { baseUrl, model, newSystem, tracker },
+  });
   historySources = grown.historySources;
   const compacted = await compactFoldHistory(
     grown.history,

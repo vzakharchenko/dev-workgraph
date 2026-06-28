@@ -192,17 +192,25 @@ interface FinalNarratives {
   cvBullets: string[];
 }
 
-async function generateFinalNarratives(
-  prepared: PreparedRecord,
-  project: NonNullable<ReturnType<typeof loadProjectContext>>,
-  qa: { question: string; answer: string }[],
-  isExtension: boolean,
-  priorFinish: ReturnType<typeof latestFinish>,
-  baseUrl: string,
-  model: string,
-  projectBlock: string,
-  tracker: TokenUsageTracker,
-): Promise<FinalNarratives> {
+interface FinalNarrativeLlm {
+  baseUrl: string;
+  model: string;
+  projectBlock: string;
+  tracker: TokenUsageTracker;
+}
+
+interface FinalNarrativeInput {
+  prepared: PreparedRecord;
+  project: NonNullable<ReturnType<typeof loadProjectContext>>;
+  qa: { question: string; answer: string }[];
+  isExtension: boolean;
+  priorFinish: ReturnType<typeof latestFinish>;
+  llm: FinalNarrativeLlm;
+}
+
+async function generateFinalNarratives(input: FinalNarrativeInput): Promise<FinalNarratives> {
+  const { prepared, project, qa, isExtension, priorFinish, llm } = input;
+  const { baseUrl, model, projectBlock, tracker } = llm;
   process.stdout.write(
     isExtension
       ? "Refining Your IMPACT with all answers ... "
@@ -395,17 +403,14 @@ export async function final(options: FinalOptions): Promise<void> {
   tracker.beginStep("final");
   let narratives: FinalNarratives;
   try {
-    narratives = await generateFinalNarratives(
+    narratives = await generateFinalNarratives({
       prepared,
       project,
       qa,
       isExtension,
       priorFinish,
-      baseUrl,
-      model,
-      projectContextBlock(project),
-      tracker,
-    );
+      llm: { baseUrl, model, projectBlock: projectContextBlock(project), tracker },
+    });
   } finally {
     tracker.endStep();
   }

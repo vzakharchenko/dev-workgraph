@@ -12,6 +12,14 @@ import {
 } from "../helpers/action-fixtures.js";
 import { repoFinishDir, repoPreparedDir } from "../../../src/lib/config.js";
 
+const { promptMock } = vi.hoisted(() => ({
+  promptMock: vi.fn(),
+}));
+
+vi.mock("inquirer", () => ({
+  default: { prompt: promptMock },
+}));
+
 vi.mock("../../../src/lib/git.js", () => ({
   resolveRepo: vi.fn((repo: string) => path.resolve(repo === "." ? FAKE_REPO : repo)),
 }));
@@ -42,6 +50,14 @@ describe("final", () => {
     cwd = fs.mkdtempSync(path.join(os.tmpdir(), "workgraph-final-cwd-"));
     vi.spyOn(process, "cwd").mockReturnValue(cwd);
     process.exitCode = undefined;
+    promptMock.mockReset();
+    promptMock.mockImplementation(async (questions: { name: string }[]) => {
+      const answers: Record<string, string> = {};
+      for (const q of questions) {
+        answers[q.name] = "Answer.";
+      }
+      return answers;
+    });
   });
 
   afterEach(() => {
@@ -186,5 +202,121 @@ describe("final", () => {
     expect(
       fs.existsSync(path.join(cwd, `RECONSTRUCTION.${path.basename(FAKE_REPO)}.v2.md`)),
     ).toBe(true);
+  });
+
+  it("reuses saved answers when finish JSON already exists", async () => {
+    writeProjectContext(FAKE_REPO);
+    seedPrepared(FAKE_REPO, "1700000000.json");
+    seedFinish(FAKE_REPO, "1700000000.json");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await final({ repo: FAKE_REPO, model: "test-model" });
+    expect(log).toHaveBeenCalledWith("Reusing saved answers.");
+    expect(promptMock).not.toHaveBeenCalled();
+  });
+
+  it("regenerates narrative only when extension has no new questions", async () => {
+    writeProjectContext(FAKE_REPO);
+    seedPrepared(FAKE_REPO, "1700000000.json");
+    seedFinish(FAKE_REPO, "1700000000.json");
+    const newerPrepared = {
+      preparedId: 1_700_345_600,
+      sourceReport: "1700345600.json",
+      groupCount: 2,
+      model: {
+        changeTypes: ["feature"],
+        technologies: ["TypeScript"],
+        technicalSignal: "medium",
+        architectureSignal: "low",
+        securitySignal: "low",
+        signalReasons: ["Reason one", "Reason two", "Reason three", "Reason four"],
+        questionsAnalyses: [
+          { observation: ["o1"], missingPiece: ["m1"], question: ["Was it production?"] },
+          { observation: ["o2"], missingPiece: ["m2"], question: ["Who designed it?"] },
+          { observation: ["o3"], missingPiece: ["m3"], question: ["Any security impact?"] },
+          { observation: ["o4"], missingPiece: ["m4"], question: ["Customer driven?"] },
+        ],
+        confidence: "medium",
+        history: "I extended the feature.",
+        provenance: {
+          model: "test-model",
+          generatedAt: "2026-01-01T00:00:00Z",
+          sourceReport: "1700345600.json",
+        },
+      },
+    };
+    const preparedDir = repoPreparedDir(FAKE_REPO);
+    fs.mkdirSync(preparedDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(preparedDir, "1700345600.json"),
+      `${JSON.stringify(newerPrepared, null, 2)}\n`,
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await final({ repo: FAKE_REPO, model: "test-model" });
+    expect(log).toHaveBeenCalledWith(
+      "All prepared questions already answered — regenerating narrative only.",
+    );
+    expect(promptMock).not.toHaveBeenCalled();
+  });
+
+  it("collects answers interactively when no answers file is provided", async () => {
+    writeProjectContext(FAKE_REPO);
+    seedPrepared(FAKE_REPO, "1700000000.json");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await final({ repo: FAKE_REPO, model: "test-model" });
+    expect(log).toHaveBeenCalledWith("\nAnswer the questions:");
+    expect(promptMock).toHaveBeenCalled();
+  });
+
+  it("picks the newest prepared narrative file", async () => {
+    writeProjectContext(FAKE_REPO);
+    seedPrepared(FAKE_REPO, "1700000000.json");
+    const preparedDir = repoPreparedDir(FAKE_REPO);
+    fs.writeFileSync(
+      path.join(preparedDir, "1699000000.json"),
+      `${JSON.stringify(
+        {
+          preparedId: 1_699_000_000,
+          sourceReport: "1699000000.json",
+          groupCount: 1,
+          model: {
+            changeTypes: ["chore"],
+            technologies: ["Go"],
+            technicalSignal: "low",
+            architectureSignal: "low",
+            securitySignal: "low",
+            signalReasons: ["r1", "r2", "r3", "r4"],
+            questionsAnalyses: [
+              { observation: ["o1"], missingPiece: ["m1"], question: ["Old question one?"] },
+              { observation: ["o2"], missingPiece: ["m2"], question: ["Old question two?"] },
+              { observation: ["o3"], missingPiece: ["m3"], question: ["Old question three?"] },
+              { observation: ["o4"], missingPiece: ["m4"], question: ["Old question four?"] },
+            ],
+            confidence: "low",
+            history: "Old history.",
+            provenance: {
+              model: "test-model",
+              generatedAt: "2026-01-01T00:00:00Z",
+              sourceReport: "1699000000.json",
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const answersFile = path.join(cwd, "answers.json");
+    fs.writeFileSync(
+      answersFile,
+      JSON.stringify([
+        { question: "Was it production?", answer: "Staging only." },
+        { question: "Who designed it?", answer: "I did." },
+        { question: "Any security impact?", answer: "No." },
+        { question: "Customer driven?", answer: "Internal." },
+      ]),
+    );
+    await final({ repo: FAKE_REPO, model: "test-model", answersFile });
+    const md = fs.readFileSync(path.join(cwd, `RECONSTRUCTION.${path.basename(FAKE_REPO)}.md`), "utf8");
+    expect(md).toContain("TypeScript");
+    expect(md).not.toContain("Go");
   });
 });

@@ -10,7 +10,7 @@ import {
   writeProjectContext,
 } from "../helpers/action-fixtures.js";
 import { sampleModel } from "../../helpers.js";
-import { repoGroupsDir } from "../../../src/lib/config.js";
+import { repoGroupsDir, repoProjectPath } from "../../../src/lib/config.js";
 
 const { promptMock } = vi.hoisted(() => ({
   promptMock: vi.fn(),
@@ -40,6 +40,7 @@ vi.mock("../../../src/lib/select.js", () => ({
 }));
 
 import { commitGroup } from "../../../src/actions/commit-group.js";
+import { chatJson } from "../../../src/lib/ollama.js";
 
 describe("commitGroup", () => {
   let restoreHome: () => void;
@@ -161,5 +162,55 @@ describe("commitGroup", () => {
         `${1_700_000_000 + day * 4}.json`,
       ]),
     );
+  });
+
+  it("prompts for grouping settings when flags are omitted", async () => {
+    seedCommit(FAKE_REPO, summarizedCommit("abc1234567890abc1234567890abc1234567890"));
+    await commitGroup({ repo: FAKE_REPO, model: "test-model" });
+    expect(promptMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("warns when project context is missing", async () => {
+    fs.rmSync(repoProjectPath(FAKE_REPO), { force: true });
+    seedCommit(FAKE_REPO, summarizedCommit("abc1234567890abc1234567890abc1234567890"));
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await commitGroup({ repo: FAKE_REPO, days: 7, maxCommits: 20, model: "test-model" });
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining("No project context (run `dev-workgraph init`)"),
+    );
+  });
+
+  it("respects --limit and skips extra groups", async () => {
+    const day = 86_400;
+    seedCommit(FAKE_REPO, {
+      commitHash: "a".repeat(40),
+      timestamp: 1_700_000_000,
+      model: sampleModel({ summary: "first" }),
+    });
+    seedCommit(FAKE_REPO, {
+      commitHash: "b".repeat(40),
+      timestamp: 1_700_000_000 + day * 8,
+      model: sampleModel({ summary: "second" }),
+    });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await commitGroup({
+      repo: FAKE_REPO,
+      days: 7,
+      maxCommits: 20,
+      model: "test-model",
+      limit: 1,
+    });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("skipped 1"));
+  });
+
+  it("writes a deterministic group record when summarization fails", async () => {
+    seedCommit(FAKE_REPO, summarizedCommit("abc1234567890abc1234567890abc1234567890"));
+    vi.mocked(chatJson).mockRejectedValueOnce(new Error("model down"));
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await commitGroup({ repo: FAKE_REPO, days: 7, maxCommits: 20, model: "test-model" });
+    const groupFile = path.join(repoGroupsDir(FAKE_REPO), "1700000000.json");
+    const record = JSON.parse(fs.readFileSync(groupFile, "utf8")) as { model: unknown };
+    expect(record.model).toBeNull();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("failed (model down)"));
   });
 });

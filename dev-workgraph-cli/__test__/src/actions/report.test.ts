@@ -362,6 +362,36 @@ describe("report", () => {
     expect(folded.mergeCursor).toBe(0);
   });
 
+  it("skips compaction when history sources are misaligned with history entries", async () => {
+    const first = summarizedGroup();
+    const second = summarizedGroup();
+    second.timestampEnd = 1_700_086_400;
+    second.groupId = 1_700_086_400;
+    seedGroup(FAKE_REPO, first);
+    seedGroup(FAKE_REPO, second);
+    fs.mkdirSync(repoReportsDir(FAKE_REPO), { recursive: true });
+    const prior = reportWithHistory(MAX_HISTORY_ENTRIES + 1);
+    prior.deterministic.historySource = [["only-one-source.json"]];
+    prior.mergeCursor = 0;
+    fs.writeFileSync(
+      path.join(repoReportsDir(FAKE_REPO), "1700000000.json"),
+      JSON.stringify(prior),
+    );
+
+    vi.mocked(chatJson).mockImplementation(async (opts) => {
+      const required = schemaRequired(opts.schema);
+      if (required.includes("needed")) return { needed: false };
+      return chatJsonFromSchema(opts.schema);
+    });
+
+    await report({ repo: FAKE_REPO, model: "test-model" });
+
+    const folded = JSON.parse(
+      fs.readFileSync(path.join(repoReportsDir(FAKE_REPO), "1700086400.json"), "utf8"),
+    ) as ReportRecord;
+    expect(folded.history.length).toBeGreaterThan(MAX_HISTORY_ENTRIES);
+  });
+
   it("folds groups under a review period subdirectory", async () => {
     writeProjectContext(FAKE_REPO, "2022");
     seedGroup(FAKE_REPO, summarizedGroup(), "2022");

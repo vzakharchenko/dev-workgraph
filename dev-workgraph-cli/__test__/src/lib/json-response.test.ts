@@ -61,4 +61,75 @@ describe("parseAndValidateModelJson", () => {
   it("rejects content without a JSON object", () => {
     expect(() => parseAndValidateModelJson("just prose", schema)).toThrow(/no JSON object/i);
   });
+
+  it("rejects syntactically invalid JSON inside a balanced object", () => {
+    expect(() => parseAndValidateModelJson('{"routine": true, broken}', schema)).toThrow(
+      /invalid JSON from model/i,
+    );
+  });
+
+  it("validates nested object and array properties", () => {
+    const nestedSchema = {
+      type: "object",
+      required: ["meta", "tags"],
+      properties: {
+        meta: {
+          type: "object",
+          required: ["name"],
+          properties: { name: { type: "string" } },
+        },
+        tags: { type: "array", items: { type: "string" } },
+      },
+    };
+    const result = parseAndValidateModelJson(
+      '{"meta": {"name": "report"}, "tags": ["a", "b"]}',
+      nestedSchema,
+    ) as { meta: { name: string }; tags: string[] };
+    expect(result.meta.name).toBe("report");
+    expect(result.tags).toEqual(["a", "b"]);
+  });
+
+  it("rejects non-object values where an object is expected", () => {
+    const nestedSchema = {
+      type: "object",
+      required: ["meta"],
+      properties: { meta: { type: "object", properties: {} } },
+    };
+    expect(() => parseAndValidateModelJson('{"meta": []}', nestedSchema)).toThrow(
+      /expected object at root\.meta/i,
+    );
+  });
+
+  it("rejects non-array values where an array is expected", () => {
+    const arraySchema = {
+      type: "object",
+      required: ["tags"],
+      properties: { tags: { type: "array", items: { type: "string" } } },
+    };
+    expect(() => parseAndValidateModelJson('{"tags": "nope"}', arraySchema)).toThrow(
+      /expected array at root\.tags/i,
+    );
+  });
+
+  it("rejects enum values outside the allowed set", () => {
+    const enumSchema = {
+      type: "object",
+      required: ["level"],
+      properties: { level: { type: "string", enum: ["low", "high"] } },
+    };
+    expect(() => parseAndValidateModelJson('{"level": "medium"}', enumSchema)).toThrow(
+      /invalid enum at root\.level/i,
+    );
+  });
+
+  it("rejects non-string values where a string is expected", () => {
+    const stringSchema = {
+      type: "object",
+      required: ["label"],
+      properties: { label: { type: "string" } },
+    };
+    expect(() => parseAndValidateModelJson('{"label": 42}', stringSchema)).toThrow(
+      /expected string at root\.label/i,
+    );
+  });
 });

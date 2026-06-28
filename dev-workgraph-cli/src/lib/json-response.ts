@@ -1,31 +1,40 @@
 // SPDX-FileCopyrightText: 2025-2026 Vasyl Zakharchenko
 // SPDX-License-Identifier: Apache-2.0
 
+interface JsonScanState {
+  inString: boolean;
+  isEscaped: boolean;
+}
+
+/** Updates scan state for one character inside a JSON object substring scan. */
+function consumeJsonScanChar(
+  ch: string,
+  state: JsonScanState,
+): { state: JsonScanState; depthDelta: number } {
+  if (state.inString) {
+    if (state.isEscaped) return { state: { inString: true, isEscaped: false }, depthDelta: 0 };
+    if (ch === "\\") return { state: { inString: true, isEscaped: true }, depthDelta: 0 };
+    if (ch === '"') return { state: { inString: false, isEscaped: false }, depthDelta: 0 };
+    return { state, depthDelta: 0 };
+  }
+  if (ch === '"') return { state: { inString: true, isEscaped: false }, depthDelta: 0 };
+  if (ch === "{") return { state, depthDelta: 1 };
+  if (ch === "}") return { state, depthDelta: -1 };
+  return { state, depthDelta: 0 };
+}
+
 /**
  * Finds the end offset of a balanced `{…}` object in `candidate` starting at `start`.
  * @returns Exclusive end index, or null when the object is unclosed.
  */
 function scanJsonObjectEnd(candidate: string, start: number): number | null {
   let depth = 0;
-  let inString = false;
-  let isEscaped = false;
+  let state: JsonScanState = { inString: false, isEscaped: false };
   for (let i = start; i < candidate.length; i += 1) {
-    const ch = candidate[i];
-    if (inString) {
-      if (isEscaped) isEscaped = false;
-      else if (ch === "\\") isEscaped = true;
-      else if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-    if (ch === "{") depth += 1;
-    if (ch === "}") {
-      depth -= 1;
-      if (depth === 0) return i + 1;
-    }
+    const step = consumeJsonScanChar(candidate[i] ?? "", state);
+    state = step.state;
+    depth += step.depthDelta;
+    if (depth === 0 && step.depthDelta < 0) return i + 1;
   }
   return null;
 }
@@ -70,22 +79,41 @@ function parseModelJson(content: string): unknown {
   }
 }
 
-function assertObjectSchema(value: unknown, schema: Record<string, unknown>, path: string): void {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`expected object at ${path}`);
-  }
-  const obj = value as Record<string, unknown>;
-  for (const key of (schema.required as string[] | undefined) ?? []) {
+function assertRequiredFields(
+  obj: Record<string, unknown>,
+  required: string[],
+  path: string,
+): void {
+  for (const key of required) {
     if (!(key in obj)) {
       throw new Error(`missing required field ${path}.${key}`);
     }
   }
-  const props = (schema.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
+}
+
+function assertObjectProperties(
+  obj: Record<string, unknown>,
+  props: Record<string, Record<string, unknown>>,
+  path: string,
+): void {
   for (const [key, subSchema] of Object.entries(props)) {
     if (key in obj) {
       assertMatchesSchema(obj[key], subSchema, `${path}.${key}`);
     }
   }
+}
+
+function assertObjectSchema(value: unknown, schema: Record<string, unknown>, path: string): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`expected object at ${path}`);
+  }
+  const obj = value as Record<string, unknown>;
+  assertRequiredFields(obj, (schema.required as string[] | undefined) ?? [], path);
+  assertObjectProperties(
+    obj,
+    (schema.properties as Record<string, Record<string, unknown>> | undefined) ?? {},
+    path,
+  );
 }
 
 function assertArraySchema(value: unknown, schema: Record<string, unknown>, path: string): void {
