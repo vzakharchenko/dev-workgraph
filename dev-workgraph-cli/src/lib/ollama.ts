@@ -7,6 +7,12 @@ import { logTokenCall, type TokenUsageTracker } from "./token-usage.js";
 /** Default Ollama endpoint. */
 const DEFAULT_BASE_URL = "http://127.0.0.1:11434";
 
+function stripTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url[end - 1] === "/") end -= 1;
+  return end === url.length ? url : url.slice(0, end);
+}
+
 /**
  * Normalizes a user-supplied endpoint into a scheme-qualified base URL with no
  * trailing slash. Accepts `host:port`, `http://host:port`, or undefined.
@@ -17,7 +23,7 @@ function normalizeUrl(value?: string): string | undefined {
   let url = value.trim();
   if (!url) return undefined;
   if (!/^https?:\/\//.test(url)) url = `http://${url}`;
-  return url.replace(/\/+$/, "");
+  return stripTrailingSlashes(url);
 }
 
 /**

@@ -141,6 +141,20 @@ function initReport(
   };
 }
 
+function formatFoldBanner(
+  groupCount: number,
+  skippedNoModel: number,
+  startIndex: number,
+  model: string,
+  baseUrl: string,
+): string {
+  const parts = [`Folding ${groupCount} group(s)`];
+  if (skippedNoModel > 0) parts.push(` (${skippedNoModel} skipped: no model)`);
+  if (startIndex > 0) parts.push(` — resuming at ${startIndex + 1}`);
+  parts.push(` with "${model}" at ${baseUrl}\n`);
+  return parts.join("");
+}
+
 /**
  * Folds work-session groups into a cumulative report, writing one report file
  * per fold step. Each merge runs LLM sessions (model merge, per-summary adjust,
@@ -176,7 +190,8 @@ export async function report(options: ReportOptions): Promise<void> {
   let current = initialReport;
 
   if (startIndex >= selected.length && current) {
-    console.log(`Report already complete (${path.join(reportsDir, `${current.reportId}.json`)}).`);
+    const reportPath = path.join(reportsDir, `${current.reportId}.json`);
+    console.log(`Report already complete (${reportPath}).`);
     return;
   }
 
@@ -184,9 +199,7 @@ export async function report(options: ReportOptions): Promise<void> {
   if (!projectBlock) {
     console.log("⚠️  No project context (run `dev-workgraph init`); folding without it.");
   }
-  console.log(
-    `Folding ${selected.length} group(s)${skippedNoModel ? ` (${skippedNoModel} skipped: no model)` : ""}${startIndex > 0 ? ` — resuming at ${startIndex + 1}` : ""} with "${model}" at ${baseUrl}\n`,
-  );
+  console.log(formatFoldBanner(selected.length, skippedNoModel, startIndex, model, baseUrl));
 
   const tracker = new TokenUsageTracker(repoPath, options.period);
   tracker.beginStep("report");
@@ -203,16 +216,14 @@ export async function report(options: ReportOptions): Promise<void> {
         current = initReport(file, record, generatedAt, model);
         console.log(`   seeded report (${current.history.length} history entry)`);
       } else {
-        current = await foldGroup(
-          current,
+        current = await foldGroup({
+          prev: current,
           file,
-          record,
-          baseUrl,
-          model,
+          group: record,
           generatedAt,
           projectBlock,
-          tracker,
-        );
+          llm: { baseUrl, model, tracker },
+        });
       }
 
       writeReport(reportsDir, current);
@@ -222,7 +233,8 @@ export async function report(options: ReportOptions): Promise<void> {
     tracker.endStep();
   }
 
-  console.log(`\n✅ Report built: ${path.join(reportsDir, `${current?.reportId}.json`)}`);
+  const reportPath = path.join(reportsDir, `${current?.reportId}.json`);
+  console.log(`\n✅ Report built: ${reportPath}`);
 }
 
 interface FoldMergeMeta {
@@ -405,16 +417,20 @@ async function compactFoldHistory(
 /**
  * Folds one group into the accumulated report via the LLM sessions.
  */
-async function foldGroup(
-  prev: ReportRecord,
-  file: string,
-  group: GroupRecord,
-  baseUrl: string,
-  model: string,
-  generatedAt: string,
-  projectBlock: string,
-  tracker: TokenUsageTracker,
-): Promise<ReportRecord> {
+async function foldGroup(input: {
+  prev: ReportRecord;
+  file: string;
+  group: GroupRecord;
+  generatedAt: string;
+  projectBlock: string;
+  llm: {
+    baseUrl: string;
+    model: string;
+    tracker: TokenUsageTracker;
+  };
+}): Promise<ReportRecord> {
+  const { prev, file, group, generatedAt, projectBlock, llm } = input;
+  const { baseUrl, model, tracker } = llm;
   const g = group.model;
   const prevProvenance = readReportProvenance(prev);
   const sourceGroups = [...prevProvenance.sourceGroups, file];

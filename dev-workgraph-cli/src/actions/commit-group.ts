@@ -55,6 +55,23 @@ const asStringArray = (value: unknown): string[] =>
 const DEFAULT_THRESHOLD_DAYS = 7;
 const DEFAULT_MAX_COMMITS = 20;
 
+function formatGroupingSummary(
+  commitCount: number,
+  sessionCount: number,
+  thresholdDays: number,
+  maxCommits: number,
+  fullyCovered: number,
+  pendingCount: number,
+): string {
+  const parts = [
+    `\n${commitCount} commit(s) → ${sessionCount} session(s) at ${thresholdDays}-day threshold`,
+  ];
+  if (maxCommits > 0) parts.push(`, max ${maxCommits}/group`);
+  if (fullyCovered > 0) parts.push(` · ${fullyCovered} fully covered`);
+  if (pendingCount > 0) parts.push(` · ${pendingCount} to summarize`);
+  return `${parts.join("")}.`;
+}
+
 /**
  * Options for the `commit-group` command.
  */
@@ -266,10 +283,14 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
   const sessions = extensionSessions(rawSessions, covered);
   const fullyCovered = rawSessions.length - sessions.length;
   console.log(
-    `\n${commits.length} commit(s) → ${rawSessions.length} session(s) at ${thresholdDays}-day threshold` +
-      `${maxCommits > 0 ? `, max ${maxCommits}/group` : ""}` +
-      `${fullyCovered > 0 ? ` · ${fullyCovered} fully covered` : ""}` +
-      `${sessions.length > 0 ? ` · ${sessions.length} to summarize` : ""}.`,
+    formatGroupingSummary(
+      commits.length,
+      rawSessions.length,
+      thresholdDays,
+      maxCommits,
+      fullyCovered,
+      sessions.length,
+    ),
   );
   console.log(`Using model "${model}" at ${baseUrl}\n`);
 

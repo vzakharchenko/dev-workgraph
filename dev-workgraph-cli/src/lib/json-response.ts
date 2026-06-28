@@ -40,6 +40,20 @@ function scanJsonObjectEnd(candidate: string, start: number): number | null {
 }
 
 /**
+ * Extracts the body of the first markdown JSON code fence, if present.
+ */
+function extractFencedJsonBlock(content: string): string | null {
+  const fenceMarker = content.indexOf("```");
+  if (fenceMarker === -1) return null;
+  const openMatch = content.slice(fenceMarker).match(/^```(?:json)?\s*/i);
+  if (!openMatch) return null;
+  const bodyStart = fenceMarker + openMatch[0].length;
+  const closeMarker = content.indexOf("```", bodyStart);
+  if (closeMarker === -1) return null;
+  return content.slice(bodyStart, closeMarker).trim();
+}
+
+/**
  * Extracts a JSON object substring from model text (handles fences and prose).
  * @param content - Raw model message content.
  */
@@ -49,8 +63,8 @@ function extractJsonObject(content: string): string {
     throw new Error("empty model content");
   }
 
-  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = (fenceMatch?.[1] ?? trimmed).trim();
+  const fenced = extractFencedJsonBlock(trimmed);
+  const candidate = (fenced ?? trimmed).trim();
 
   const start = candidate.indexOf("{");
   if (start === -1) {

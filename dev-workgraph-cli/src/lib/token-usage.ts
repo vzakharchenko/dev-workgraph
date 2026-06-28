@@ -78,7 +78,8 @@ function formatTotals(t: TokenTotals): string {
 function logByModel(prefix: string, byModel: Record<string, TokenTotals>): void {
   const entries = Object.entries(byModel).filter(([, t]) => t.calls > 0);
   if (entries.length === 0) return;
-  for (const [model, t] of entries.sort(([a], [b]) => a.localeCompare(b))) {
+  const sorted = [...entries].sort(([a], [b]) => a.localeCompare(b));
+  for (const [model, t] of sorted) {
     process.stderr.write(`     ${prefix}${model} — ${formatTotals(t)}\n`);
   }
 }
@@ -111,7 +112,7 @@ function loadUsageFromDisk(projectPath: string): ProjectTokenUsage {
 /** Accumulates LLM token usage per pipeline step and persists to `project.json`. */
 export class TokenUsageTracker {
   private readonly projectPath: string;
-  private usage: ProjectTokenUsage;
+  private readonly usage: ProjectTokenUsage;
   private currentStep: PipelineStep | null = null;
   private runStartStep: TokenTotals | null = null;
   private runStartStepByModel: Record<string, TokenTotals> = {};

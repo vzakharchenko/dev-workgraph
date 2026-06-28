@@ -260,9 +260,9 @@ export function aggregateDeterministic(members: CommitRecord[]): DeterministicLa
 export function tierOf(commit: CommitRecord): Tier {
   const m = commit.model;
   if (!m) return "low";
-  const signals = [m.technicalSignal, m.architectureSignal, m.securitySignal];
-  if (signals.includes("high")) return "hi";
-  if (signals.includes("medium")) return "medium";
+  const signals = new Set([m.technicalSignal, m.architectureSignal, m.securitySignal]);
+  if (signals.has("high")) return "hi";
+  if (signals.has("medium")) return "medium";
   return "low";
 }
 

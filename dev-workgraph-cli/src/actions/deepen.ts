@@ -137,32 +137,26 @@ async function resolveRecalledContext(contextFile?: string): Promise<string> {
   return (recalled ?? "").trim();
 }
 
+interface AssembleMarkdownInput {
+  project: ProjectContext;
+  role: string;
+  impactHistory: string;
+  technologies: string[];
+  narrative: string[];
+  cvBullets: string[];
+  qa: QA[];
+  recalledContext?: string;
+}
+
 /**
  * Step 5 — deterministic assembly of the versioned RECONSTRUCTION markdown.
  *
  * Same section layout as `final`, plus **Recalled context (this deepen round)** when
  * {@link FinishRecord.recalledContext} is non-empty. Lists **all** cumulative Q&A pairs.
- *
- * @param project - Loaded `project.json` (profile, role).
- * @param role - Developer role string for the IMPACT heading.
- * @param impactHistory - Refined "Your IMPACT" prose from step 4a.
- * @param technologies - Copied from the prepared record.
- * @param narrative - Four Role Narrative bullets from step 4b.
- * @param cvBullets - Four impersonal CV bullets from step 4c.
- * @param qa - Cumulative Q&A (prior finish answers + four new pairs).
- * @param recalledContext - Optional non-code context for this deepen round; omitted from
- *   markdown and finish JSON when empty.
  */
-function assembleMarkdown(
-  project: ProjectContext,
-  role: string,
-  impactHistory: string,
-  technologies: string[],
-  narrative: string[],
-  cvBullets: string[],
-  qa: QA[],
-  recalledContext?: string,
-): string {
+function assembleMarkdown(input: AssembleMarkdownInput): string {
+  const { project, role, impactHistory, technologies, narrative, cvBullets, qa, recalledContext } =
+    input;
   const p = project.profile;
   const context = [p.domains.join(", "), p.apparentStack.join(", ")].filter(Boolean).join(" · ");
   const sections = [
@@ -435,16 +429,16 @@ export async function deepen(options: DeepenOptions): Promise<void> {
 
   const projectName = path.basename(repoPath);
   const role = project.role;
-  const md = assembleMarkdown(
+  const md = assembleMarkdown({
     project,
     role,
     impactHistory,
-    prepared.record.model.technologies,
+    technologies: prepared.record.model.technologies,
     narrative,
     cvBullets,
-    allQa,
+    qa: allQa,
     recalledContext,
-  );
+  });
 
   const outPath = options.output
     ? path.resolve(options.output)

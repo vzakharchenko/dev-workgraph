@@ -198,6 +198,32 @@ export function getChurn(
 }
 
 /**
+ * Replaces git rename brace segments like `{old => new}` with the destination path.
+ */
+function replaceBraceRenameSegments(pathValue: string): string {
+  let result = "";
+  let cursor = 0;
+  while (cursor < pathValue.length) {
+    const open = pathValue.indexOf("{", cursor);
+    if (open === -1) {
+      result += pathValue.slice(cursor);
+      break;
+    }
+    result += pathValue.slice(cursor, open);
+    const close = pathValue.indexOf("}", open + 1);
+    if (close === -1) {
+      result += pathValue.slice(open);
+      break;
+    }
+    const inner = pathValue.slice(open + 1, close);
+    const arrow = inner.indexOf("=>");
+    result += arrow === -1 ? pathValue.slice(open, close + 1) : inner.slice(arrow + 2).trim();
+    cursor = close + 1;
+  }
+  return result.replace(/\/\//g, "/");
+}
+
+/**
  * Normalizes the path field from `--numstat`, which encodes renames as
  * `old => new` or `dir/{old => new}/file`, into the final path.
  * @param raw - The raw path field.
@@ -205,7 +231,7 @@ export function getChurn(
 function normalizeNumstatPath(raw: string): string {
   let p = raw.trim();
   if (p.includes("{") && p.includes("=>")) {
-    p = p.replace(/\{[^}]*=>\s*([^}]*)\}/g, "$1").replace(/\/\//g, "/");
+    p = replaceBraceRenameSegments(p);
   } else if (p.includes("=>")) {
     p = p.split("=>")[1]?.trim() ?? p;
   }

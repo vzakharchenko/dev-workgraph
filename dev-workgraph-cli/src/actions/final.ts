@@ -170,10 +170,11 @@ async function collectRoundAnswers(
   questionsToAsk: string[],
 ): Promise<FinishAnswer[]> {
   if (isExtension) {
-    console.log(
-      `Continuing from finish ${priorFinish?.file} — ${priorQa.length} prior Q&A` +
-        `${questionsToAsk.length > 0 ? `, ${questionsToAsk.length} new question(s)` : ""}.`,
-    );
+    let message = `Continuing from finish ${priorFinish?.file} — ${priorQa.length} prior Q&A`;
+    if (questionsToAsk.length > 0) {
+      message += `, ${questionsToAsk.length} new question(s)`;
+    }
+    console.log(`${message}.`);
   }
   if (options.answersFile) {
     return readFinishAnswersFile(options.answersFile, questionsRecord.questions);
@@ -300,86 +301,145 @@ function buildFinalMarkdown(
   ].join("\n");
 }
 
-/**
- * Closes the loop: collect human answers to the prepared questions, produce a
- * Role Narrative, and write RECONSTRUCTION.<project>.md to the current directory.
- * @param options - Resolved command options.
- */
-export async function final(options: FinalOptions): Promise<void> {
+interface FinalPreparedState {
+  finishDir: string;
+  priorFinish: ReturnType<typeof latestFinish>;
+  isExtension: boolean;
+  archive: FinishArchive;
+  questionsPath: string;
+  finishJsonPath: string;
+  preparedQuestions: string[];
+  questionsToAsk: string[];
+  priorQa: { question: string; answer: string }[];
+}
+
+function loadFinalProjectContext(
+  options: FinalOptions,
+): { repoPath: string; project: NonNullable<ReturnType<typeof loadProjectContext>> } | null {
   const repoPath = resolveRepo(options.repo);
   const project = loadProjectContext(repoPath, options.period);
   if (!project) {
     console.error("✖ No project context. Run `dev-workgraph init` first.");
     process.exitCode = 1;
-    return;
+    return null;
   }
+  return { repoPath, project };
+}
 
-  const latest = latestPrepared(repoPreparedDir(repoPath, options.period));
+function loadLatestPreparedOrLog(
+  repoPath: string,
+  period?: string,
+): { file: string; record: PreparedRecord } | null {
+  const latest = latestPrepared(repoPreparedDir(repoPath, period));
   if (!latest) {
     console.log(
       `No prepared narrative found for ${repoPath}. Run \`dev-workgraph prepare\` first.`,
     );
-    return;
+    return null;
   }
-  const prepared = latest.record;
+  return latest;
+}
 
-  const finishDir = repoFinishDir(repoPath, options.period);
+function resolvePriorQa(
+  isExtension: boolean,
+  priorFinish: ReturnType<typeof latestFinish>,
+  finishDir: string,
+  archive: FinishArchive,
+): { question: string; answer: string }[] {
+  if (!isExtension || !priorFinish) return [];
+  return resolveAnswersToQa(
+    finishDir,
+    archive.baseFinishId,
+    archive.version - 1,
+    normalizeFinishAnswers(priorFinish.record.answers),
+  );
+}
+
+function resolvePriorFinishAnswers(
+  isExtension: boolean,
+  priorFinish: ReturnType<typeof latestFinish>,
+): FinishAnswer[] {
+  if (!isExtension || !priorFinish) return [];
+  return normalizeFinishAnswers(priorFinish.record.answers);
+}
+
+function resolvePriorSourceQuestions(
+  isExtension: boolean,
+  priorFinish: ReturnType<typeof latestFinish>,
+): FinishRecord["sourceQuestions"] | undefined {
+  if (!isExtension || !priorFinish) return undefined;
+  return priorFinish.record.sourceQuestions;
+}
+
+function prepareFinalPreparedState(
+  repoPath: string,
+  latest: { file: string; record: PreparedRecord },
+  prepared: PreparedRecord,
+  period?: string,
+): FinalPreparedState {
+  const finishDir = repoFinishDir(repoPath, period);
   const priorFinish = latestFinish(finishDir);
   const isExtension = isFinalExtension(latest.file, priorFinish);
   const archive =
     isExtension && priorFinish ? resolveFinishArchive(priorFinish) : initialFinishArchive(prepared);
-
-  const questionsPath = path.join(
-    finishDir,
-    finishQuestionsJsonFileName(archive.baseFinishId, archive.version),
-  );
-  const finishJsonPath = path.join(finishDir, archive.jsonFile);
   const preparedQuestions = flattenQuestions(prepared.model.questionsAnalyses).slice(0, 4);
-  const priorQa =
-    isExtension && priorFinish
-      ? resolveAnswersToQa(
-          finishDir,
-          archive.baseFinishId,
-          archive.version - 1,
-          normalizeFinishAnswers(priorFinish.record.answers),
-        )
-      : [];
+  const priorQa = resolvePriorQa(isExtension, priorFinish, finishDir, archive);
   const questionsToAsk = isExtension
     ? questionsNotYetAnswered(preparedQuestions, priorQa)
     : preparedQuestions;
-
-  const questionsRecord = ensureQuestionsRecord(
+  return {
     finishDir,
-    questionsPath,
-    archive,
-    prepared,
+    priorFinish,
     isExtension,
-    questionsToAsk,
+    archive,
+    questionsPath: path.join(
+      finishDir,
+      finishQuestionsJsonFileName(archive.baseFinishId, archive.version),
+    ),
+    finishJsonPath: path.join(finishDir, archive.jsonFile),
     preparedQuestions,
-  );
+    questionsToAsk,
+    priorQa,
+  };
+}
 
-  let roundAnswers = loadSavedRoundAnswers(
-    finishJsonPath,
+async function resolveFinalRoundAnswers(
+  options: FinalOptions,
+  state: FinalPreparedState,
+  questionsRecord: FinishQuestionsRecord,
+): Promise<FinishAnswer[]> {
+  const saved = loadSavedRoundAnswers(
+    state.finishJsonPath,
     questionsRecord,
     options.answersFile,
-    isExtension,
+    state.isExtension,
   );
-  if (roundAnswers.length === 0) {
-    roundAnswers = await collectRoundAnswers(
-      options,
-      questionsRecord,
-      isExtension,
-      priorFinish,
-      priorQa,
-      questionsToAsk,
-    );
-  }
+  if (saved.length > 0) return saved;
+  return collectRoundAnswers(
+    options,
+    questionsRecord,
+    state.isExtension,
+    state.priorFinish,
+    state.priorQa,
+    state.questionsToAsk,
+  );
+}
 
-  const priorAnswers =
-    isExtension && priorFinish ? normalizeFinishAnswers(priorFinish.record.answers) : [];
+function mergeFinalQa(
+  finishDir: string,
+  archive: FinishArchive,
+  isExtension: boolean,
+  priorFinish: ReturnType<typeof latestFinish>,
+  roundAnswers: FinishAnswer[],
+): {
+  allAnswers: FinishAnswer[];
+  sourceQuestions: FinishRecord["sourceQuestions"];
+  qa: { question: string; answer: string }[];
+} {
+  const priorAnswers = resolvePriorFinishAnswers(isExtension, priorFinish);
   const allAnswers = isExtension ? [...priorAnswers, ...roundAnswers] : roundAnswers;
   const sourceQuestions = extendSourceQuestions(
-    isExtension && priorFinish ? priorFinish.record.sourceQuestions : undefined,
+    resolvePriorSourceQuestions(isExtension, priorFinish),
     archive.baseFinishId,
     archive.version,
   );
@@ -389,6 +449,121 @@ export async function final(options: FinalOptions): Promise<void> {
     archive.version,
     allAnswers,
     sourceQuestions,
+  );
+  return { allAnswers, sourceQuestions, qa };
+}
+
+function resolveFinalOutPath(
+  options: FinalOptions,
+  repoPath: string,
+  isExtension: boolean,
+  archive: FinishArchive,
+): string {
+  if (options.output) return path.resolve(options.output);
+  const name = isExtension
+    ? versionedReconstructionName(repoPath, archive.version, options.period)
+    : defaultReconstructionName(repoPath, options.period);
+  return path.join(process.cwd(), name);
+}
+
+function buildFinishRecord(input: {
+  state: FinalPreparedState;
+  latestFile: string;
+  prepared: PreparedRecord;
+  sourceQuestions: FinishRecord["sourceQuestions"];
+  allAnswers: FinishAnswer[];
+  narratives: FinalNarratives;
+  repoPath: string;
+  project: NonNullable<ReturnType<typeof loadProjectContext>>;
+  model: string;
+  finishMdPath: string;
+}): FinishRecord {
+  const {
+    state,
+    latestFile,
+    prepared,
+    sourceQuestions,
+    allAnswers,
+    narratives,
+    repoPath,
+    project,
+    model,
+    finishMdPath,
+  } = input;
+  const { archive, isExtension, priorFinish } = state;
+  return {
+    finishId: archive.baseFinishId,
+    sourcePrepared: latestFile,
+    sourceReport: prepared.sourceReport,
+    sourceQuestions,
+    ...(isExtension && priorFinish ? { sourcePreviousFinish: priorFinish.file } : {}),
+    version: archive.version,
+    round: archive.version,
+    project: path.basename(repoPath),
+    role: project.role,
+    technologies: prepared.model.technologies,
+    history: narratives.impactHistory,
+    narrative: narratives.narrative,
+    cvBullets: narratives.cvBullets,
+    answers: allAnswers,
+    outputMarkdown: path.basename(finishMdPath),
+    provenance: { model, generatedAt: new Date().toISOString() },
+  };
+}
+
+function persistFinalArtifacts(input: {
+  md: string;
+  outPath: string;
+  state: FinalPreparedState;
+  qaCount: number;
+  finishRecord: FinishRecord;
+}): void {
+  const { md, outPath, state, qaCount, finishRecord } = input;
+  const { finishDir, finishJsonPath, archive, isExtension } = state;
+  fs.writeFileSync(outPath, `${md}\n`, "utf8");
+  console.log(
+    `\n✅ Wrote ${outPath}` +
+      (isExtension ? ` (${qaCount} Q&A pairs, finish v${archive.version})` : ""),
+  );
+  fs.mkdirSync(finishDir, { recursive: true });
+  const finishMdPath = path.join(finishDir, archive.mdFile);
+  fs.writeFileSync(finishMdPath, `${md}\n`, "utf8");
+  writeRecordJson(finishJsonPath, finishRecord);
+  console.log(`✅ Archived to ${finishDir} (${finishJsonPath})`);
+}
+
+/**
+ * Closes the loop: collect human answers to the prepared questions, produce a
+ * Role Narrative, and write RECONSTRUCTION.<project>.md to the current directory.
+ * @param options - Resolved command options.
+ */
+export async function final(options: FinalOptions): Promise<void> {
+  const loaded = loadFinalProjectContext(options);
+  if (!loaded) return;
+  const { repoPath, project } = loaded;
+
+  const latest = loadLatestPreparedOrLog(repoPath, options.period);
+  if (!latest) return;
+
+  const prepared = latest.record;
+  const state = prepareFinalPreparedState(repoPath, latest, prepared, options.period);
+  const questionsRecord = ensureQuestionsRecord(
+    state.finishDir,
+    state.questionsPath,
+    state.archive,
+    prepared,
+    state.isExtension,
+    state.questionsToAsk,
+    state.preparedQuestions,
+  );
+
+  const roundAnswers = await resolveFinalRoundAnswers(options, state, questionsRecord);
+  const { allAnswers, sourceQuestions, qa } = mergeFinalQa(
+    state.finishDir,
+    state.archive,
+    state.isExtension,
+    state.priorFinish,
+    roundAnswers,
   );
 
   const baseUrl = resolveBaseUrl(options.url);
@@ -407,8 +582,8 @@ export async function final(options: FinalOptions): Promise<void> {
       prepared,
       project,
       qa,
-      isExtension,
-      priorFinish,
+      isExtension: state.isExtension,
+      priorFinish: state.priorFinish,
       llm: { baseUrl, model, projectBlock: projectContextBlock(project), tracker },
     });
   } finally {
@@ -416,42 +591,19 @@ export async function final(options: FinalOptions): Promise<void> {
   }
 
   const md = buildFinalMarkdown(project, prepared, narratives, qa);
-  const outPath = options.output
-    ? path.resolve(options.output)
-    : path.join(
-        process.cwd(),
-        isExtension
-          ? versionedReconstructionName(repoPath, archive.version, options.period)
-          : defaultReconstructionName(repoPath, options.period),
-      );
-  fs.writeFileSync(outPath, `${md}\n`, "utf8");
-  console.log(
-    `\n✅ Wrote ${outPath}` +
-      (isExtension ? ` (${qa.length} Q&A pairs, finish v${archive.version})` : ""),
-  );
-
-  fs.mkdirSync(finishDir, { recursive: true });
-  const finishMdPath = path.join(finishDir, archive.mdFile);
-  fs.writeFileSync(finishMdPath, `${md}\n`, "utf8");
-
-  const finishRecord: FinishRecord = {
-    finishId: archive.baseFinishId,
-    sourcePrepared: latest.file,
-    sourceReport: prepared.sourceReport,
+  const outPath = resolveFinalOutPath(options, repoPath, state.isExtension, state.archive);
+  const finishMdPath = path.join(state.finishDir, state.archive.mdFile);
+  const finishRecord = buildFinishRecord({
+    state,
+    latestFile: latest.file,
+    prepared,
     sourceQuestions,
-    ...(isExtension && priorFinish ? { sourcePreviousFinish: priorFinish.file } : {}),
-    version: archive.version,
-    round: archive.version,
-    project: path.basename(repoPath),
-    role: project.role,
-    technologies: prepared.model.technologies,
-    history: narratives.impactHistory,
-    narrative: narratives.narrative,
-    cvBullets: narratives.cvBullets,
-    answers: allAnswers,
-    outputMarkdown: path.basename(finishMdPath),
-    provenance: { model, generatedAt: new Date().toISOString() },
-  };
-  writeRecordJson(finishJsonPath, finishRecord);
-  console.log(`✅ Archived to ${finishDir} (${finishJsonPath})`);
+    allAnswers,
+    narratives,
+    repoPath,
+    project,
+    model,
+    finishMdPath,
+  });
+  persistFinalArtifacts({ md, outPath, state, qaCount: qa.length, finishRecord });
 }
