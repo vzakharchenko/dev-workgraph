@@ -17,6 +17,7 @@ import {
 import { isNoise } from "../lib/noise.js";
 import { resolvePeriodRange } from "../lib/periods.js";
 import { writeRecordJson } from "../lib/record-io.js";
+import { uniqSorted } from "../lib/sort.js";
 
 /**
  * Options for the `evidence` command.
@@ -57,9 +58,6 @@ interface CommitEvidenceRecord {
   author: string;
   deterministic: DeterministicLayer;
 }
-
-/** Sorted unique helper. */
-const uniqSorted = (values: string[]): string[] => [...new Set(values)].sort();
 
 /**
  * Builds the deterministic layer for a commit from its changed files and churn.

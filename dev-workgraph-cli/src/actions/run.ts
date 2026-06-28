@@ -46,6 +46,23 @@ export interface RunOptions {
 const DEFAULT_THRESHOLD_DAYS = 7;
 const DEFAULT_MAX_COMMITS = 20;
 
+interface RunModels {
+  commitModel: string;
+  reportModel: string;
+  narrativeModel: string;
+}
+
+interface RunGroupSettings {
+  days: number;
+  maxCommits: number;
+}
+
+interface RunInitContext {
+  needInit: boolean;
+  role?: string;
+  story?: string;
+}
+
 /** Interactive author selection (checkbox), pre-checking the repo's git identity. */
 async function selectAuthors(repoPath: string): Promise<string[]> {
   const all = getAuthors(repoPath);
@@ -67,37 +84,22 @@ async function selectAuthors(repoPath: string): Promise<string[]> {
   return picked;
 }
 
-/**
- * Runs the whole pipeline after gathering every upfront input: init → evidence →
- * summarize → commit-group → report → prepare run unattended; `final` then asks
- * the prepared questions interactively (they can't be gathered before prepare).
- * @param options - Resolved command options.
- */
-export async function run(options: RunOptions): Promise<void> {
-  const repoPath = resolveRepo(options.repo);
-  const baseUrl = resolveBaseUrl(options.url);
+async function resolveRunPeriod(
+  repoPath: string,
+  options: RunOptions,
+): Promise<string | undefined> {
+  if (!options.periodMode && !options.period && !options.from && !options.to) return undefined;
+  const resolved = await resolvePeriodDefinition({
+    repoPath,
+    id: options.period,
+    from: options.from,
+    to: options.to,
+  });
+  console.log(`Review period "${resolved.id}": ${resolved.period.from} → ${resolved.period.to}\n`);
+  return resolved.id;
+}
 
-  console.log("=== dev-workgraph run — gathering inputs ===\n");
-
-  // 0. Optional review period — defines/persists from/to, scopes every stage.
-  let period: string | undefined;
-  if (options.periodMode || options.period || options.from || options.to) {
-    const resolved = await resolvePeriodDefinition({
-      repoPath,
-      id: options.period,
-      from: options.from,
-      to: options.to,
-    });
-    period = resolved.id;
-    console.log(`Review period "${period}": ${resolved.period.from} → ${resolved.period.to}\n`);
-  }
-
-  // Preflight: Ollama must be reachable with at least one model before we prompt.
-  if (!(await ollamaReady(baseUrl))) {
-    throw new Error("Ollama is not ready (see above). Fix it, then re-run.");
-  }
-
-  // 1. Models — separate slots for commit-level, report-level, and narrative work.
+async function resolveRunModels(baseUrl: string, options: RunOptions): Promise<RunModels> {
   const savedOllama = loadConfig().ollama;
   const commitModel = await resolveModel(baseUrl, options.model, {
     message: "Model for commit summaries & commit-group?",
@@ -112,37 +114,44 @@ export async function run(options: RunOptions): Promise<void> {
     saved: savedOllama?.narrativeModel ?? savedOllama?.reportModel ?? savedOllama?.model,
   });
   setOllamaConfig({ baseUrl, commitModel, reportModel, narrativeModel });
+  return { commitModel, reportModel, narrativeModel };
+}
 
-  const cfg = getRepoConfig(repoPath);
+async function resolveRunInitContext(
+  repoPath: string,
+  period: string | undefined,
+): Promise<RunInitContext> {
   const projectExists = fs.existsSync(repoProjectPath(repoPath, period));
-
-  // 2. Role + story. A period normally inherits the repo-level context (no
-  // prompt); we only gather role/story when init will actually build a fresh
-  // profile: any non-period init when project.json is missing.
   const needInit = !projectExists;
   const needRoleStory = needInit && !period;
-  let role: string | undefined;
-  let story: string | undefined;
-  if (needRoleStory) {
-    role = await resolveRole();
-    story = await resolveStory();
-  } else if (needInit && period) {
-    console.log(`Period "${period}" will inherit the repo-level project context.`);
-  } else {
-    console.log("Project already initialized — keeping existing context.");
+  if (!needRoleStory) {
+    if (needInit && period) {
+      console.log(`Period "${period}" will inherit the repo-level project context.`);
+    } else {
+      console.log("Project already initialized — keeping existing context.");
+    }
+    return { needInit };
   }
+  const role = await resolveRole();
+  const story = await resolveStory();
+  return { needInit, role, story };
+}
 
-  // 3. Authors.
-  let emails = cfg?.selectedAuthors ?? [];
-  if (emails.length === 0) {
-    emails = await selectAuthors(repoPath);
-    if (emails.length === 0) throw new Error("No author identities selected.");
-    setRepoConfig(repoPath, { selectedAuthors: emails });
-  } else {
-    console.log(`Using saved authors: ${emails.join(", ")}`);
+async function resolveRunAuthors(repoPath: string): Promise<string[]> {
+  const cfg = getRepoConfig(repoPath);
+  const saved = cfg?.selectedAuthors ?? [];
+  if (saved.length > 0) {
+    console.log(`Using saved authors: ${saved.join(", ")}`);
+    return saved;
   }
+  const emails = await selectAuthors(repoPath);
+  if (emails.length === 0) throw new Error("No author identities selected.");
+  setRepoConfig(repoPath, { selectedAuthors: emails });
+  return emails;
+}
 
-  // 4. Group threshold.
+async function resolveRunGroupSettings(repoPath: string): Promise<RunGroupSettings> {
+  const cfg = getRepoConfig(repoPath);
   let days = cfg?.groupThresholdDays;
   if (days === undefined) {
     const answer = await inquirer.prompt<{ days: number }>([
@@ -159,7 +168,6 @@ export async function run(options: RunOptions): Promise<void> {
     console.log(`Using saved group threshold: ${days} day(s)`);
   }
 
-  // 5. Max commits per group.
   let maxCommits = cfg?.groupMaxCommits;
   if (maxCommits === undefined) {
     const answer = await inquirer.prompt<{ maxCommits: number }>([
@@ -178,13 +186,44 @@ export async function run(options: RunOptions): Promise<void> {
   } else {
     console.log(`Using saved max commits/group: ${maxCommits || "unlimited"}`);
   }
+  return { days, maxCommits };
+}
 
-  // ── Pipeline ─────────────────────────────────────────────────────────
+/**
+ * Runs the whole pipeline after gathering every upfront input: init → evidence →
+ * summarize → commit-group → report → prepare run unattended; `final` then asks
+ * the prepared questions interactively (they can't be gathered before prepare).
+ * @param options - Resolved command options.
+ */
+export async function run(options: RunOptions): Promise<void> {
+  const repoPath = resolveRepo(options.repo);
+  const baseUrl = resolveBaseUrl(options.url);
+
+  console.log("=== dev-workgraph run — gathering inputs ===\n");
+
+  const period = await resolveRunPeriod(repoPath, options);
+
+  if (!(await ollamaReady(baseUrl))) {
+    throw new Error("Ollama is not ready (see above). Fix it, then re-run.");
+  }
+
+  const models = await resolveRunModels(baseUrl, options);
+  const initCtx = await resolveRunInitContext(repoPath, period);
+  const emails = await resolveRunAuthors(repoPath);
+  const groupSettings = await resolveRunGroupSettings(repoPath);
+
   console.log("\n=== Running pipeline (final will ask the prepared questions at the end) ===");
 
-  if (needInit) {
+  if (initCtx.needInit) {
     console.log("\n[1/7] init");
-    await init({ repo: repoPath, role, story, model: narrativeModel, url: baseUrl, period });
+    await init({
+      repo: repoPath,
+      role: initCtx.role,
+      story: initCtx.story,
+      model: models.narrativeModel,
+      url: baseUrl,
+      period,
+    });
   } else {
     console.log("\n[1/7] init — skipped (already initialized)");
   }
@@ -193,27 +232,26 @@ export async function run(options: RunOptions): Promise<void> {
   await evidence({ repo: repoPath, email: emails, period });
 
   console.log("\n[3/7] summarize");
-  await summarize({ repo: repoPath, model: commitModel, url: baseUrl, period });
+  await summarize({ repo: repoPath, model: models.commitModel, url: baseUrl, period });
 
   console.log("\n[4/7] commit-group");
   await commitGroup({
     repo: repoPath,
-    model: commitModel,
+    model: models.commitModel,
     url: baseUrl,
-    days,
-    maxCommits,
+    days: groupSettings.days,
+    maxCommits: groupSettings.maxCommits,
     period,
   });
 
   console.log("\n[5/7] report");
-  await report({ repo: repoPath, model: reportModel, url: baseUrl, period });
+  await report({ repo: repoPath, model: models.reportModel, url: baseUrl, period });
 
   console.log("\n[6/7] prepare");
-  await prepare({ repo: repoPath, model: narrativeModel, url: baseUrl, period });
+  await prepare({ repo: repoPath, model: models.narrativeModel, url: baseUrl, period });
 
-  // final is interactive (answers the prepared questions) — it runs last.
   console.log("\n[7/7] final");
-  await final({ repo: repoPath, model: narrativeModel, url: baseUrl, period });
+  await final({ repo: repoPath, model: models.narrativeModel, url: baseUrl, period });
 
   console.log("\n✅ Pipeline complete.");
 }

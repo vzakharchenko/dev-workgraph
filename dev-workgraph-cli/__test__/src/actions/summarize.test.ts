@@ -94,4 +94,25 @@ describe("summarize", () => {
     await summarize({ repo: FAKE_REPO, model: "test-model" });
     expect(log).toHaveBeenCalledWith(expect.stringContaining("Nothing to do"));
   });
+
+  it("warns when project context is missing", async () => {
+    const { repoProjectPath } = await import("../../../src/lib/config.js");
+    fs.rmSync(repoProjectPath(FAKE_REPO), { force: true });
+    const hash = "abc1234567890abc1234567890abc1234567890";
+    seedCommit(FAKE_REPO, { commitHash: hash });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await summarize({ repo: FAKE_REPO, model: "test-model" });
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining("No project context (run `dev-workgraph init`)"),
+    );
+  });
+
+  it("logs a failure when summarization throws", async () => {
+    const hash = "abc1234567890abc1234567890abc1234567890";
+    seedCommit(FAKE_REPO, { commitHash: hash });
+    chatJsonMock.mockRejectedValueOnce(new Error("model down"));
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await summarize({ repo: FAKE_REPO, model: "test-model" });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("failed (model down)"));
+  });
 });
