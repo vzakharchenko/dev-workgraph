@@ -37,7 +37,7 @@ jobs:
           version: 2.5.1
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Format check
         run: biome format src
