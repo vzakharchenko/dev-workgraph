@@ -21,6 +21,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: REUSE / SPDX compliance
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: fsfe/reuse-action@bb774aa972c2a89ff34781233d275075cbddf542 # v5
+
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
