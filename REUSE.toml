@@ -1,0 +1,13 @@
+# REUSE 3.2+ — https://reuse.software/spec-3.3/
+version = 1
+SPDX-PackageName = "dev-workgraph"
+SPDX-PackageSupplier = "Vasyl Zakharchenko"
+SPDX-PackageDownloadLocation = "https://github.com/vzakharchenko/dev-workgraph"
+
+# Default for files without in-tree SPDX headers (docs, config, CI, examples, …).
+# Source files under dev-workgraph-cli/ carry their own headers (precedence = closest).
+[[annotations]]
+path = "**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2025 Vasyl Zakharchenko"
+SPDX-License-Identifier = "Apache-2.0"

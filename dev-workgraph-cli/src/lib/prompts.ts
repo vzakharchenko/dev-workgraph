@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2025-2026 Vasyl Zakharchenko
+// SPDX-FileCopyrightText: 2026 Vasyl Zakharchenko
 // SPDX-License-Identifier: Apache-2.0
 //
 // All LLM-facing prompts live here so the exact wording is easy to find and tune.
