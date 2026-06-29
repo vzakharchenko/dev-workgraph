@@ -31,7 +31,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24.16
-          cache: "npm"
 
       - name: Install ncu globally (pinned + no install scripts)
         # Pinned version satisfies S8543; --ignore-scripts satisfies S6505.
