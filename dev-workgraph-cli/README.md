@@ -1,5 +1,19 @@
 # dev-workgraph
 
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=vzakharchenko_dev-workgraph&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=vzakharchenko_dev-workgraph)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=vzakharchenko_dev-workgraph&metric=bugs)](https://sonarcloud.io/summary/new_code?id=vzakharchenko_dev-workgraph)
+[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=vzakharchenko_dev-workgraph&metric=code_smells)](https://sonarcloud.io/summary/new_code?id=vzakharchenko_dev-workgraph)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=vzakharchenko_dev-workgraph&metric=coverage)](https://sonarcloud.io/summary/new_code?id=vzakharchenko_dev-workgraph)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=vzakharchenko_dev-workgraph&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=vzakharchenko_dev-workgraph)
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=vzakharchenko_dev-workgraph&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=vzakharchenko_dev-workgraph)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=vzakharchenko_dev-workgraph&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=vzakharchenko_dev-workgraph)
+[![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=vzakharchenko_dev-workgraph&metric=sqale_index)](https://sonarcloud.io/summary/new_code?id=vzakharchenko_dev-workgraph)
+
+[![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=vzakharchenko_dev-workgraph&metric=ncloc)](https://sonarcloud.io/summary/new_code?id=vzakharchenko_dev-workgraph) 
+
+
+[![REUSE status](https://api.reuse.software/badge/github.com/vzakharchenko/dev-workgraph)](https://api.reuse.software/info/github.com/vzakharchenko/dev-workgraph)
+
 **Turn a Git repository into a career story you can defend** — for a performance review, a CV, or interview prep.
 
 You point the CLI at a repo where you actually worked. It reads your commits and patches, asks what Git cannot know, you confirm the missing context, and it writes **`RECONSTRUCTION.<project>.md`**: what you did, where in the system, and what impact means for **your role** (Principal, Staff, Senior, Junior) — with role narrative bullets and CV bullets grounded in evidence, not a blank ChatGPT prompt.
