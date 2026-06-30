@@ -168,4 +168,36 @@ describe("chatJson", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
   });
+
+  it("retries on empty content then succeeds", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          done_reason: "length",
+          message: { content: "" },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          message: { content: '{"routine": true, "reason": "ok"}' },
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const promise = chatJson({
+      baseUrl: "http://127.0.0.1:11434",
+      model: "test",
+      system: "sys",
+      user: "user",
+      schema: routineCheckJsonSchema(),
+    });
+    await vi.runAllTimersAsync();
+    await expect(promise).resolves.toEqual({ routine: true, reason: "ok" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
 });

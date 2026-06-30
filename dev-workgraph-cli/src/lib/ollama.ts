@@ -1,11 +1,23 @@
 // SPDX-FileCopyrightText: 2026 Vasyl Zakharchenko
 // SPDX-License-Identifier: Apache-2.0
 
+import { Agent, setGlobalDispatcher } from "undici";
 import { parseAndValidateModelJson } from "./json-response.js";
 import { logTokenCall, type TokenUsageTracker } from "./token-usage.js";
 
 /** Default Ollama endpoint. */
 const DEFAULT_BASE_URL = "http://127.0.0.1:11434";
+
+/** Node's fetch defaults to ~1 hour headers timeout; large local models can exceed that. */
+const OLLAMA_HEADERS_TIMEOUT_MS = 60 * 60 * 1000;
+const OLLAMA_BODY_TIMEOUT_MS = 60 * 60 * 1000;
+
+setGlobalDispatcher(
+  new Agent({
+    headersTimeout: OLLAMA_HEADERS_TIMEOUT_MS,
+    bodyTimeout: OLLAMA_BODY_TIMEOUT_MS,
+  }),
+);
 
 function stripTrailingSlashes(url: string): string {
   let end = url.length;
@@ -45,7 +57,7 @@ export async function listModels(baseUrl: string): Promise<string[]> {
   try {
     res = await fetch(`${baseUrl}/api/tags`);
   } catch (err) {
-    throw new Error(`Cannot reach Ollama at ${baseUrl} (${(err as Error).message})`);
+    throw new Error(`Cannot reach Ollama at ${baseUrl} (${formatFetchError(err)})`);
   }
   if (!res.ok) throw new Error(`Ollama /api/tags returned ${res.status}`);
   const data = (await res.json()) as { models?: { name: string }[] };
@@ -62,9 +74,16 @@ export async function listModels(baseUrl: string): Promise<string[]> {
  * @param opts.schema - JSON Schema for the `format` parameter.
  */
 /** Total attempts for a chat call before giving up (HTTP/parse failures are retried). */
-const MAX_ATTEMPTS = 2;
+const MAX_ATTEMPTS = 3;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+function formatFetchError(err: unknown): string {
+  const error = err as Error & { cause?: { code?: string; message?: string } };
+  const cause = error.cause;
+  if (cause?.code) return `${error.message} [${cause.code}]`;
+  return error.message;
+}
 
 /** Default Ollama generation options; num_ctx / num_predict come from the model Modelfile. */
 const DEFAULT_CHAT_OPTIONS = {
@@ -123,6 +142,9 @@ async function chatJsonOnce(opts: {
     eval_count?: number;
   };
   const content = data.message?.content ?? "";
+  if (!content.trim()) {
+    throw new Error(`Ollama returned empty content (done_reason=${data.done_reason ?? "unknown"})`);
+  }
   const promptTokens = data.prompt_eval_count ?? 0;
   const completionTokens = data.eval_count ?? 0;
   const parsed = parseAndValidateModelJson(content, opts.schema);
