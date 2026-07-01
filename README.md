@@ -103,6 +103,7 @@ Use strong models for real runs — weak ones work for smoke tests but hurt long
 | [`examples/`](./examples/) | Sample `RECONSTRUCTION.*.md` outputs — see [`examples/README.md`](./examples/README.md) |
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | Architecture overview + diagrams from `img/` |
 | [`REQUIREMENTS.md`](./REQUIREMENTS.md) | Full product & pipeline specification |
+| [`CHANGELOG.md`](./CHANGELOG.md) | Release history |
 | [`uml/`](./uml/) | Pipeline diagrams (PlantUML, Graphviz) — PNG: `./scripts/generatePNGFromSchemas.sh` → [`img/`](./img/) |
 
 ## The work graph

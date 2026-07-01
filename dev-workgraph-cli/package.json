@@ -1,6 +1,6 @@
 {
   "name": "dev-workgraph",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Turn a Git repository into a career story you can defend — reconstruct your work from commits and your own answers into role-aware impact, CV bullets, and interview prep. Local-only via Ollama.",
   "license": "Apache-2.0",
   "author": "Vasyl Zakharchenko",
