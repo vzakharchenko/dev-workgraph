@@ -127,18 +127,18 @@ describe("commit summarize prompts", () => {
         changedFiles: { added: ["src/a.ts"], deleted: [], modified: [], renamed: [] },
       }),
     });
-    const { prompt, truncated } = buildCommitUserPrompt(commit, "diff line");
-    expect(truncated).toBe(false);
+    const prompt = buildCommitUserPrompt(commit, "diff line");
     expect(prompt).toContain("Add feature");
     expect(prompt).toContain("```diff");
     expect(prompt).toContain("diff line");
   });
 
-  it("buildCommitUserPrompt truncates oversized patches", () => {
+  it("buildCommitUserPrompt passes full patch without truncation", () => {
     const commit = sampleCommit({ commitHash: "abc123" });
-    const { truncated, prompt } = buildCommitUserPrompt(commit, "x".repeat(50_000));
-    expect(truncated).toBe(true);
-    expect(prompt).toContain("[...patch truncated");
+    const bigPatch = "x".repeat(50_000);
+    const prompt = buildCommitUserPrompt(commit, bigPatch);
+    expect(prompt).toContain(bigPatch);
+    expect(prompt).not.toContain("[...patch truncated");
   });
 
   it("exports commit summary system prompt", () => {
@@ -162,8 +162,7 @@ describe("commit-group prompts", () => {
 
   it("buildGroupClassifyPrompt includes tier mix and members", () => {
     const group = sampleGroup();
-    const { prompt, truncated } = buildGroupClassifyPrompt(group, members);
-    expect(truncated).toBe(false);
+    const prompt = buildGroupClassifyPrompt(group, members);
     expect(prompt).toContain("Tier mix:");
     expect(prompt).toContain("hi1");
     expect(prompt).toContain("[HIGH context]");
@@ -179,22 +178,9 @@ describe("commit-group prompts", () => {
       mediumContext: [],
       lowContext: ["Deps"],
     };
-    const { prompt } = buildGroupComposePrompt(group, classify, members);
+    const prompt = buildGroupComposePrompt(group, classify, members);
     expect(prompt).toContain("HIGH-tier context");
     expect(prompt).toContain("Built scheduler");
-  });
-
-  it("buildGroupClassifyPrompt truncates very large member lists", () => {
-    const group = sampleGroup();
-    const members = Array.from({ length: 40 }, (_, i) =>
-      sampleCommit({
-        commitHash: `hash${i}`,
-        title: `Commit ${i} with a long title to inflate prompt size ${"x".repeat(200)}`,
-        model: sampleModel({ summary: "y".repeat(500) }),
-      }),
-    );
-    const { truncated } = buildGroupClassifyPrompt(group, members);
-    expect(truncated).toBe(true);
   });
 
   it("exports group system prompts", () => {

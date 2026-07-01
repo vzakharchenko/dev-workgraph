@@ -177,6 +177,49 @@ describe("loadCommitRecords", () => {
     expect(merged?.model?.summary).toBe("from summary file");
   });
 
+  it("loads split commits when canonical summary exists", () => {
+    const commitsDir = fs.mkdtempSync(path.join(os.tmpdir(), "wg-commits-split-"));
+    const summariesDir = fs.mkdtempSync(path.join(os.tmpdir(), "wg-summaries-split-"));
+    tmpDir = commitsDir;
+    extraDirs = [summariesDir];
+    const hash = "splitcommit";
+    fs.mkdirSync(path.join(commitsDir, "100"), { recursive: true });
+    fs.writeFileSync(
+      path.join(commitsDir, "100", `${hash}.json`),
+      JSON.stringify({
+        commitHash: hash,
+        timestamp: 100,
+        title: "Init",
+        author: { email: "dev@example.com", name: "Dev" },
+        deterministic: sampleCommit({ commitHash: hash }).deterministic,
+        split: true,
+        partCount: 2,
+      }),
+    );
+    fs.mkdirSync(path.join(summariesDir, "100"), { recursive: true });
+    fs.writeFileSync(
+      path.join(summariesDir, "100", `${hash}.merge.json`),
+      JSON.stringify({
+        commitHash: hash,
+        timestamp: 100,
+        model: sampleModel({ summary: "merge only" }),
+      }),
+    );
+    expect(loadCommitRecords(commitsDir, summariesDir)).toEqual([]);
+
+    fs.writeFileSync(
+      path.join(summariesDir, "100", `${hash}.json`),
+      JSON.stringify({
+        commitHash: hash,
+        timestamp: 100,
+        model: sampleModel({ summary: "canonical summary" }),
+      }),
+    );
+    const records = loadCommitRecords(commitsDir, summariesDir);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.model?.summary).toBe("canonical summary");
+  });
+
   it("falls back to legacy inlined model when no summary file exists", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wg-commits-legacy-"));
     const legacy = sampleCommit({

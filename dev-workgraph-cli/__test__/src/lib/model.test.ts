@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { parseAndValidateModelJson } from "../../../src/lib/json-response.js";
 import {
+  EMPTY_SUMMARIZE_MODEL,
+  emptyCommitModelLayer,
   enforceSignalReasons,
   groupClassifyJsonSchema,
   groupHistoryJsonSchema,
+  hasSubstantiveDeterministic,
+  isEmptyCommitSummary,
   maxSignal,
   mergeTechnologies,
   modelJsonSchema,
@@ -19,7 +23,7 @@ import {
   routineCheckJsonSchema,
   storyPrepareJsonSchema,
 } from "../../../src/lib/model.js";
-import { sampleModel } from "../../helpers.js";
+import { emptyDeterministic, sampleModel } from "../../helpers.js";
 
 const validCommitJson = JSON.stringify({
   summary: "Added handler",
@@ -51,6 +55,53 @@ describe("mergeTechnologies", () => {
 
   it("skips empty strings", () => {
     expect(mergeTechnologies(["  ", "Go"], undefined)).toEqual(["Go"]);
+  });
+});
+
+describe("hasSubstantiveDeterministic", () => {
+  it("returns false when only excluded/noise paths remain", () => {
+    expect(
+      hasSubstantiveDeterministic(
+        emptyDeterministic({
+          excludedFiles: ["frontend/package-lock.json"],
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("returns true when substantive files or churn exist", () => {
+    expect(hasSubstantiveDeterministic(emptyDeterministic({ linesAdded: 1 }))).toBe(true);
+    expect(
+      hasSubstantiveDeterministic(
+        emptyDeterministic({
+          changedFiles: { added: ["src/a.ts"], modified: [], deleted: [], renamed: [] },
+        }),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("emptyCommitModelLayer", () => {
+  it("returns a low-signal empty layer with (none) provenance", () => {
+    const layer = emptyCommitModelLayer();
+    expect(layer.summary).toBe("");
+    expect(layer.questionsAnalysis).toEqual([]);
+    expect(layer.confidence).toBe("low");
+    expect(layer.provenance?.model).toBe(EMPTY_SUMMARIZE_MODEL);
+    expect(isEmptyCommitSummary(layer)).toBe(true);
+  });
+});
+
+describe("isEmptyCommitSummary", () => {
+  it("returns false for null and substantive summaries", () => {
+    expect(isEmptyCommitSummary(null)).toBe(false);
+    expect(isEmptyCommitSummary(undefined)).toBe(false);
+    expect(isEmptyCommitSummary(sampleModel({ summary: "Did work" }))).toBe(false);
+  });
+
+  it("returns true for empty-skip layers and blank summaries", () => {
+    expect(isEmptyCommitSummary(emptyCommitModelLayer())).toBe(true);
+    expect(isEmptyCommitSummary(sampleModel({ summary: "   " }))).toBe(true);
   });
 });
 

@@ -211,6 +211,28 @@ export interface CommitEvidenceRecord {
   title: string;
   author: string;
   deterministic: DeterministicLayer;
+  /**
+   * When true, patch data is split across `<hash>.partN.patch` files; there is no
+   * monolithic `<hash>.patch`. `partCount` names how many parts exist.
+   */
+  split?: boolean;
+  /** Number of `<hash>.partN.{json,patch}` pairs when {@link split} is true. */
+  partCount?: number;
+}
+
+/**
+ * One slice of a split commit evidence export (`<hash>.partN.json`).
+ */
+export interface CommitEvidencePartRecord {
+  schemaVersion?: number;
+  commitHash: string;
+  timestamp: number;
+  title: string;
+  author: string;
+  part: number;
+  partCount: number;
+  patchTruncated: boolean;
+  deterministic: DeterministicLayer;
 }
 
 /**

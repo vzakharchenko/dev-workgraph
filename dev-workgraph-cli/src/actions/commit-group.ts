@@ -27,6 +27,7 @@ import {
   enforceSignalReasons,
   groupClassifyJsonSchema,
   groupHistoryJsonSchema,
+  isEmptyCommitSummary,
   type ModelLayer,
   mergeTechnologies,
 } from "../lib/model.js";
@@ -57,15 +58,21 @@ const DEFAULT_MAX_COMMITS = 20;
 
 function formatGroupingSummary(
   commitCount: number,
+  groupingCount: number,
+  emptySkipped: number,
   sessionCount: number,
   thresholdDays: number,
   maxCommits: number,
   fullyCovered: number,
   pendingCount: number,
 ): string {
-  const parts = [
-    `\n${commitCount} commit(s) → ${sessionCount} session(s) at ${thresholdDays}-day threshold`,
-  ];
+  const parts = [`\n${commitCount} commit(s)`];
+  if (emptySkipped > 0) {
+    parts.push(
+      ` → ${groupingCount} for grouping (${emptySkipped} empty summar${emptySkipped === 1 ? "y" : "ies"} skipped)`,
+    );
+  }
+  parts.push(` → ${sessionCount} session(s) at ${thresholdDays}-day threshold`);
   if (maxCommits > 0) parts.push(`, max ${maxCommits}/group`);
   if (fullyCovered > 0) parts.push(` · ${fullyCovered} fully covered`);
   if (pendingCount > 0) parts.push(` · ${pendingCount} to summarize`);
@@ -202,7 +209,7 @@ async function summarizeGroupSession(
     baseUrl: ctx.baseUrl,
     model: ctx.model,
     system: ctx.classifySystem,
-    user: classifyPrompt.prompt,
+    user: classifyPrompt,
     schema: groupClassifyJsonSchema(),
     tracker: ctx.tracker,
   })) as Record<string, unknown>;
@@ -224,7 +231,7 @@ async function summarizeGroupSession(
     baseUrl: ctx.baseUrl,
     model: ctx.model,
     system: ctx.composeSystem,
-    user: composePrompt.prompt,
+    user: composePrompt,
     schema: groupHistoryJsonSchema(),
     tracker: ctx.tracker,
   })) as { history?: string };
@@ -243,7 +250,6 @@ async function summarizeGroupSession(
       provenance: {
         model: ctx.model,
         generatedAt: new Date().toISOString(),
-        patchTruncated: classifyPrompt.truncated || composePrompt.truncated,
       },
     },
   };
@@ -256,12 +262,21 @@ async function summarizeGroupSession(
  */
 export async function commitGroup(options: CommitGroupOptions): Promise<void> {
   const repoPath = resolveRepo(options.repo);
-  const commits = loadCommitRecords(
+  const allCommits = loadCommitRecords(
     repoCommitsDir(repoPath, options.period),
     repoSummariesDir(repoPath, options.period),
   );
-  if (commits.length === 0) {
+  if (allCommits.length === 0) {
     console.log(`No exported commits found for ${repoPath}. Run \`dev-workgraph evidence\` first.`);
+    return;
+  }
+
+  const commits = allCommits.filter((c) => !isEmptyCommitSummary(c.model));
+  const emptySkipped = allCommits.length - commits.length;
+  if (commits.length === 0) {
+    console.log(
+      `No commits to group for ${repoPath} (${emptySkipped} empty summar${emptySkipped === 1 ? "y" : "ies"} skipped).`,
+    );
     return;
   }
 
@@ -284,7 +299,9 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
   const fullyCovered = rawSessions.length - sessions.length;
   console.log(
     formatGroupingSummary(
+      allCommits.length,
       commits.length,
+      emptySkipped,
       rawSessions.length,
       thresholdDays,
       maxCommits,

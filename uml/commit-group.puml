@@ -20,9 +20,9 @@ rectangle "**Upstream (not invoked)**" #ECEFF1 {
   end note
 }
 
-rectangle "**Required input — commit .json**" #E3F2FD {
-  card "from **evidence** (D)\ncommit.deterministic" as DET
-  card "from **summarize** (M:c)\ncommit.model" as CM
+rectangle "**Required input**" #E3F2FD {
+  card "from **evidence** (D)\ncommits/<ts>/<hash>.json\ndeterministic" as DET
+  card "from **summarize** (M:c)\n**summaries/<ts>/<hash>.json**\ncanonical only" as CM
 }
 
 rectangle "**commit-group**" #FFF3E0 {
@@ -33,13 +33,13 @@ rectangle "**commit-group**" #FFF3E0 {
 }
 
 rectangle "**summarize**" #FFF8E1 {
-  card "per-commit model layer\nsignals, questions, summary" as SUM
+  card "canonical summary per commit\n(empty → **(none)** skipped)" as SUM
 }
 
 SUM --> CM : **feeds commit-group**
 DET --> DSTEP : aggregated from members
-CM --> DSTEP : **tierOf** per commit\n(HIGH / MEDIUM / LOW)
-CM --> C1 : member summaries,\nsignals, questions as input
+CM --> DSTEP : **tierOf** per commit\n+ **exclude empty summaries**
+CM --> C1 : member summaries,\nsignals, questionsAnalysis
 CM --> C2 : per-tier summaries\nto merge into history
 DSTEP --> C1
 C1 --> C2
@@ -60,19 +60,20 @@ package "**summarize output (per commit)**" #FFF8E1 {
   component "model.summary" as S
   component "model signals\n(technical / architecture / security)" as SIG
   component "model.signalReasons" as SR
-  component "model.questions" as Q
+  component "model.questionsAnalysis" as Q
   component "model.changeTypes" as CT
 }
 
 package "**commit-group reads (no .patch, no evidence cmd)**" #E3F2FD {
-  component "commit.deterministic\n(from evidence in .json)" as DET
-  component "All model fields above" as READ
+  component "commits/<ts>/<hash>.json\n.deterministic (evidence)" as DET
+  component "summaries/<ts>/<hash>.json\n.canonical model only" as READ
 }
 
 package "**commit-group (D) — always recomputed on run**" #E8F5E9 {
+  component "filter **isEmptyCommitSummary**" as FILT
   component "groupByGap membership" as MEM
   component "aggregateDeterministic" as AGG
-  component "groups.tiers via tierOf(commit.model)" as TIER
+  component "groups.tiers via tierOf(model)" as TIER
 }
 
 package "**commit-group (M:c) — session-level rebuild**" #FFF3E0 {
@@ -86,11 +87,20 @@ S --> READ
 SIG --> READ
 Q --> READ
 
-READ --> TIER
-READ --> GSIG
-READ --> GQ
+READ --> FILT
+FILT --> MEM
+FILT --> TIER
+FILT --> GSIG
+FILT --> GQ
 DET --> AGG
 SIG --> TIER
+
+note bottom of FILT
+  Skip commits where provenance.model = **(none)**
+  or summary is blank.
+  Console: N commits → M for grouping
+  (K empty summaries skipped)
+end note
 
 note bottom of TIER
   **tierOf** uses summarize signals only:
@@ -123,13 +133,16 @@ title **commit-group** — Full command flow
 
 start
 
-:loadCommitRecords(commits/);\nread **.json only** — no .patch, no evidence;
+:loadCommitRecords(commits/ + summaries/);\njoin evidence + canonical summary;
 
 if (No commits?) then (yes)
   #Pink:Run **evidence** first;
   stop
 else (no)
 endif
+
+:Filter **isEmptyCommitSummary**;
+note right: skip (none) / blank summary
 
 :Resolve **groupThresholdDays** + **groupMaxCommits**\n(prompt or --days / --max-commits);
 
@@ -191,13 +204,16 @@ title **commit-group** — Deterministic steps (D)\nNo evidence command · uses 
 
 start
 
-:Load all commit records from commits/**/*.json;
+:Load evidence from commits/**/*.json;\njoin **summaries/<ts>/<hash>.json** (canonical);
 
 note right
-  Each record contains:
-  • deterministic (written by **evidence**)
-  • model (written by **summarize**, may be null)
+  Each joined record:
+  • deterministic (from evidence)
+  • model (from summarize, may be empty)
+  **.partN.json / .merge.json not loaded**
 end note
+
+:Filter out **isEmptyCommitSummary**;
 
 partition "1. Group membership — groupByGap" {
   :Walk chronologically;
@@ -277,7 +293,7 @@ class "Session 2 — compose" as C2 #FFF3E0 {
 
 class "CLI (D post)" as CLI #E3F2FD {
   technologies[] = mergeTechnologies(members)
-  provenance { model, generatedAt, patchTruncated }
+  provenance { model, generatedAt }
 }
 
 GR *-- C1
@@ -373,7 +389,8 @@ skinparam shadowing false
 title Sequence — **commit-group** (summarize in, evidence out)
 
 actor "Developer" as DEV
-database "commits/*.json\n(D from evidence +\nM:c from summarize)" as COMM
+database "commits/*.json\n(D evidence)" as COMM
+database "summaries/*.json\n(M:c canonical)" as SUMM
 database "project.json" as PJ
 participant "**commit-group**" as CG
 participant "Ollama\ncommitModel" as LLM
@@ -381,11 +398,13 @@ database "groups/<ts>.json" as GRP
 
 DEV -> CG : commit-group ./repo
 
-CG -> COMM : loadCommitRecords()\n**.json only**
+CG -> COMM : load evidence manifests
+CG -> SUMM : join canonical summaries
+CG -> CG : filter empty summaries\n(isEmptyCommitSummary)
 
 note over COMM
   evidence .patch files **not read**
-  evidence command **not called**
+  .partN / .merge summaries **not read**
 end note
 
 CG -> CG : groupByGap + **extensionSessions**\n(subtract covered commit hashes)

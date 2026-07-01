@@ -5,7 +5,7 @@
 // Two flows: per-commit `summarize` and per-session `commit-group`.
 
 import { tierOf } from "./grouping.js";
-import type { QuestionAnalyses } from "./model.js";
+import type { QuestionAnalyses, QuestionAnalysis } from "./model.js";
 import type {
   CommitEvidenceRecord,
   CommitRecord,
@@ -157,12 +157,6 @@ export function buildProjectProfilePrompt(
   ].join("\n");
 }
 
-/** Max patch characters sent to the per-commit model; longer patches are truncated. */
-const MAX_PATCH_CHARS = 24000;
-
-/** Char budget for the serialized member commits in the group prompt. */
-const MAX_MEMBERS_CHARS = 32000;
-
 // Shared across every stage: routine upkeep is named, never detailed; substantive work wins.
 const ROUTINE_RULE = [
   "ROUTINE MAINTENANCE — name it, do not detail it:",
@@ -250,17 +244,9 @@ export const COMMIT_SUMMARY_SYSTEM = [
  * @param record - The commit record (deterministic layer).
  * @param patch - The raw patch text.
  */
-export function buildCommitUserPrompt(
-  record: CommitEvidenceRecord,
-  patch: string,
-): { prompt: string; truncated: boolean } {
-  const truncated = patch.length > MAX_PATCH_CHARS;
-  const body = truncated
-    ? `${patch.slice(0, MAX_PATCH_CHARS)}\n\n[...patch truncated at ${MAX_PATCH_CHARS} chars...]`
-    : patch;
-
+export function buildCommitUserPrompt(record: CommitEvidenceRecord, patch: string): string {
   const det = record.deterministic;
-  const prompt = [
+  return [
     `Commit message (author's note — CONTEXT ONLY, may be inaccurate; trust the patch): ${record.title}`,
     `Areas touched: ${det.areas.join(", ") || "(none)"}`,
     `Files added: ${det.changedFiles.added.join(", ") || "(none)"}`,
@@ -271,12 +257,159 @@ export function buildCommitUserPrompt(
     "",
     "Patch:",
     "```diff",
-    body,
+    patch,
     "```",
   ].join("\n");
-
-  return { prompt, truncated };
 }
+
+// ───────────────────────────── split-commit finalize (summarize 3–5/6) ─────────
+
+export const MERGE_FINALIZE_REASONS_SYSTEM = [
+  "You receive a MERGED commit summary from a LARGE commit that was split into many parts.",
+  "Each part was summarized separately; the three signalReason fields below were concatenated",
+  'from those part summaries. Return JSON { "signalReasons": { "technical", "architecture",',
+  '  "security" } }.',
+  "Rules:",
+  "- The three signal LEVELS (technicalSignal / architectureSignal / securitySignal) are FIXED —",
+  "  do NOT change them; you only rewrite the reason strings.",
+  "- Rewrite each NON-EMPTY reason into ONE clear English sentence: merge duplicate fragments,",
+  "  drop repetition, and highlight the most important evidence-backed point.",
+  "- Leave a field as an empty string when the corresponding signal is 'low' or there is nothing",
+  "  substantive to say.",
+  "- Do NOT invent facts, claim production usage, ownership, or business impact.",
+  "- Ground reasons in what the merged summaries actually show — not the commit message alone.",
+].join("\n");
+
+export interface MergeFinalizeReasonsInput {
+  title: string;
+  partCount: number;
+  signals: { technical: string; architecture: string; security: string };
+  signalReasons: { technical: string; architecture: string; security: string };
+  changeTypes: string[];
+  technologies: string[];
+  areas: string[];
+}
+
+/**
+ * Builds the split-commit finalize user prompt for polishing merged signal reasons.
+ * @param input - Merged model fields and commit metadata.
+ */
+export function buildMergeFinalizeReasonsPrompt(input: MergeFinalizeReasonsInput): string {
+  return [
+    `Commit message (context only — may be inaccurate): ${input.title}`,
+    `Split into ${input.partCount} parts — reasons below were merged from per-part summaries.`,
+    `Signals (FIXED — do not change): tech=${input.signals.technical} arch=${input.signals.architecture} sec=${input.signals.security}`,
+    `changeTypes: ${input.changeTypes.join(", ") || "(none)"}`,
+    `technologies: ${input.technologies.join(", ") || "(none)"}`,
+    `Areas touched: ${input.areas.join(", ") || "(none)"}`,
+    "",
+    "Merged signal reasons (rewrite each non-empty field into ONE clear sentence):",
+    `technical: ${input.signalReasons.technical || "(empty)"}`,
+    `architecture: ${input.signalReasons.architecture || "(empty)"}`,
+    `security: ${input.signalReasons.security || "(empty)"}`,
+  ].join("\n");
+}
+
+export const MERGE_FINALIZE_SUMMARY_SYSTEM = [
+  "You receive a MERGED draft summary of a LARGE Git commit (split into many parts) plus polished",
+  'signal reasons. Return JSON { "summary": "..." }.',
+  "Write ONE coherent summary of what this commit changed, grounded in the polished reasons.",
+  "Rules:",
+  "- Describe WHAT changed — not its importance, business impact, or whether it shipped.",
+  "- Do NOT enumerate parts or list a blow-by-blow of each slice; synthesize the whole commit.",
+  "- Never claim production usage, ownership, or customer impact.",
+  "- If the draft summary and reasons disagree, trust the reasons' narrower scope.",
+].join("\n");
+
+export interface MergeFinalizeSummaryInput {
+  title: string;
+  partCount: number;
+  rawSummary: string;
+  signalReasons: { technical: string; architecture: string; security: string };
+  signals: { technical: string; architecture: string; security: string };
+  changeTypes: string[];
+  technologies: string[];
+  areas: string[];
+}
+
+/**
+ * Builds the split-commit finalize user prompt for composing the canonical summary.
+ * @param input - Polished reasons and merged draft summary.
+ */
+export function buildMergeFinalizeSummaryPrompt(input: MergeFinalizeSummaryInput): string {
+  return [
+    `Commit message (context only): ${input.title}`,
+    `Split into ${input.partCount} parts.`,
+    `Signals: tech=${input.signals.technical} arch=${input.signals.architecture} sec=${input.signals.security}`,
+    `changeTypes: ${input.changeTypes.join(", ") || "(none)"}`,
+    `technologies: ${input.technologies.join(", ") || "(none)"}`,
+    `Areas touched: ${input.areas.join(", ") || "(none)"}`,
+    "",
+    "Polished signal reasons:",
+    `technical: ${input.signalReasons.technical || "(empty)"}`,
+    `architecture: ${input.signalReasons.architecture || "(empty)"}`,
+    `security: ${input.signalReasons.security || "(empty)"}`,
+    "",
+    "Merged draft summary (rewrite into one coherent summary):",
+    input.rawSummary || "(none)",
+  ].join("\n");
+}
+
+export const MERGE_FINALIZE_QUESTIONS_SYSTEM = [
+  "You receive polished signal reasons, a composed commit summary, and a POOL of candidate",
+  "questionsAnalysis entries from per-part summaries of a LARGE commit.",
+  'Return JSON { "questionsAnalysis": [{ "observation", "missingPiece", "question" } x4] }.',
+  "Produce EXACTLY FOUR entries — the best open threads for what Git still cannot know.",
+  "Rules:",
+  "- Each entry: observation (what the work shows), missingPiece (human context Git lacks),",
+  "  question (ONE precise question to recover it).",
+  "- Select and reframe from the candidate pool; drop duplicates and near-duplicates.",
+  "- Frame questions for the developer's role (see PROJECT CONTEXT).",
+  "- Do NOT repeat facts already stated in the project background.",
+  "- Target production use, ownership vs maintenance, customer/product driver, security boundaries.",
+  "- Never invent answers; only ask what is still unknown.",
+].join("\n");
+
+export interface MergeFinalizeQuestionsInput {
+  title: string;
+  summary: string;
+  signalReasons: { technical: string; architecture: string; security: string };
+  candidateQuestions: QuestionAnalysis[];
+}
+
+/**
+ * Builds the split-commit finalize user prompt for reframing commit questions.
+ * @param input - Composed summary, polished reasons, and merged question pool.
+ */
+export function buildMergeFinalizeQuestionsPrompt(input: MergeFinalizeQuestionsInput): string {
+  return [
+    `Commit message (context only): ${input.title}`,
+    "",
+    "Composed summary:",
+    input.summary || "(none)",
+    "",
+    "Polished signal reasons:",
+    `technical: ${input.signalReasons.technical || "(empty)"}`,
+    `architecture: ${input.signalReasons.architecture || "(empty)"}`,
+    `security: ${input.signalReasons.security || "(empty)"}`,
+    "",
+    "Candidate questions from all parts (pick/reframe into exactly four):",
+    commitAnalysesBlock(input.candidateQuestions),
+  ].join("\n");
+}
+
+/** Renders per-commit questionsAnalysis entries for a finalize prompt. */
+const commitAnalysesBlock = (entries: QuestionAnalysis[]): string =>
+  entries
+    .map((e, i) =>
+      [
+        `  ${i + 1}.`,
+        `     observation: ${e.observation || "(none)"}`,
+        `     missingPiece: ${e.missingPiece || "(none)"}`,
+        `     question: ${e.question || "(none)"}`,
+      ].join("\n"),
+    )
+    .join("\n\n") || "(none)";
 
 // ───────────────────────────── per-session commit-group ─────────────────────────
 
@@ -351,7 +484,7 @@ export const GROUP_COMPOSE_SYSTEM = [
  * Builds a compact, char-budgeted, tier-annotated view of the member commits.
  * @param members - Commit records in the group.
  */
-function serializeMembers(members: CommitRecord[]): { text: string; truncated: boolean } {
+function serializeMembers(members: CommitRecord[]): string {
   const tierTag = { hi: "HIGH", medium: "MEDIUM", low: "LOW" } as const;
   const blocks = members.map((c) => {
     const m = c.model;
@@ -371,13 +504,7 @@ function serializeMembers(members: CommitRecord[]): { text: string; truncated: b
     ].join("\n");
   });
 
-  let text = blocks.join("\n\n");
-  let truncated = false;
-  if (text.length > MAX_MEMBERS_CHARS) {
-    text = `${text.slice(0, MAX_MEMBERS_CHARS)}\n\n[...member list truncated...]`;
-    truncated = true;
-  }
-  return { text, truncated };
+  return blocks.join("\n\n");
 }
 
 /**
@@ -385,15 +512,12 @@ function serializeMembers(members: CommitRecord[]): { text: string; truncated: b
  * @param group - The group record with aggregated deterministic layer + tiers.
  * @param members - The member commit records.
  */
-export function buildGroupClassifyPrompt(
-  group: GroupRecord,
-  members: CommitRecord[],
-): { prompt: string; truncated: boolean } {
-  const { text, truncated } = serializeMembers(members);
+export function buildGroupClassifyPrompt(group: GroupRecord, members: CommitRecord[]): string {
+  const text = serializeMembers(members);
   const det = group.deterministic;
   const tiers = group.groups.tiers;
 
-  const prompt = [
+  return [
     `Work session of ${group.commitCount} commit(s) by a single developer.`,
     `Tier mix: ${tiers.hi.length} high · ${tiers.medium.length} medium · ${tiers.low.length} low.`,
     `Aggregated areas: ${det.areas.join(", ") || "(none)"}`,
@@ -408,8 +532,6 @@ export function buildGroupClassifyPrompt(
     "Member commits (draw hiContext bullets from HIGH-tier ones, lowContext from LOW-tier):",
     text,
   ].join("\n");
-
-  return { prompt, truncated };
 }
 
 /** A view of the stage-1 classification needed to compose the summary. */
@@ -440,12 +562,12 @@ export function buildGroupComposePrompt(
   group: GroupRecord,
   classify: GroupClassifyView,
   members: CommitRecord[],
-): { prompt: string; truncated: boolean } {
+): string {
   const bullets = (items: string[]): string => items.map((b) => `- ${b}`).join("\n") || "(none)";
   const sums = (tier: "hi" | "medium" | "low"): string =>
     summariesByTier(members, tier).join("\n") || "(none)";
 
-  let prompt = [
+  return [
     `Work session of ${group.commitCount} commit(s) by a single developer. Compose the history now.`,
     `Session signals: tech=${classify.technicalSignal} arch=${classify.architectureSignal} sec=${classify.securitySignal}`,
     "",
@@ -462,13 +584,6 @@ export function buildGroupComposePrompt(
     "LOW-tier context (just mention in one short closing sentence):",
     bullets(classify.lowContext),
   ].join("\n");
-
-  let truncated = false;
-  if (prompt.length > MAX_MEMBERS_CHARS) {
-    prompt = `${prompt.slice(0, MAX_MEMBERS_CHARS)}\n\n[...truncated...]`;
-    truncated = true;
-  }
-  return { prompt, truncated };
 }
 
 // ───────────────────────────── cumulative report (`report`) ─────────────────────

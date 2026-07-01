@@ -3,6 +3,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { isCanonicalCommitSummaryFile, isCommitEvidenceManifestFile } from "./evidence-files.js";
 import type { ModelLayer } from "./model.js";
 import type {
   CommitEvidenceRecord,
@@ -20,15 +21,19 @@ const SECONDS_PER_DAY = 86400;
 /**
  * Walks `/<ts>/<hash>.json` under a repo data directory.
  * @param dir - Root directory (`commits` or `summaries`).
+ * @param isCanonical - Optional filter for summary files (excludes `.partN.json` / `.merge.json`).
  */
-function listTimestampHashJsonFiles(dir: string): string[] {
+function listTimestampHashJsonFiles(
+  dir: string,
+  isCanonical: (filename: string) => boolean = isCommitEvidenceManifestFile,
+): string[] {
   if (!fs.existsSync(dir)) return [];
   const files: string[] = [];
   for (const entry of fs.readdirSync(dir)) {
     const sub = path.join(dir, entry);
     if (!fs.statSync(sub).isDirectory()) continue;
     for (const f of fs.readdirSync(sub)) {
-      if (f.endsWith(".json")) files.push(path.join(sub, f));
+      if (isCanonical(f)) files.push(path.join(sub, f));
     }
   }
   return files.sort(compareLocale);
@@ -59,7 +64,7 @@ function commitSummaryRelPath(timestamp: number, commitHash: string): string {
  */
 function loadSummaryRecords(summariesDir: string): Map<string, CommitSummaryRecord> {
   const byHash = new Map<string, CommitSummaryRecord>();
-  for (const file of listTimestampHashJsonFiles(summariesDir)) {
+  for (const file of listTimestampHashJsonFiles(summariesDir, isCanonicalCommitSummaryFile)) {
     const record = JSON.parse(fs.readFileSync(file, "utf8")) as CommitSummaryRecord;
     byHash.set(record.commitHash, record);
   }
@@ -85,6 +90,12 @@ export function loadCommitRecords(commitsDir: string, summariesDir?: string): Co
       model?: ModelLayer | null;
     };
     const { model: legacyModel, ...evidence } = raw;
+    if (evidence.split) {
+      const canonical = summariesDir
+        ? commitSummaryPath(summariesDir, evidence.timestamp, evidence.commitHash)
+        : null;
+      if (!canonical || !fs.existsSync(canonical)) continue;
+    }
     const summaryRec = summaries.get(evidence.commitHash);
     const model = summaryRec?.model ?? legacyModel ?? null;
     const sourceEvidence = String(evidence.timestamp);

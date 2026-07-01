@@ -261,8 +261,12 @@ Every write path uses `writeRecordJson()` → `stampSchemaVersion()`, which sets
 
 | Artifact | Path |
 |----------|------|
-| Commit evidence | `commits/<ts>/<hash>.json` |
-| Commit summary | `summaries/<ts>/<hash>.json` |
+| Commit evidence (manifest) | `commits/<ts>/<hash>.json` |
+| Commit patch (small commit) | `commits/<ts>/<hash>.patch` |
+| Split evidence part | `commits/<ts>/<hash>.partN.{json,patch}` |
+| Commit summary (canonical) | `summaries/<ts>/<hash>.json` |
+| Split summary part | `summaries/<ts>/<hash>.partN.json` |
+| Split merged summary (audit) | `summaries/<ts>/<hash>.merge.json` |
 | Work-session group | `groups/<timestampEnd>.json` |
 | Cumulative report | `reports/<reportId>.json` |
 | Project context | `project.json` |
@@ -287,11 +291,18 @@ The system must be able to extract commit evidence from a Git repository. Only c
 
 Export can be manual or semi-automated.
 
-Exported data is **namespaced per repository** so commits from different repos never mix. Each commit is stored in a folder named by its author Unix timestamp:
+Exported data is **namespaced per repository** so commits from different repos never mix. Each commit is stored in a folder named by its author Unix timestamp.
 
+**Small commit:**
 ```
 ~/.workgraph/data/repos/<repo-id>/commits/[unix-timestamp]/[hash].patch
 ~/.workgraph/data/repos/<repo-id>/commits/[unix-timestamp]/[hash].json
+```
+
+**Split commit** (no monolithic `.patch`; see §2):
+```
+~/.workgraph/data/repos/<repo-id>/commits/[unix-timestamp]/[hash].json
+~/.workgraph/data/repos/<repo-id>/commits/[unix-timestamp]/[hash].partN.{json,patch}
 ```
 `<repo-id>` is a stable `<basename>-<hash8>` derived from the repository's absolute path. Example:
 ```
@@ -303,6 +314,9 @@ The patch must be generated from Git using a reproducible command:
 ```
 git show --format=fuller --find-renames <commit-hash>
 ```
+
+**Noise filtering** runs on the raw patch **before** it is written or split. Paths matching registered **ignore profiles** (JavaScript/TypeScript and Java modules under `src/lib/ignore/`) are dropped from the patch hunks and listed in `deterministic.excludedFiles`. Directory and file patterns use simple `*` globs (e.g. `node_modules`, `dist`, `package-lock.json`, `*.min.js`). The patch on disk therefore contains only non-noise hunks (or only the Git commit header when every hunk was noise).
+
 Export is **append-only**: existing commits are skipped, never overwritten.
 The export should preserve:
 
@@ -310,11 +324,36 @@ The export should preserve:
 * commit date (author date and commit date)
 * author
 * commit title/message
-* changed files (with status: added/deleted/modified/renamed)
-* patch content
-* lines added / lines deleted per file
+* changed files (with status: added/deleted/modified/renamed) — **non-noise files only** in `changedFiles`; noise paths only in `excludedFiles`
+* patch content (noise-filtered)
+* lines added / lines deleted per file (non-noise churn)
 
-The patch export should exclude obvious noise where possible:
+#### Small vs split commits
+
+When the filtered patch fits in **≤ 24 000 characters** (`MAX_PATCH_CHARS`), export writes one pair:
+
+```
+commits/<ts>/<hash>.json
+commits/<ts>/<hash>.patch
+```
+
+When the filtered patch is larger, export writes a **split manifest** plus numbered parts (no monolithic `<hash>.patch`):
+
+```
+commits/<ts>/<hash>.json          # manifest: split, partCount, full-commit deterministic
+commits/<ts>/<hash>.part1.json    # scoped deterministic for files in part 1
+commits/<ts>/<hash>.part1.patch
+commits/<ts>/<hash>.part2.json
+commits/<ts>/<hash>.part2.patch
+…
+```
+
+Parts are packed on **file boundaries**; a single oversized file may be truncated in its own part (`patchTruncated: true` on that part record). Each part's `deterministic` layer lists only the files whose hunks appear in that part's patch.
+
+#### Noise disclosure (representative patterns)
+
+The following paths are representative of what ignore profiles drop (the live list is in the ignore modules, not hard-coded in `evidence`):
+
 ```
 node_modules/**
 dist/**
@@ -328,32 +367,16 @@ package-lock.json
 yarn.lock
 pnpm-lock.yaml
 ```
-Noise filtering can be applied during patch export or during patch analysis; the **set of excluded files must be recorded** so the report can disclose what was dropped.
 
-⸻
+The **set of excluded files must be recorded** in `excludedFiles` so the report can disclose what was dropped.
 
-## 3. Commit JSON summary (`summarize`)
+#### Evidence manifest schema (`commits/…`)
 
-For every exported patch, `evidence` writes a **pure evidence** JSON next to the patch:
-```
-~/.workgraph/data/repos/<repo-id>/commits/[unix-timestamp]/[hash].json
-```
+**Small commit** — fields below only.
 
-`summarize` writes the **model layer** to a sibling file (same timestamp/hash layout):
-```
-~/.workgraph/data/repos/<repo-id>/summaries/[unix-timestamp]/[hash].json
-```
+**Split commit** — same manifest fields plus `"split": true` and `"partCount": N`.
 
-The two layers are kept in **separate files**:
-
-- **Deterministic layer** — in `commits/…`. Computed without any model, always present. This is evidence. Written by `evidence`.
-- **Model layer** — in `summaries/…`. Added by a local model in `summarize`, optional, clearly marked as interpretation.
-
-`commit-group` loads evidence from `commits/` and joins each commit with its summary from `summaries/` (legacy evidence files that still inline `model` are supported when no summary file exists). Each summary file records `sourceEvidence` (the evidence timestamp directory); each group file records parallel `sourceEvidence` / `sourceSummaries` arrays aligned with `groups.commits`.
-
-The model layer is produced by a **local model via Ollama** (HTTP API, default `http://127.0.0.1:11434`). The model is chosen interactively from the installed models and the choice is remembered. Generation uses Ollama structured output (a JSON Schema is passed via the `format` parameter). On response, the CLI **extracts** the JSON object from the raw text (handles markdown fences and surrounding prose), **parses** it, and **schema-validates** the result before accepting — via the shared `chatJson` helper (§13 Resilience). Each generated layer records its provenance (model name, timestamp, whether the patch was truncated). The **project context block** (§0) is included in every summarize prompt. Summarize is append-only: commits that already have a summary file are skipped on re-run.
-
-### Evidence JSON schema (`commits/…`)
+Part records (`<hash>.partN.json`) repeat commit metadata, `part`, `partCount`, `patchTruncated`, and a **scoped** `deterministic` layer.
 
 ```json
 {
@@ -379,6 +402,78 @@ The model layer is produced by a **local model via Ollama** (HTTP API, default `
 }
 ```
 
+When a commit touches only noise (e.g. a lockfile bump), `changedFiles` and churn may be empty while `excludedFiles` lists the dropped paths and the patch file contains no `diff --git` hunks (header only or empty). Such commits are still exported as evidence.
+
+⸻
+
+## 3. Commit JSON summary (`summarize`)
+
+For every exported patch, `evidence` writes a **pure evidence** JSON next to the patch:
+```
+~/.workgraph/data/repos/<repo-id>/commits/[unix-timestamp]/[hash].json
+```
+
+`summarize` writes the **model layer** to a sibling file (same timestamp/hash layout):
+
+```
+~/.workgraph/data/repos/<repo-id>/summaries/[unix-timestamp]/[hash].json   # canonical
+```
+
+For **split commits**, intermediate artifacts are also written (audit / resume; not used by `commit-group` directly):
+
+```
+summaries/<ts>/<hash>.partN.json    # per-part model layer
+summaries/<ts>/<hash>.merge.json    # deterministic merge of part layers
+```
+
+The two layers are kept in **separate files**:
+
+- **Deterministic layer** — in `commits/…`. Computed without any model, always present. This is evidence. Written by `evidence`.
+- **Model layer** — in `summaries/…`. Added by `summarize`, optional, clearly marked as interpretation. **Canonical** path is always `summaries/<ts>/<hash>.json`.
+
+`commit-group` loads evidence from `commits/` and joins each commit with its **canonical** summary from `summaries/<ts>/<hash>.json` (legacy evidence files that still inline `model` are supported when no summary file exists). **Split commit manifests** are included only after the canonical summary exists. Each summary file records `sourceEvidence` (the evidence timestamp directory); each group file records parallel `sourceEvidence` / `sourceSummaries` arrays aligned with `groups.commits`.
+
+The model layer is produced by a **local model via Ollama** (HTTP API, default `http://127.0.0.1:11434`). The model is chosen interactively from the installed models and the choice is remembered. Generation uses Ollama structured output (a JSON Schema is passed via the `format` parameter). On response, the CLI **extracts** the JSON object from the raw text (handles markdown fences and surrounding prose), **parses** it, and **schema-validates** the result before accepting — via the shared `chatJson` helper (§13 Resilience). Each generated layer records its provenance (`model` name, timestamp). The **project context block** (§0) is included in every summarize prompt. Summarize is append-only: commits that already have a **canonical** summary file are skipped on re-run.
+
+### Normal commit (one LLM call)
+
+For a small commit with substantive patch content, `summarize` runs **one** LLM session and writes `summaries/<ts>/<hash>.json`.
+
+### Empty / noise-only patch (no LLM)
+
+When the exported patch has **no `diff --git` hunks** (empty, whitespace-only, or Git header only after noise filtering), `summarize` **does not call the model**. It writes a canonical summary with an empty model layer:
+
+* `summary`: `""`
+* all signals `low`, empty `changeTypes` / `technologies` / `signalReasons` / `questionsAnalysis`
+* `provenance.model`: `"(none)"` (sentinel meaning no LLM was used)
+
+Console: `skipped (empty patch)`.
+
+### Split commit (parts → merge → finalize → canonical)
+
+Large commits use a **six-step** pipeline inside `summarize`:
+
+| Step | Action | LLM | Output |
+|------|--------|-----|--------|
+| 1/6 | Summarize each part | yes × N | `summaries/<ts>/<hash>.partN.json` |
+| 2/6 | Merge part layers | no | `summaries/<ts>/<hash>.merge.json` |
+| 3/6 | Polish `signalReasons` | yes | (in memory) |
+| 4/6 | Compose `summary` from polished reasons | yes | (in memory) |
+| 5/6 | Reframe `questionsAnalysis` (exactly 4) | yes | (in memory) |
+| 6/6 | Write canonical summary | no | `summaries/<ts>/<hash>.json` |
+
+**Step 2 (deterministic merge)** unions `changeTypes` and `technologies`, takes max signals, folds `signalReasons` left-to-right across parts, and concatenates `questionsAnalysis`.
+
+**Steps 3–5 (finalize)** read the merged layer plus commit metadata. Signals and `changeTypes` / `technologies` / `confidence` from the merge are kept; only `signalReasons`, `summary`, and `questionsAnalysis` are rewritten by the model. Part and merge files are retained for inspection; downstream stages read only the canonical file.
+
+**Resume:** if `.partN.json` or `.merge.json` already exist, those steps are skipped; finalize runs when the canonical file is still missing. If **all** part patches are empty, steps 1–5 are skipped and step 6 writes the empty `"(none)"` layer.
+
+Per-part empty patches skip the LLM for that part only (same empty layer shape).
+
+### Evidence JSON schema (`commits/…`)
+
+See §2 — evidence files do **not** contain a `model` layer in the current layout.
+
 ### Summary JSON schema (`summaries/…`)
 
 ```json
@@ -391,6 +486,7 @@ The model layer is produced by a **local model via Ollama** (HTTP API, default `
   "model": {
     "summary": "...",
     "changeTypes": [],
+    "technologies": [],
     "technicalSignal": "low | medium | high",
     "architectureSignal": "low | medium | high",
     "securitySignal": "low | medium | high",
@@ -406,7 +502,11 @@ The model layer is produced by a **local model via Ollama** (HTTP API, default `
         "question": "..."
       }
     ],
-    "confidence": "low | medium | high"
+    "confidence": "low | medium | high",
+    "provenance": {
+      "model": "llama3.2 | (none)",
+      "generatedAt": "..."
+    }
   }
 }
 ```
@@ -429,7 +529,9 @@ The model layer is produced by a **local model via Ollama** (HTTP API, default `
 
 **Model layer (interpretation, may be wrong):**
 
-`summary` — plain-language explanation of what changed. Must describe the *change*, not its importance or impact. **Routine upkeep is named, not detailed:** if the commit is only a dependency/version bump, lockfile, formatting, or CI change, say so plainly without naming versions; if it also has substantive work, describe **only** the substantive part. (Shared `ROUTINE_RULE`, applied at every stage.)
+`summary` — plain-language explanation of what changed. Must describe the *change*, not its importance or impact. Empty when the patch had no substantive diff (`provenance.model` is `"(none)"`). **Routine upkeep is named, not detailed:** if the commit is only a dependency/version bump, lockfile, formatting, or CI change, say so plainly without naming versions; if it also has substantive work, describe **only** the substantive part. (Shared `ROUTINE_RULE`, applied at every stage.)
+
+`technologies` — languages, frameworks, libraries, tools, and protocols the patch actually uses (canonical names; empty when skipped).
 
 `changeTypes` — zero or more of:
 ```
@@ -454,7 +556,75 @@ deployment
 
 `confidence` — the model's confidence in its own summary, `low | medium | high`.
 
-#### Example
+`provenance` — attached by the CLI (not model output): `model` (Ollama model name, or `"(none)"` when summarize skipped the LLM), `generatedAt`.
+
+#### Example (canonical summary; evidence lives in `commits/…`)
+
+```json
+{
+  "schemaVersion": 1000000,
+  "commitHash": "b0648088",
+  "timestamp": 1717428123,
+  "sourceEvidence": "1717428123",
+
+  "model": {
+    "summary": "Added Maven build profiles, ZIP assembly, backend package metadata, build/deploy scripts, static asset packaging, and an HTTP upgrade endpoint.",
+    "changeTypes": ["infrastructure", "deployment", "developer-tooling"],
+    "technologies": ["Java", "Maven", "Node.js"],
+    "technicalSignal": "medium",
+    "architectureSignal": "medium",
+    "securitySignal": "low",
+    "signalReasons": {
+      "technical": "Introduces build tooling across Maven and Node, multiple moving parts.",
+      "architecture": "Defines a deployment boundary and packaging assembly, affects how the system ships.",
+      "security": "No auth/identity/data-protection code touched."
+    },
+    "questionsAnalysis": [
+      {
+        "observation": "The diff adds Docker deploy/build scripts and changes .gitignore and package metadata, which looks like local-environment setup rather than a production deploy.",
+        "missingPiece": "Unclear whether this container ever reached real servers or stayed developer tooling.",
+        "question": "Was this Docker flow deployed to staging/production, or only used to run the service locally?"
+      }
+    ],
+    "confidence": "medium",
+    "provenance": {
+      "model": "llama3.2",
+      "generatedAt": "2026-01-15T12:00:00.000Z"
+    }
+  }
+}
+```
+
+#### Example (empty / noise-only summary)
+
+```json
+{
+  "schemaVersion": 1000000,
+  "commitHash": "907a6e4e1fd132b58a830bb161a00c590ffc5269",
+  "timestamp": 1748611936,
+  "sourceEvidence": "1748611936",
+
+  "model": {
+    "summary": "",
+    "changeTypes": [],
+    "technologies": [],
+    "technicalSignal": "low",
+    "architectureSignal": "low",
+    "securitySignal": "low",
+    "signalReasons": { "technical": "", "architecture": "", "security": "" },
+    "questionsAnalysis": [],
+    "confidence": "low",
+    "provenance": {
+      "model": "(none)",
+      "generatedAt": "2026-07-01T11:48:27.900Z"
+    }
+  }
+}
+```
+
+#### Legacy combined example (evidence + inline model)
+
+Older exports may still inline `model` on the evidence file. Current pipeline keeps evidence and summary separate. Representative combined shape:
 
 ```json
 {
@@ -511,6 +681,8 @@ deployment
 
 After export and per-commit summarize, the system groups commits into **work sessions** — bursts of activity separated by quiet periods. Each group gets its own JSON file with a **rebuilt deterministic layer** (aggregated from member commits) and a **new model layer** produced by **two local LLM sessions** (classify, then compose) that read the member commit JSONs and their signals.
 
+**Empty commit summaries are excluded from grouping.** Commits whose canonical summary was written without an LLM (`provenance.model` is `"(none)"`, or `summary` is blank) are filtered out before `groupByGap`. They do not count toward session gaps, tier partitions, or group LLM input. Unsummarized commits (`model: null`) are still loaded and grouped (tier `low`) until summarize runs. Console reports how many empty summaries were skipped, e.g. `12 commit(s) → 10 for grouping (2 empty summaries skipped) → …`. If every exported commit is empty-skipped, `commit-group` exits without creating groups.
+
 ### Grouping thresholds
 
 Before grouping, the CLI asks two values, both persisted per repository in `~/.workgraph/config.json`:
@@ -535,10 +707,11 @@ On later runs the saved values are offered as defaults; the user may change them
 
 ### Grouping algorithm (deterministic)
 
-1. Load all exported commit JSONs for the repository, **oldest first**.
-2. Walk chronologically. Commits whose author timestamps are within `groupThresholdDays` of the **previous commit in the current group** belong to the same group.
-3. Close the current group and start a new one when **either** the gap exceeds the threshold **or** the current group has reached `groupMaxCommits` commits (when that cap is > 0).
-4. A group with a single commit is valid.
+1. Load all exported commit JSONs for the repository, join each with its **canonical** summary from `summaries/<ts>/<hash>.json` when present, **oldest first**. Skip split manifests until canonical summary exists.
+2. **Drop commits with empty summaries** (§3 empty / `"(none)"` layer).
+3. Walk chronologically. Commits whose author timestamps are within `groupThresholdDays` of the **previous commit in the current group** belong to the same group.
+4. Close the current group and start a new one when **either** the gap exceeds the threshold **or** the current group has reached `groupMaxCommits` commits (when that cap is > 0).
+5. A group with a single commit is valid.
 
 Each group is written to:
 
@@ -621,9 +794,11 @@ A group record mirrors the commit record shape (deterministic + model layers) bu
 
 | Tier | Rule |
 |------|------|
-| `low` | All three per-commit signals (`technicalSignal`, `architectureSignal`, `securitySignal`) are `low`, **or** the commit has `model: null` |
+| `low` | All three per-commit signals (`technicalSignal`, `architectureSignal`, `securitySignal`) are `low`, **or** the commit has `model: null` (not yet summarized) |
 | `hi` | At least one per-commit signal is `high` |
 | `medium` | At least one signal is `medium` and none is `high` |
+
+Commits with **empty summaries** (`"(none)"`) never appear in `groups.commits` — they are filtered before grouping (see above).
 
 Commits in the `low` tier are **weak context** — the group narrative de-emphasizes them (just a brief mention). The tiers are passed to the LLM as reference; the model does not re-partition the hashes.
 
@@ -730,8 +905,7 @@ Group summarize is append-only: groups that already have a `model` layer are ski
     "confidence": "medium",
     "provenance": {
       "model": "qwen2.5-coder:14b",
-      "generatedAt": "2026-06-13T15:00:00.000Z",
-      "patchTruncated": false
+      "generatedAt": "2026-06-13T15:00:00.000Z"
     }
   }
 }
@@ -1596,6 +1770,9 @@ Each command seeds its picker from its own slot, falling back through the more g
 - **Retries:** every LLM call retries up to **2 attempts** with backoff on HTTP/transport, parse, or validation errors. After exhaustion the stage throws and the pipeline stops at that item.
 - **`report` resume:** each fold writes `reports/<timestampEnd>.json`, so a re-run loads the longest existing prefix and **continues from the next group** instead of restarting. Adding new groups later extends the chain incrementally.
 - **`commit-group` extension:** on re-run, subtracts commits already in summarized groups and writes **extension groups** for uncovered tails only (§4).
+- **`evidence`:** noise hunks removed via ignore profiles before write/split; `excludedFiles` recorded; oversized patches split into `.partN` files (24 k char cap per part).
+- **`summarize`:** small commits → one LLM call; split commits → parts + deterministic merge + three finalize LLM calls → canonical `summaries/<ts>/<hash>.json`; empty/noise-only patches → empty layer with `provenance.model: "(none)"` (no LLM).
+- **`commit-group`:** excludes empty summaries (`"(none)"` / blank `summary`) before grouping; split commits join only after canonical summary exists.
 - **`final` extension:** when latest prepared ≠ prior `sourcePrepared`, loads `latestFinish()` cumulative `answers`, asks new questions only (deduped), writes a new question file + extends `sourceQuestions`, appends next finish version (§11).
 
 ### Implementation notes (as built)
