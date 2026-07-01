@@ -443,9 +443,9 @@ For a small commit with substantive patch content, `summarize` runs **one** LLM 
 
 When the exported patch has **no `diff --git` hunks** (empty, whitespace-only, or Git header only after noise filtering), `summarize` **does not call the model**. It writes a canonical summary with an empty model layer:
 
-* `summary`: `""`
-* all signals `low`, empty `changeTypes` / `technologies` / `signalReasons` / `questionsAnalysis`
-* `provenance.model`: `"(none)"` (sentinel meaning no LLM was used)
+- `summary`: `""`
+- all signals `low`, empty `changeTypes` / `technologies` / `signalReasons` / `questionsAnalysis`
+- `provenance.model`: `"(none)"` (sentinel meaning no LLM was used)
 
 Console: `skipped (empty patch)`.
 
