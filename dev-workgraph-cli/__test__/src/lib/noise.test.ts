@@ -15,5 +15,19 @@ describe("isNoise", () => {
   it("flags minified and source-map artifacts", () => {
     expect(isNoise("dist/app.min.js")).toBe(true);
     expect(isNoise("dist/app.js.map")).toBe(true);
+    expect(isNoise("src/app.min.js")).toBe(true);
+    expect(isNoise("src/app.js.map")).toBe(true);
+  });
+
+  it("flags Java build output", () => {
+    expect(isNoise("module/target/classes/Foo.class")).toBe(true);
+    expect(isNoise("lib/app.jar")).toBe(true);
+    expect(isNoise("src/main/java/Foo.java")).toBe(false);
+  });
+
+  it("flags common JS config and dotfiles", () => {
+    expect(isNoise(".gitignore")).toBe(true);
+    expect(isNoise("jest.config.js")).toBe(true);
+    expect(isNoise("eslint.config.mjs")).toBe(true);
   });
 });

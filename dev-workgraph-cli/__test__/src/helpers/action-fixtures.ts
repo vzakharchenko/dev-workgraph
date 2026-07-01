@@ -94,6 +94,59 @@ export function seedCommit(
   return { jsonPath, patchPath };
 }
 
+/** Seeds a split evidence export (manifest + two parts). */
+export function seedSplitCommit(
+  repoPath: string,
+  commitHash: string,
+  period?: string,
+): { manifestPath: string; partPaths: string[] } {
+  const timestamp = 1_700_000_000;
+  const dir = path.join(repoCommitsDir(repoPath, period), String(timestamp));
+  fs.mkdirSync(dir, { recursive: true });
+
+  const manifest: CommitEvidenceRecord = {
+    commitHash,
+    timestamp,
+    title: "Large change",
+    author: "dev@example.com",
+    split: true,
+    partCount: 2,
+    deterministic: emptyDeterministic(),
+  };
+  const manifestPath = path.join(dir, `${commitHash}.json`);
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  const partPaths: string[] = [];
+  for (const part of [1, 2]) {
+    const partJson = path.join(dir, `${commitHash}.part${part}.json`);
+    const partPatch = path.join(dir, `${commitHash}.part${part}.patch`);
+    fs.writeFileSync(
+      partJson,
+      `${JSON.stringify(
+        {
+          commitHash,
+          timestamp,
+          title: manifest.title,
+          author: manifest.author,
+          part,
+          partCount: 2,
+          patchTruncated: false,
+          deterministic: emptyDeterministic(),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    fs.writeFileSync(
+      partPatch,
+      `diff --git a/src/part${part}.ts b/src/part${part}.ts\n+export const p${part} = ${part};\n`,
+    );
+    partPaths.push(partJson);
+  }
+
+  return { manifestPath, partPaths };
+}
+
 export function seedSummary(
   repoPath: string,
   commit: Pick<CommitRecord, "commitHash" | "timestamp">,
@@ -284,6 +337,49 @@ export function chatJsonFromSchema(schema: Record<string, unknown>): unknown {
   if (required.includes("preparedContext")) return { preparedContext: "Prepared story." };
   if (required.includes("summary") && required.includes("changeTypes")) {
     return modelLayerPayload();
+  }
+  if (required.includes("summary") && required.length === 1) {
+    return { summary: "Final commit summary." };
+  }
+  if (
+    required.includes("signalReasons") &&
+    !required.includes("changeTypes") &&
+    (schema.properties as Record<string, Record<string, unknown>>)?.signalReasons?.type ===
+      "object"
+  ) {
+    return {
+      signalReasons: {
+        technical: "Polished technical reason.",
+        architecture: "",
+        security: "",
+      },
+    };
+  }
+  if (required.includes("questionsAnalysis") && !required.includes("summary")) {
+    return {
+      questionsAnalysis: [
+        {
+          observation: "Shows feature work.",
+          missingPiece: "Production scope unknown.",
+          question: "Did this ship to production?",
+        },
+        {
+          observation: "Touches auth module.",
+          missingPiece: "Ownership unclear.",
+          question: "Did you design the auth flow?",
+        },
+        {
+          observation: "Adds tests.",
+          missingPiece: "Coverage intent unknown.",
+          question: "Were these tests required by review?",
+        },
+        {
+          observation: "Config changes present.",
+          missingPiece: "Environment unknown.",
+          question: "Which environment does this target?",
+        },
+      ],
+    };
   }
   if (required.includes("summary") && required.includes("domains")) {
     return {

@@ -1,11 +1,35 @@
 // SPDX-FileCopyrightText: 2026 Vasyl Zakharchenko
 // SPDX-License-Identifier: Apache-2.0
 
-/** Directory names that mark generated/vendored content anywhere in the path. */
-const NOISE_DIRS = new Set(["node_modules", "dist", "build", "target", "coverage", ".next"]);
+import type { IgnoreFiles } from "./ignore/IgnoreFiles.js";
+import { ignoreFiles } from "./ignore.js";
 
-/** Exact file names that are generated lock files. */
-const NOISE_FILES = new Set(["package-lock.json", "yarn.lock", "pnpm-lock.yaml"]);
+/** Turn a simple glob (`*` only) into a RegExp anchored to the full string. */
+const REGEX_SPECIAL_CHARS = /[.+?^${}()|[\]\\]/g;
+
+function globToRegExp(pattern: string): RegExp {
+  const escaped = pattern.replaceAll(REGEX_SPECIAL_CHARS, String.raw`\$&`).replaceAll("*", ".*");
+  return new RegExp(`^${escaped}$`);
+}
+
+function compileMatchers(profiles: IgnoreFiles[]): {
+  dirMatchers: RegExp[];
+  fileMatchers: RegExp[];
+} {
+  const dirMatchers: RegExp[] = [];
+  const fileMatchers: RegExp[] = [];
+  for (const profile of profiles) {
+    for (const dir of profile.dirs()) {
+      dirMatchers.push(globToRegExp(dir));
+    }
+    for (const file of profile.files()) {
+      fileMatchers.push(globToRegExp(file));
+    }
+  }
+  return { dirMatchers, fileMatchers };
+}
+
+const { dirMatchers, fileMatchers } = compileMatchers(ignoreFiles);
 
 /**
  * Returns true when a file path should be treated as generated/vendored noise
@@ -14,10 +38,8 @@ const NOISE_FILES = new Set(["package-lock.json", "yarn.lock", "pnpm-lock.yaml"]
  */
 export function isNoise(file: string): boolean {
   const segments = file.split("/").filter(Boolean);
-  if (segments.some((seg) => NOISE_DIRS.has(seg))) return true;
+  if (segments.some((seg) => dirMatchers.some((re) => re.test(seg)))) return true;
 
   const base = segments.at(-1) ?? file;
-  if (NOISE_FILES.has(base)) return true;
-  if (base.endsWith(".min.js")) return true;
-  return base.endsWith(".map");
+  return fileMatchers.some((re) => re.test(base));
 }

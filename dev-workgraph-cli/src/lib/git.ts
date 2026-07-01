@@ -182,6 +182,22 @@ export function getChurn(
   hash: string,
   isNoise: (file: string) => boolean,
 ): { added: number; deleted: number } {
+  return getChurnForPaths(repoPath, hash, isNoise);
+}
+
+/**
+ * Returns lines added/deleted for a commit, optionally restricted to specific paths.
+ * @param repoPath - Absolute path to the repository.
+ * @param hash - Commit hash.
+ * @param isNoise - Predicate marking a path as generated/vendored noise.
+ * @param onlyPaths - When set, only rows whose normalized path is in this set are counted.
+ */
+export function getChurnForPaths(
+  repoPath: string,
+  hash: string,
+  isNoise: (file: string) => boolean,
+  onlyPaths?: ReadonlySet<string>,
+): { added: number; deleted: number } {
   const raw = git(repoPath, ["show", "--format=", "--numstat", "--find-renames", hash]);
   let added = 0;
   let deleted = 0;
@@ -191,6 +207,7 @@ export function getChurn(
     if (addStr === "-" || delStr === "-") continue; // binary
     const file = normalizeNumstatPath(rest.join("\t"));
     if (!file || isNoise(file)) continue;
+    if (onlyPaths && !onlyPaths.has(file)) continue;
     added += Number.parseInt(addStr ?? "0", 10) || 0;
     deleted += Number.parseInt(delStr ?? "0", 10) || 0;
   }

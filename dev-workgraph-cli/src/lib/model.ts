@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Vasyl Zakharchenko
 // SPDX-License-Identifier: Apache-2.0
 
+import type { DeterministicLayer } from "./records.js";
+
+/** Provenance `model` when summarize skips the LLM (empty / noise-only patch). */
+export const EMPTY_SUMMARIZE_MODEL = "(none)";
+
 /** Allowed coarse signal levels. No numeric scores (MVP §2). */
 const SIGNALS = ["low", "medium", "high"] as const;
 export type Signal = (typeof SIGNALS)[number];
@@ -75,8 +80,58 @@ export interface ModelLayer {
   provenance?: {
     model: string;
     generatedAt: string;
-    patchTruncated: boolean;
   };
+}
+
+/**
+ * True when the deterministic layer lists no substantive file changes
+ * (e.g. only noise/excluded paths remained after evidence export).
+ * @param det - The commit deterministic layer.
+ */
+export function hasSubstantiveDeterministic(det: DeterministicLayer): boolean {
+  const cf = det.changedFiles;
+  if (
+    cf.added.length > 0 ||
+    cf.modified.length > 0 ||
+    cf.deleted.length > 0 ||
+    cf.renamed.length > 0
+  ) {
+    return true;
+  }
+  return det.linesAdded > 0 || det.linesDeleted > 0;
+}
+
+/**
+ * Default model layer for commits whose patch has no substantive diff content.
+ * {@link EMPTY_SUMMARIZE_MODEL} is recorded in provenance — no LLM was used.
+ */
+export function emptyCommitModelLayer(): ModelLayer {
+  return {
+    summary: "",
+    changeTypes: [],
+    technologies: [],
+    technicalSignal: "low",
+    architectureSignal: "low",
+    securitySignal: "low",
+    signalReasons: { technical: "", architecture: "", security: "" },
+    questionsAnalysis: [],
+    confidence: "low",
+    provenance: {
+      model: EMPTY_SUMMARIZE_MODEL,
+      generatedAt: new Date().toISOString(),
+    },
+  };
+}
+
+/**
+ * True when summarize produced an empty summary (noise-only / empty patch skip).
+ * Unsummarized commits (`model` null/undefined) are not empty.
+ * @param model - The commit model layer, if any.
+ */
+export function isEmptyCommitSummary(model: ModelLayer | null | undefined): boolean {
+  if (!model) return false;
+  if (model.provenance?.model === EMPTY_SUMMARIZE_MODEL) return true;
+  return !model.summary.trim();
 }
 
 /**
@@ -286,6 +341,45 @@ export function mergeTechnologies(...lists: (string[] | undefined)[]): string[] 
     }
   }
   return [...seen.values()];
+}
+
+/** JSON Schema for split-commit finalize step 3/6: polished signal reasons. */
+export function mergeFinalizeReasonsJsonSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      signalReasons: {
+        type: "object",
+        properties: {
+          technical: { type: "string" },
+          architecture: { type: "string" },
+          security: { type: "string" },
+        },
+        required: ["technical", "architecture", "security"],
+      },
+    },
+    required: ["signalReasons"],
+  };
+}
+
+/** JSON Schema for split-commit finalize step 4/6: composed summary. */
+export function mergeFinalizeSummaryJsonSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: { summary: { type: "string" } },
+    required: ["summary"],
+  };
+}
+
+/** JSON Schema for split-commit finalize step 5/6: reframed commit questions. */
+export function mergeFinalizeQuestionsJsonSchema(): Record<string, unknown> {
+  const base = modelJsonSchema();
+  const questionsAnalysis = (base.properties as Record<string, unknown>).questionsAnalysis;
+  return {
+    type: "object",
+    properties: { questionsAnalysis },
+    required: ["questionsAnalysis"],
+  };
 }
 
 /** JSON Schema for `prepare`: the cleaned/deduped technology list. */

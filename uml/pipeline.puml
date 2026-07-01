@@ -42,24 +42,25 @@ partition "Preconditions (per repository)" {
 }
 
 partition "Evidence (§2–3)" {
-  :(D) **evidence**\nExtract commits by selected authors;\ngit show → patch + deterministic JSON;
+  :(D) **evidence**\nExtract commits; noise filter;\ngit show → patch(s) + deterministic JSON;
   note right
-    **commits/**<ts>/<hash>.patch
     **commits/**<ts>/<hash>.json
-    deterministic layer only at export time
-    (files, churn, areas, excludedFiles)
+    small: **<hash>.patch**
+    large: **<hash>.partN.{json,patch}**
+    deterministic only (no model)
   end note
 
-  :(M:c) **summarize**\nAdd per-commit model layer;
+  :(M:c) **summarize**\nCanonical per-commit model layer;
   note right
-    summary, changeTypes, signals + reasons
-    **questions** (role-aware)
-    append-only; model starts null
+    **summaries/**<ts>/<hash>.json
+    split: parts → merge → finalize (6 steps)
+    empty patch: **(none)**, no LLM
+    summary, signals, questionsAnalysis
   end note
 }
 
 partition "Work sessions (§4, §7)" {
-  :(D) **commit-group** — membership\nChronological walk; split on\ngroupThresholdDays OR groupMaxCommits;
+  :(D) **commit-group** — filter + membership\nExclude empty summaries;\nchronological groupByGap;
   :(D) **commit-group** — aggregate\nUnion deterministic fields;\npartition groups.tiers (low/medium/hi);
   :(M:c) **commit-group** — classify\nSignals, changeTypes, context bullets, questions;
   :(M:c) **commit-group** — compose\nFirst-person session **history**;
@@ -269,8 +270,13 @@ package "config.json (outside data dir)" {
 folder "data/repos/<repo-id>/" as REPO {
   file "project.json" as PJ
   folder "commits/<ts>/" as COMM {
-    file "<hash>.patch"
-    file "<hash>.json"
+    file "<hash>.json\n(evidence manifest)"
+    file "<hash>.patch\n(or .partN.*)"
+  }
+  folder "summaries/<ts>/" as SUMM {
+    file "<hash>.json\n(canonical model)"
+    file "<hash>.partN.json\n(split audit)"
+    file "<hash>.merge.json\n(split audit)"
   }
   folder "groups/" as GRP {
     file "<timestampEnd>.json"
@@ -298,7 +304,8 @@ folder "data/repos/<repo-id>/" as REPO {
 }
 
 PJ --> COMM : project context for LLM
-COMM --> GRP : per-commit JSONs
+COMM --> SUMM : evidence → summarize
+SUMM --> GRP : canonical summaries
 GRP --> RPT : fold chain
 RPT --> PREP : latest report
 PREP --> FIN : prepared narrative\n(answers on finish only)

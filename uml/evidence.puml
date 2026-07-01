@@ -19,12 +19,12 @@ rectangle "**Preconditions**" #FFF8E1 {
 
 rectangle "**Stage 1 — evidence (D)**" #E8F5E9 {
   card "Git commits\n(selected authors)" as GIT
-  card ".patch file\n(git show --format=fuller --find-renames)" as PATCH
-  card "deterministic layer\nin .json" as DET
+  card ".patch file(s)\n(noise-filtered git show)" as PATCH
+  card "deterministic layer\nin commits/<ts>/<hash>.json" as DET
 }
 
 rectangle "**Stage 2 — summarize (M:c)**" as SUMBOX #FFF3E0 {
-  card "model layer\nadded to same .json" as MOD
+  card "canonical model layer\nsummaries/<ts>/<hash>.json" as MOD
 }
 
 AUTH --> GIT : filter commits\nby author email
@@ -37,16 +37,19 @@ DET --> MOD : metadata + areas\nfed into prompt\n(not overwritten)
 
 note bottom of DET
   **On disk (append-only):**
-  ~/.workgraph/data/repos/<repo-id>/commits/<ts>/<hash>.patch
-  ~/.workgraph/data/repos/<repo-id>/commits/<ts>/<hash>.json
-  At export: model = **null**
+  commits/<ts>/<hash>.json  (evidence only)
+  commits/<ts>/<hash>.patch  (small commit)
+  OR split: .partN.{json,patch} + manifest
+  **No model on evidence file.**
   **No signals. No questions.**
 end note
 
 note bottom of MOD
-  Added by **summarize** (not evidence):
-  • **signals** (technical / architecture / security)
-  • summary, changeTypes, confidence, technologies
+  **summaries/<ts>/<hash>.json** (canonical)
+  Split audit: .partN.json, .merge.json
+  Adds: summary, changeTypes, technologies, signals,
+  questionsAnalysis, confidence, provenance
+  Empty patch → **(none)** provenance, no LLM
 end note
 
 @enduml
@@ -86,44 +89,40 @@ partition "Per commit — **all deterministic (D)**" {
   if (patch + json exist?) then (yes)
     :Skip (append-only);
   else (no)
-    :Write **<hash>.patch**\n`git show --format=fuller --find-renames`;
-    note right
-      Reproducible patch export
-      Full commit metadata in patch header
-    end note
-
-    :Scan changed files + churn;
+    :Read patch from git show;
 
     partition "Noise filter (D)" {
-      :Exclude paths matching noise rules;
+      :**filterPatchNoise** — ignore profiles;
       note right
-        node_modules, dist, build, target,
-        coverage, .next, *.min.js, *.map,
-        package-lock.json, yarn.lock, pnpm-lock.yaml
-        → **excludedFiles[]** (disclosed, not hidden)
+        node_modules, dist, build, lockfiles, …
+        → **excludedFiles[]** (disclosed)
+        Patch may be header-only if all noise
       end note
     }
 
     partition "Area detection (D)" {
-      :**area** = first path segment\n(e.g. backend/foo → backend;\nroot file → "(root)");
-      note right: One file → one area;\ncommit.areas = unique set
+      :**area** = first path segment\n(non-noise files only);
+      note right: commit.areas = unique set
     }
 
     :Build **deterministic** layer;
     note right
-      changedFiles { added, deleted, modified, renamed }
-      linesAdded / linesDeleted (churn, noise excluded)
-      importantFolders[] (dirname of non-noise files)
-      areas[] (top-level folders touched)
-      excludedFiles[] (noise dropped)
+      changedFiles (non-noise only)
+      linesAdded / linesDeleted
+      importantFolders[], areas[], excludedFiles[]
     end note
 
-    :Write **<hash>.json**;
-    note right
-      commitHash, timestamp, title, author
-      deterministic: { … }
-      **model: null**
-    end note
+    if (filtered patch ≤ 24k chars?) then (yes)
+      :Write **<hash>.patch** + **<hash>.json**;
+    else (no)
+      :**packPatchIntoParts** → N slices;
+      :Write manifest **<hash>.json**\n(split, partCount, full deterministic);
+      :Write **<hash>.partN.{json,patch}**\nscoped deterministic per part;
+      note right
+        No monolithic <hash>.patch
+        Oversized single file → patchTruncated on part
+      end note
+    endif
   endif
 }
 
@@ -144,66 +143,15 @@ stop
 @startuml evidence-summarize
 !theme plain
 skinparam shadowing false
-skinparam ActivityBorderColor #888888
-skinparam NoteBackgroundColor #FFF3E0
 
-title **summarize** — Model layer per commit (§3)\nOllama **commitModel** · signals appear here (not in evidence)
+title **summarize** moved to **summarize.puml**\nSee: overview, command, split 6-step flow, empty patch skip
 
-start
-
-:List commits/**/*.json\n(skip if model present);
-
-if (No exported commits?) then (yes)
-  #Pink:Run `evidence` first;
-  stop
-else (no)
-endif
-
-:Pick **commitModel** (Ollama);
-
-partition "Load init context" {
-  :loadProjectContext(repo [, period]);
-  :Build **project context block**;
-  note right
-    From **project.json** (init):
-    • Developer role
-    • profile.summary, domains, apparentStack, keyThemes
-    • story.preparedContext
-    • Ground interpretation — never inflate impact
-  end note
-  if (project.json missing?) then (yes)
-    #FFF9C4:⚠️ Warn;\ncontinue with **empty** context;
-  else (no)
-  endif
-  :system = projectContextBlock + COMMIT_SUMMARY_SYSTEM;
-}
-
-partition "Per pending commit (M:c)" {
-  :Read deterministic layer + **.patch** file;
-  :buildCommitUserPrompt(record, patch);
-  note right
-    User prompt (deterministic inputs):
-    • commit title (context only — patch is truth)
-    • areas, changedFiles, churn
-    • patch diff (truncated if huge)
-  end note
-
-  :Ollama chatJson + JSON schema validation\n(up to 3 retries);
-
-  :**enforceSignalReasons** (D post-process);
-  note right
-    Non-low signal without reason → demoted to **low**
-    (prevents false precision)
-  end note
-
-  :Attach provenance (D):\nmodel, generatedAt, patchTruncated;
-
-  :Write model layer into same .json;
-}
-
-#LightGreen:✅ Commit records updated;
-
-stop
+note as N
+  **Canonical output:** summaries/<ts>/<hash>.json
+  **Evidence stays in:** commits/<ts>/…
+  **Split:** parts → merge → finalize (3× LLM) → canonical
+  **Empty patch:** provenance.model = **(none)**, no LLM
+end note
 
 @enduml
 
@@ -213,9 +161,9 @@ stop
 skinparam shadowing false
 skinparam classBackgroundColor #FAFAFA
 
-title Commit record after **evidence** — deterministic fields only\n`commits/<timestamp>/<hash>.json` · model = null
+title Commit evidence manifest — deterministic only\n`commits/<timestamp>/<hash>.json` · model in **summaries/**
 
-class "CommitRecord\n(written by evidence)" as CR #E8F5E9 {
+class "CommitEvidenceRecord\n(written by evidence)" as CR #E8F5E9 {
   **Identity (D — from Git)**
   --
   commitHash : string
@@ -223,42 +171,36 @@ class "CommitRecord\n(written by evidence)" as CR #E8F5E9 {
   title : string
   author : string
   --
+  split : boolean **(optional)**
+  partCount : number **(when split)**
+  --
   deterministic : DeterministicLayer
-  model : **null**
 }
 
 class "DeterministicLayer\n**(D) evidence**" as DET #E8F5E9 {
-  changedFiles.added[]
-  changedFiles.deleted[]
-  changedFiles.modified[]
-  changedFiles.renamed[]
-  --
-  linesAdded : number
-  linesDeleted : number
-  --
-  importantFolders[] : folders touched
-  areas[] : top-level project areas
-  excludedFiles[] : noise filter disclosure
+  changedFiles.*[]  **non-noise only**
+  linesAdded / linesDeleted
+  importantFolders[] / areas[]
+  excludedFiles[] : noise disclosure
 }
 
-class "Sidecar file" as PATCH #E3F2FD {
-  <hash>.patch
-  raw git show output
+class "Patch sidecar(s)" as PATCH #E3F2FD {
+  <hash>.patch  **small commit**
+  OR <hash>.partN.patch  **split**
 }
 
 CR *-- DET
 CR .. PATCH : same folder
 
 note right of DET
-  Computed without any model.
-  Areas = first path segment rule.
-  Noise excluded but listed in excludedFiles.
-  **No signals. No questions.**
+  Noise filtered **before** write/split.
+  All-noise commit: empty changedFiles,
+  excludedFiles populated, patch header-only.
 end note
 
 note bottom of CR
-  **summarize** (separate step) may later fill `model`
-  on the same file — that is not part of evidence.
+  **summarize** writes **summaries/<ts>/<hash>.json**
+  (canonical model layer). Evidence file unchanged.
 end note
 
 @enduml
@@ -282,7 +224,7 @@ package "**evidence (D)** — no init" #E8F5E9 {
 
 package "**summarize (M:c)** — uses init" #FFF3E0 {
   [project context block → system prompt] as BLOCK
-  [model layer on same .json] as MOD
+  [model layer in summaries/] as MOD
 }
 
 INIT -[hidden]-> GIT
@@ -294,7 +236,8 @@ DET ..> MOD : read by summarize,\nnot modified by init
 
 note bottom of DET
   **evidence** runs with authors only.
-  project.json is optional and ignored during extraction.
+  project.json optional during extraction.
+  Model → **summaries/** not commits/.
 end note
 
 @enduml
@@ -354,15 +297,15 @@ EVID -> CFG : selectedAuthors[]
 EVID -> GIT : log + show patches\n(filter by email [, date window])
 
 loop each commit (oldest first)
-  EVID -> EVID : noise filter, areas, churn\nbuildDeterministic()
-  EVID -> DISK : write .patch + .json\n(deterministic + **model: null**)
+  EVID -> EVID : filterPatchNoise,\nareas, churn, split if >24k
+  EVID -> DISK : write commits/<ts>/\n.patch or .partN + .json
 end
 
 EVID --> DEV : extracted / skipped counts
 
 note over DISK
-  No init, no Ollama, no signals, no questions.
-  **summarize** is a separate command on these files.
+  Evidence only — no Ollama.
+  **summarize** reads commits/ + writes summaries/.
 end note
 
 @enduml
@@ -381,12 +324,13 @@ legend left
   .json identity — commitHash, timestamp, title, author
   .json deterministic — changedFiles, linesAdded/Deleted
   .json deterministic — importantFolders, areas, excludedFiles
-  .json model — **null** (not written by evidence)
+  optional split: partCount, .partN.{json,patch}
+  **no model on evidence file** — see summaries/
 endlegend
 
 floating note left
-  Interpretation (summary, signals, changeTypes, …) is added later
-  by **summarize** on the same file. **evidence** alone is complete evidence.
+  Interpretation lives in **summaries/<ts>/<hash>.json**.
+  **evidence** alone is complete deterministic evidence.
 end note
 
 @enduml

@@ -5,10 +5,12 @@ import {
   chatJsonFromSchema,
   FAKE_REPO,
   seedCommit,
+  seedSummary,
   setupWorkgraphHome,
   summarizedCommit,
   writeProjectContext,
 } from "../helpers/action-fixtures.js";
+import { emptyCommitModelLayer } from "../../../src/lib/model.js";
 import { sampleModel } from "../../helpers.js";
 import { repoGroupsDir, repoProjectPath } from "../../../src/lib/config.js";
 
@@ -74,13 +76,41 @@ describe("commitGroup", () => {
     expect(fs.existsSync(groupFile)).toBe(true);
     const record = JSON.parse(fs.readFileSync(groupFile, "utf8")) as {
       model: { history: string } | null;
-      groups: { sourceEvidence: string[]; sourceSummaries: (string | null)[] };
+      groups: { commits: string[]; sourceEvidence: string[]; sourceSummaries: (string | null)[] };
     };
     expect(record.model?.history).toBe("Session history narrative.");
+    expect(record.groups.commits).toEqual(["abc1234567890abc1234567890abc1234567890"]);
     expect(record.groups.sourceEvidence).toEqual(["1700000000"]);
     expect(record.groups.sourceSummaries).toEqual([
       "summaries/1700000000/abc1234567890abc1234567890abc1234567890.json",
     ]);
+  });
+
+  it("excludes empty commit summaries from grouping", async () => {
+    const substantive = "abc1234567890abc1234567890abc1234567890";
+    const empty = "def1234567890def1234567890def1234567890";
+    const timestamp = 1_700_000_000;
+
+    seedCommit(FAKE_REPO, { commitHash: empty, timestamp });
+    seedSummary(FAKE_REPO, { commitHash: empty, timestamp }, emptyCommitModelLayer());
+    seedCommit(FAKE_REPO, summarizedCommit(substantive));
+
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await commitGroup({ repo: FAKE_REPO, days: 7, maxCommits: 20, model: "test-model" });
+
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining("2 commit(s) → 1 for grouping (1 empty summary skipped)"),
+    );
+
+    const groupFile = path.join(repoGroupsDir(FAKE_REPO), `${timestamp}.json`);
+    expect(fs.existsSync(groupFile)).toBe(true);
+
+    const record = JSON.parse(fs.readFileSync(groupFile, "utf8")) as {
+      groups: { commits: string[] };
+    };
+    expect(record.groups.commits).toEqual([substantive]);
+
+    log.mockRestore();
   });
 
   it("skips groups that already have a model layer", async () => {

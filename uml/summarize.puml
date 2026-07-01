@@ -14,14 +14,14 @@ legend top left
 endlegend
 
 rectangle "**Precondition**" #FFF8E1 {
-  card "**evidence** done\ncommits/<ts>/<hash>.patch + .json\nmodel = null" as EVID
+  card "**evidence** done\ncommits/<ts>/<hash>.json\n+ .patch or .partN.*" as EVID
   card "**init** (recommended)\nproject.json" as INIT
 }
 
 rectangle "**summarize (M:c)**" #FFF3E0 {
-  card "Read patch + deterministic\nfrom existing .json" as IN
-  card "Ollama chatJson\n1 session per commit" as LLM
-  card "**model layer** written\ninto same .json" as OUT
+  card "Read evidence +\nwrite **summaries/**" as IN
+  card "Ollama commitModel\n1× normal · N× split + finalize" as LLM
+  card "**canonical** summaries/<ts>/<hash>.json" as OUT
 }
 
 EVID --> IN
@@ -32,11 +32,12 @@ LLM --> OUT
 note bottom of OUT
   **Per commit the model layer adds:**
   • **signals** evaluated (technical / architecture / security)
-  • **questions[]** formed (role-aware)
+  • **questionsAnalysis[]** (role-aware, 4 after finalize)
   • summary, changeTypes, technologies, confidence
   ----
-  **Append-only:** skips commits with model already set.
-  Failed commits keep model: null.
+  **Skip** if canonical summary exists.
+  **Empty patch:** provenance.model = **(none)**, no LLM.
+  **Split:** .partN.json → .merge.json → finalize → canonical.
   **--limit N** for trials. **--period** scopes data dir.
 end note
 
@@ -55,7 +56,7 @@ start
 
 :Resolve repo → repo-id;\ncommits dir = commits/ or periods/<id>/commits/;
 
-:List all commits/**/*.json;
+:List evidence commits/**/*.json;
 
 if (None found?) then (yes)
   #Pink:Run **evidence** first;
@@ -81,7 +82,8 @@ endif
 
 :Build **pending** list;
 note right
-  Skip if record.model set (append-only)
+  Skip if **summaries/<ts>/<hash>.json** exists
+  (canonical only — not .merge.json)
   Optional --limit N on pending slice
 end note
 
@@ -91,33 +93,34 @@ else (no)
 endif
 
 partition "Per commit" {
-  :Read .json record + sibling .patch;
+  if (record.split?) then (yes)
+    #LightBlue:→ **split path** (see summarize-split-commit);
+  else (no)
+    :Read commits/<ts>/.json + .patch;
+  endif
 
-  :buildCommitUserPrompt(record, patch);
-  note right
-    Truncate patch at **16000 chars** if needed
-    → provenance.patchTruncated
-  end note
+  if (**isEmptySummarizePatch**(patch)?) then (yes)
+    :Write empty ModelLayer;\nprovenance.model = **(none)**;
+    note right: skipped (empty patch)\nno LLM call
+  else (has diff hunks)
+    repeat
+      :Ollama POST /api/chat\nformat = modelJsonSchema();
+      :extract + schema-validate;
+    repeat while (fail?) is (yes)
+    ->no;
+    note right: Up to **3 attempts** with backoff
 
-  repeat
-    :Ollama POST /api/chat\nformat = modelJsonSchema();
-    :extract JSON from response\n(parse fences / prose);
-    :schema-validate parsed object;
-  repeat while (fail?) is (yes)
-  ->no;
-  note right: Up to **3 attempts** with backoff\n(HTTP, parse, validation)
-
-  if (All attempts failed?) then (yes)
-    :Log failed;\n**model stays null**;
-  else (success)
-    :Evaluate **signals** + **questions[]**\nfrom model JSON output;
-    :**enforceSignalReasons** (D post);
-    :Attach **provenance** (D post):\nmodel, generatedAt, patchTruncated;
-    :Write model into .json;\n**deterministic unchanged**;
+    if (All attempts failed?) then (yes)
+      :Log failed;\n**no canonical summary**;
+    else (success)
+      :**enforceSignalReasons** (D post);
+      :Attach **provenance** (D post);
+      :Write **summaries/<ts>/<hash>.json**;\ncommits/ unchanged;
+    endif
   endif
 }
 
-#LightGreen:✅ Summarized N, failed M;
+#LightGreen:✅ Summarized N, failed M, skipped empty K;
 
 stop
 
@@ -129,11 +132,11 @@ stop
 skinparam shadowing false
 skinparam classBackgroundColor #FAFAFA
 
-title **ModelLayer** — complete schema (§3)\nWritten into commits/<ts>/<hash>.json · interpretation, not evidence
+title **ModelLayer** — canonical schema (§3)\n`summaries/<ts>/<hash>.json` · interpretation, not evidence
 
-class "CommitRecord\n(after summarize)" as CR {
+class "CommitSummaryRecord\n(after summarize)" as CR {
   commitHash, timestamp, title, author
-  deterministic : DeterministicLayer **(D, unchanged)**
+  deterministic : DeterministicLayer **(D, from evidence)**
   model : ModelLayer **(M:c)**
 }
 
@@ -180,10 +183,10 @@ class "ModelLayer\n**(M:c) — from Ollama**" as MOD #FFF3E0 {
   ..
   **Missing context (primary output)**
   --
-  **questions[]** : string[]
+  **questionsAnalysis[]** : string[]
   What a human must answer — Git cannot know.
   Framed by **role** (via project context).
-  Do not repeat story/README facts.
+  Split finalize: exactly **4** items.
   Unknowns go here, never inferred in summary.
   --
   **confidence** : low | medium | high
@@ -191,16 +194,16 @@ class "ModelLayer\n**(M:c) — from Ollama**" as MOD #FFF3E0 {
 }
 
 class "provenance\n**(D) — CLI attaches**" as PROV #E3F2FD {
-  model : Ollama model name used
+  model : Ollama name or **(none)**
   generatedAt : ISO timestamp
-  patchTruncated : boolean
 }
 
 MOD *-- PROV
 
 note right of MOD
   **Not produced by the model** — added after generation.
-  On validation failure after 3 retries: entire model layer omitted.
+  Empty patch: **(none)** provenance, blank summary.
+  On validation failure after 3 retries: no canonical file.
 end note
 
 CR *-- MOD
@@ -285,7 +288,7 @@ map "Role -> question emphasis (ROLE_QUESTION_EMPHASIS)" as ROLES {
 rectangle "init → project.json" as PJ #FFF8E1
 rectangle "Influences via system prompt" as INF #FFFDE7 {
   card "**summary** — interpret patch\nknowing what project is" as S
-  card "**questions[]** — role-aware gaps\n(skip story/README facts)" as Q
+  card "**questionsAnalysis[]** — role-aware gaps\n(skip story/README facts)" as Q
   card "**NOT** used to inflate signals\nor claim impact" as X
 }
 
@@ -347,7 +350,7 @@ end note
 skinparam shadowing false
 skinparam NoteBackgroundColor #FCE4EC
 
-title **questions[]** — primary model output at commit level (§3, §8)
+title **questionsAnalysis[]** — primary model output at commit level (§3, §8)
 
 rectangle "**Purpose**" as P {
   card "Recover context Git **cannot** store:\nownership, intent, production use, customer driver"
@@ -394,39 +397,43 @@ skinparam shadowing false
 title Sequence — **summarize** per commit
 
 actor "Developer" as DEV
-database "commits/<ts>/\n.json + .patch" as DISK
+database "commits/<ts>/\nevidence files" as COMM
+database "summaries/<ts>/\ncanonical .json" as SUMM
 database "project.json" as PJ
 participant "**summarize**" as SUM
 participant "Ollama\ncommitModel" as LLM
 
 DEV -> SUM : dev-workgraph summarize ./repo\n[--period] [--limit N]
 
-SUM -> DISK : list .json files
+SUM -> COMM : list evidence manifests
+SUM -> SUMM : skip if canonical exists
 SUM -> PJ : loadProjectContext()
 alt missing
   SUM --> DEV : ⚠️ no project context
 end
 
 loop each pending commit
-  SUM -> DISK : read record + patch
-  SUM -> SUM : system = context + COMMIT_SUMMARY_SYSTEM\nuser = buildCommitUserPrompt()
+  alt split commit
+    SUM -> SUM : parts → merge → finalize (3× LLM)
+  else normal
+    SUM -> COMM : read .json + .patch
+  end
 
-  SUM -> LLM : chatJson(schema=modelJsonSchema)
-  note right of LLM
-    Retries ×3 on HTTP / parse / validation
-    Extract JSON from fences or prose
-  end note
-
-  alt success
-    LLM --> SUM : ModelLayer fields
-    SUM -> SUM : enforceSignalReasons()\n+ provenance
-    SUM -> DISK : update .json (model filled)\ndeterministic untouched
-  else failure
-    SUM --> DEV : failed — model stays null
+  alt empty patch (no diff --git)
+    SUM -> SUMM : write (none) provenance\nno LLM
+  else substantive
+    SUM -> LLM : chatJson(schema=modelJsonSchema)
+    alt success
+      LLM --> SUM : ModelLayer fields
+      SUM -> SUM : enforceSignalReasons()\n+ provenance
+      SUM -> SUMM : write canonical .json
+    else failure
+      SUM --> DEV : failed — no canonical file
+    end
   end
 end
 
-SUM --> DEV : ✅ summarized N, failed M
+SUM --> DEV : ✅ summarized N, failed M, skipped empty K
 
 @enduml
 
@@ -437,11 +444,11 @@ skinparam shadowing false
 
 title Example — commit record **after summarize** (§3)
 
-object "commits/1717428123/b0648088.json" as REC #FFF3E0 {
+object "summaries/1717428123/b0648088.json" as REC #FFF3E0 {
   commitHash = "b0648088"
   title = "Production build and deployment automation"
   ..
-  **deterministic (D — from evidence)**
+  **deterministic (D — copied from evidence)**
   changedFiles.added = [assembly/production.xml, backend/build.sh, …]
   linesAdded = 214 · linesDeleted = 18
   areas = [backend, build-and-deploy]
@@ -457,14 +464,13 @@ object "commits/1717428123/b0648088.json" as REC #FFF3E0 {
   signalReasons.technical = "Introduces build tooling across Maven and Node…"
   signalReasons.architecture = "Defines deployment boundary and packaging…"
   signalReasons.security = "No auth/identity code touched."
-  questions = [
+  questionsAnalysis = [
     "Was this used for real production deployment, or experimental?",
     "Did this replace a manual deployment process?",
     "Was this your own work or a shared team effort?"
   ]
   confidence = medium
   provenance.model = "qwen2.5-coder:14b"
-  provenance.patchTruncated = false
 }
 
 note bottom of REC
@@ -483,26 +489,86 @@ skinparam shadowing false
 title **summarize** — what stays **(D)** vs what the **model** adds
 
 legend left
-  **Stays unchanged (from evidence)**
+  **Stays in commits/ (from evidence)**
   ----
   deterministic.* (files, churn, areas, excludedFiles)
-  .patch file on disk
+  .patch or .partN.patch on disk
   commitHash, timestamp, title, author
   ----
-  **Added by summarize (M:c)**
+  **Written to summaries/ (M:c)**
   ----
   summary, changeTypes[], technologies[]
   technical / architecture / security signals
   signalReasons (patch-grounded)
-  questions[] (role-aware)
+  questionsAnalysis[] (role-aware)
   confidence
-  provenance (CLI)
+  provenance (CLI; **(none)** if empty patch)
 endlegend
 
 note bottom
-  Init context affects **prompt only** — never rewrites deterministic fields.
-  ROUTINE upkeep: named plainly in summary, not detailed (no version numbers).
-  Production / ownership / impact: **never inferred** — only asked in questions.
+  Init context affects **prompt only** — never rewrites evidence files.
+  Split audit: .partN.json, .merge.json (not used by commit-group).
+  Production / ownership / impact: **never inferred** — only in questionsAnalysis.
 end note
+
+@enduml
+
+
+@startuml summarize-split-commit
+!theme plain
+skinparam shadowing false
+skinparam ActivityBorderColor #888888
+skinparam NoteBackgroundColor #E3F2FD
+
+title **summarize** — Split commit flow (6 steps)\nAutomatic inside **summarize** · no separate CLI
+
+start
+
+if (canonical summary exists?) then (yes)
+  :Skip entire commit;
+  stop
+else (no)
+endif
+
+partition "[1/6] Summarize parts (M:c)" {
+  while (more parts?) is (yes)
+    if (part patch empty?) then (yes)
+      :Write partN.json\nprovenance (none);
+    else (no)
+      :Ollama to summaries/partN.json;
+    endif
+  endwhile (no)
+}
+
+partition "[2/6] Deterministic merge (D)" {
+  :mergeCommitPartSummaries\nto hash.merge.json;
+  note right
+    Union signals, technologies,
+    concat questionsAnalysis
+  end note
+}
+
+if (merge exists and canonical missing?) then (resume)
+  note right: Skip steps 1-2
+else (fresh)
+endif
+
+partition "[3/6] Polish signalReasons (M:c)" {
+  :LLM mergeFinalizeSignalReasons;
+}
+partition "[4/6] Compose summary (M:c)" {
+  :LLM mergeFinalizeSummary;
+}
+partition "[5/6] Reframe questionsAnalysis (M:c)" {
+  :LLM mergeFinalizeQuestions\nexactly 4 items;
+}
+
+partition "[6/6] Write canonical (D)" {
+  :Write summaries/hash.json;
+}
+
+#LightGreen:✅ Split commit finalized;
+
+stop
 
 @enduml
