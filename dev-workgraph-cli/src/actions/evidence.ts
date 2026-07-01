@@ -123,6 +123,18 @@ function classify(
 }
 
 /**
+ * Append-only: true when all split part files exist on disk.
+ */
+function splitPartsComplete(dir: string, hash: string, partCount: number): boolean {
+  for (let part = 1; part <= partCount; part += 1) {
+    const partJson = path.join(dir, `${hash}.part${part}.json`);
+    const partPatch = path.join(dir, `${hash}.part${part}.patch`);
+    if (!fs.existsSync(partJson) || !fs.existsSync(partPatch)) return false;
+  }
+  return true;
+}
+
+/**
  * Append-only: true when a commit export is already complete on disk.
  */
 function isFullyExtracted(dir: string, hash: string): boolean {
@@ -132,13 +144,7 @@ function isFullyExtracted(dir: string, hash: string): boolean {
   const record = JSON.parse(fs.readFileSync(jsonPath, "utf8")) as CommitEvidenceRecord;
   if (record.split) {
     const partCount = record.partCount ?? 0;
-    if (partCount < 1) return false;
-    for (let part = 1; part <= partCount; part += 1) {
-      const partJson = path.join(dir, `${hash}.part${part}.json`);
-      const partPatch = path.join(dir, `${hash}.part${part}.patch`);
-      if (!fs.existsSync(partJson) || !fs.existsSync(partPatch)) return false;
-    }
-    return true;
+    return partCount >= 1 && splitPartsComplete(dir, hash, partCount);
   }
 
   return fs.existsSync(path.join(dir, `${hash}.patch`));

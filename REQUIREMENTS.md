@@ -320,15 +320,15 @@ git show --format=fuller --find-renames <commit-hash>
 Export is **append-only**: existing commits are skipped, never overwritten.
 The export should preserve:
 
-* commit hash
-* commit date (author date and commit date)
-* author
-* commit title/message
-* changed files (with status: added/deleted/modified/renamed) — **non-noise files only** in `changedFiles`; noise paths only in `excludedFiles`
-* patch content (noise-filtered)
-* lines added / lines deleted per file (non-noise churn)
+- commit hash
+- commit date (author date and commit date)
+- author
+- commit title/message
+- changed files (with status: added/deleted/modified/renamed) — **non-noise files only** in `changedFiles`; noise paths only in `excludedFiles`
+- patch content (noise-filtered)
+- lines added / lines deleted per file (non-noise churn)
 
-#### Small vs split commits
+### Small vs split commits
 
 When the filtered patch fits in **≤ 24 000 characters** (`MAX_PATCH_CHARS`), export writes one pair:
 

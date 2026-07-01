@@ -22,22 +22,17 @@ function isDiffGitLine(line: string | undefined): line is string {
   return line?.startsWith("diff --git ") ?? false;
 }
 
-/**
- * Splits a `git show` patch into a commit header and per-file diff hunks.
- * @param patch - Full patch text from `git show`.
- */
-export function splitPatchByFile(patch: string): { header: string; hunks: FileHunk[] } {
-  const lines = patch.split("\n");
-  const hunks: FileHunk[] = [];
+function skipPatchHeader(lines: string[]): number {
   let i = 0;
-
   while (i < lines.length && !isDiffGitLine(lines[i])) {
     i += 1;
   }
-  const header = lines.slice(0, i).join("\n");
-  if (i < lines.length && header.length > 0) {
-    // Keep the blank line before the first diff when present.
-  }
+  return i;
+}
+
+function readFileHunks(lines: string[], startIndex: number): FileHunk[] {
+  const hunks: FileHunk[] = [];
+  let i = startIndex;
 
   while (i < lines.length) {
     const diffLine = lines[i];
@@ -45,16 +40,29 @@ export function splitPatchByFile(patch: string): { header: string; hunks: FileHu
       i += 1;
       continue;
     }
-    const start = i;
+    const hunkStart = i;
     i += 1;
     while (i < lines.length && !isDiffGitLine(lines[i])) {
       i += 1;
     }
-    const text = `${lines.slice(start, i).join("\n")}\n`;
-    const paths = pathsFromDiffGitLine(diffLine);
-    hunks.push({ text, paths });
+    hunks.push({
+      text: `${lines.slice(hunkStart, i).join("\n")}\n`,
+      paths: pathsFromDiffGitLine(diffLine),
+    });
   }
 
+  return hunks;
+}
+
+/**
+ * Splits a `git show` patch into a commit header and per-file diff hunks.
+ * @param patch - Full patch text from `git show`.
+ */
+export function splitPatchByFile(patch: string): { header: string; hunks: FileHunk[] } {
+  const lines = patch.split("\n");
+  const headerEnd = skipPatchHeader(lines);
+  const header = lines.slice(0, headerEnd).join("\n");
+  const hunks = readFileHunks(lines, headerEnd);
   return { header: header.length > 0 ? `${header}\n` : "", hunks };
 }
 
@@ -105,6 +113,10 @@ export function packPatchIntoParts(patch: string): PatchPart[] {
     ];
   }
 
+  return packHunksIntoParts(header, hunks);
+}
+
+function packHunksIntoParts(header: string, hunks: FileHunk[]): PatchPart[] {
   const parts: PatchPart[] = [];
   let batch: FileHunk[] = [];
   let batchSize = 0;

@@ -84,6 +84,26 @@ function listEvidenceJsonFiles(dir: string): string[] {
   return files.sort(compareLocale);
 }
 
+function hasCanonicalSummary(summariesDir: string, evidence: CommitEvidenceRecord): boolean {
+  return fs.existsSync(commitSummaryPath(summariesDir, evidence.timestamp, evidence.commitHash));
+}
+
+function classifyEvidenceFile(file: string, summariesDir: string): PendingItem | "skip" {
+  const raw = JSON.parse(fs.readFileSync(file, "utf8")) as CommitEvidenceRecord & {
+    model?: ModelLayer | null;
+  };
+  const { model: legacyModel, ...evidence } = raw;
+
+  if (evidence.split) {
+    const partCount = evidence.partCount ?? 0;
+    if (partCount < 1 || hasCanonicalSummary(summariesDir, evidence)) return "skip";
+    return { kind: "split", evidence, partCount };
+  }
+
+  if (hasCanonicalSummary(summariesDir, evidence) || legacyModel) return "skip";
+  return { kind: "single", evidence };
+}
+
 function collectPending(
   allFiles: string[],
   summariesDir: string,
@@ -92,31 +112,12 @@ function collectPending(
   let skipped = 0;
 
   for (const file of allFiles) {
-    const raw = JSON.parse(fs.readFileSync(file, "utf8")) as CommitEvidenceRecord & {
-      model?: ModelLayer | null;
-    };
-    const { model: legacyModel, ...evidence } = raw;
-
-    if (evidence.split) {
-      const partCount = evidence.partCount ?? 0;
-      if (partCount < 1) {
-        skipped += 1;
-        continue;
-      }
-      if (fs.existsSync(commitSummaryPath(summariesDir, evidence.timestamp, evidence.commitHash))) {
-        skipped += 1;
-        continue;
-      }
-      pending.push({ kind: "split", evidence, partCount });
-      continue;
-    }
-
-    const summaryPath = commitSummaryPath(summariesDir, evidence.timestamp, evidence.commitHash);
-    if (fs.existsSync(summaryPath) || legacyModel) {
+    const item = classifyEvidenceFile(file, summariesDir);
+    if (item === "skip") {
       skipped += 1;
       continue;
     }
-    pending.push({ kind: "single", evidence });
+    pending.push(item);
   }
 
   return { pending, skipped };
@@ -324,7 +325,7 @@ function writeCanonicalSummary(input: {
   return summaryPath;
 }
 
-async function summarizeSplitCommit(input: {
+interface SplitCommitContext {
   commitIndex: number;
   commitTotal: number;
   baseUrl: string;
@@ -336,110 +337,115 @@ async function summarizeSplitCommit(input: {
   evidence: CommitEvidenceRecord;
   partCount: number;
   tracker: TokenUsageTracker;
-}): Promise<void> {
-  const { commitIndex, commitTotal, evidence, partCount } = input;
-  const short = evidence.commitHash.slice(0, 8);
-  const mergeFile = `${short}.merge.json`;
-  const canonicalFile = `${short}.json`;
-  const mergePath = commitMergedSummaryPath(
-    input.summariesDir,
-    evidence.timestamp,
-    evidence.commitHash,
-  );
+  mergeFile: string;
+  canonicalFile: string;
+}
 
-  console.log(`[${commitIndex}/${commitTotal}] ${short} ${evidence.title.slice(0, 50)}`);
-  console.log(`  split mode · ${partCount} parts`);
+function writeSplitCanonicalAndDone(ctx: SplitCommitContext, model: ModelLayer): void {
+  process.stdout.write(`  [6/6] wrote ${ctx.canonicalFile} ... `);
+  writeCanonicalSummary({
+    summariesDir: ctx.summariesDir,
+    evidence: ctx.evidence,
+    model,
+  });
+  console.log("ok");
+  console.log("  done");
+}
 
-  if (allEvidencePatchesEmpty(input.evidenceDir, evidence)) {
-    console.log("  [1/6] summarizing parts ... skipped (empty patch)");
-    console.log(`  [2/6] merging part summaries → ${mergeFile} ... skipped (empty patch)`);
-    process.stdout.write(`  [6/6] wrote ${canonicalFile} ... `);
-    writeCanonicalSummary({
-      summariesDir: input.summariesDir,
-      evidence,
-      model: emptyCommitModelLayer(),
+function handleEmptySplitCommit(ctx: SplitCommitContext): void {
+  console.log("  [1/6] summarizing parts ... skipped (empty patch)");
+  console.log(`  [2/6] merging part summaries → ${ctx.mergeFile} ... skipped (empty patch)`);
+  writeSplitCanonicalAndDone(ctx, emptyCommitModelLayer());
+}
+
+async function summarizeSplitParts(ctx: SplitCommitContext): Promise<ModelLayer[]> {
+  const partLayers: ModelLayer[] = [];
+  for (let part = 1; part <= ctx.partCount; part += 1) {
+    const partSummaryPath = commitSummaryPartPath(
+      ctx.summariesDir,
+      ctx.evidence.timestamp,
+      ctx.evidence.commitHash,
+      part,
+    );
+    if (fs.existsSync(partSummaryPath)) {
+      const record = JSON.parse(fs.readFileSync(partSummaryPath, "utf8")) as CommitSummaryRecord;
+      partLayers.push(record.model);
+      console.log(`    [${part}/${ctx.partCount}] part ${part} ... skipped (already present)`);
+      continue;
+    }
+
+    process.stdout.write(`    [${part}/${ctx.partCount}] part ${part} ... `);
+    const layer = await summarizeOnePart({
+      baseUrl: ctx.baseUrl,
+      model: ctx.model,
+      system: ctx.system,
+      evidenceDir: ctx.evidenceDir,
+      summariesDir: ctx.summariesDir,
+      evidence: ctx.evidence,
+      part,
+      tracker: ctx.tracker,
     });
+    partLayers.push(layer);
     console.log("ok");
-    console.log("  done");
-    return;
   }
+  return partLayers;
+}
 
-  let mergedModel: ModelLayer;
+async function resolveSplitMergedModel(ctx: SplitCommitContext): Promise<ModelLayer> {
+  const mergePath = commitMergedSummaryPath(
+    ctx.summariesDir,
+    ctx.evidence.timestamp,
+    ctx.evidence.commitHash,
+  );
 
   if (fs.existsSync(mergePath)) {
     console.log("  [1/6] summarizing parts ... skipped (merge present)");
-    console.log(`  [2/6] merging part summaries → ${mergeFile} ... skipped (already present)`);
+    console.log(`  [2/6] merging part summaries → ${ctx.mergeFile} ... skipped (already present)`);
     const mergeRecord = JSON.parse(fs.readFileSync(mergePath, "utf8")) as CommitSummaryRecord;
-    mergedModel = mergeRecord.model;
-  } else {
-    console.log("  [1/6] summarizing parts ...");
-
-    const partLayers: ModelLayer[] = [];
-    for (let part = 1; part <= partCount; part += 1) {
-      const partSummaryPath = commitSummaryPartPath(
-        input.summariesDir,
-        evidence.timestamp,
-        evidence.commitHash,
-        part,
-      );
-      if (fs.existsSync(partSummaryPath)) {
-        const record = JSON.parse(fs.readFileSync(partSummaryPath, "utf8")) as CommitSummaryRecord;
-        partLayers.push(record.model);
-        console.log(`    [${part}/${partCount}] part ${part} ... skipped (already present)`);
-        continue;
-      }
-
-      process.stdout.write(`    [${part}/${partCount}] part ${part} ... `);
-      try {
-        const layer = await summarizeOnePart({
-          baseUrl: input.baseUrl,
-          model: input.model,
-          system: input.system,
-          evidenceDir: input.evidenceDir,
-          summariesDir: input.summariesDir,
-          evidence,
-          part,
-          tracker: input.tracker,
-        });
-        partLayers.push(layer);
-        console.log("ok");
-      } catch (err) {
-        console.log(`failed (${(err as Error).message})`);
-        throw err;
-      }
-    }
-
-    process.stdout.write(`  [2/6] merging part summaries → ${mergeFile} ... `);
-    writeMergedSummary({
-      summariesDir: input.summariesDir,
-      evidence,
-      partLayers,
-      model: input.model,
-    });
-    console.log("ok");
-    const mergeRecord = JSON.parse(fs.readFileSync(mergePath, "utf8")) as CommitSummaryRecord;
-    mergedModel = mergeRecord.model;
+    return mergeRecord.model;
   }
 
+  console.log("  [1/6] summarizing parts ...");
+  const partLayers = await summarizeSplitParts(ctx);
+
+  process.stdout.write(`  [2/6] merging part summaries → ${ctx.mergeFile} ... `);
+  writeMergedSummary({
+    summariesDir: ctx.summariesDir,
+    evidence: ctx.evidence,
+    partLayers,
+    model: ctx.model,
+  });
+  console.log("ok");
+
+  const mergeRecord = JSON.parse(fs.readFileSync(mergePath, "utf8")) as CommitSummaryRecord;
+  return mergeRecord.model;
+}
+
+async function summarizeSplitCommit(input: SplitCommitContext): Promise<void> {
+  const short = input.evidence.commitHash.slice(0, 8);
+  console.log(
+    `[${input.commitIndex}/${input.commitTotal}] ${short} ${input.evidence.title.slice(0, 50)}`,
+  );
+  console.log(`  split mode · ${input.partCount} parts`);
+
+  if (allEvidencePatchesEmpty(input.evidenceDir, input.evidence)) {
+    handleEmptySplitCommit(input);
+    return;
+  }
+
+  const mergedModel = await resolveSplitMergedModel(input);
   const finalModel = await finalizeMergedSummary({
     baseUrl: input.baseUrl,
     model: input.model,
     projectBlock: input.projectBlock,
     evidenceDir: input.evidenceDir,
-    evidence,
+    evidence: input.evidence,
     merged: mergedModel,
-    partCount,
+    partCount: input.partCount,
     tracker: input.tracker,
   });
 
-  process.stdout.write(`  [6/6] wrote ${canonicalFile} ... `);
-  writeCanonicalSummary({
-    summariesDir: input.summariesDir,
-    evidence,
-    model: finalModel,
-  });
-  console.log("ok");
-  console.log("  done");
+  writeSplitCanonicalAndDone(input, finalModel);
 }
 
 function writeMergedSummary(input: {
@@ -558,6 +564,7 @@ async function processPendingItem(
     return;
   }
 
+  const short = item.evidence.commitHash.slice(0, 8);
   await summarizeSplitCommit({
     commitIndex,
     commitTotal,
@@ -570,6 +577,8 @@ async function processPendingItem(
     evidence: item.evidence,
     partCount: item.partCount,
     tracker: ctx.tracker,
+    mergeFile: `${short}.merge.json`,
+    canonicalFile: `${short}.json`,
   });
 }
 
