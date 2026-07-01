@@ -5,44 +5,74 @@ All notable changes to **dev-workgraph** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - NEXT RELEASE
+
 ## [1.0.2] - 2026-07-01
+
+Large commits, noise filtering, and long Ollama runs.
 
 ### Added
 
-- **Evidence — patch splitting for large commits.** After noise filtering, patches larger than 24 000 characters (`MAX_PATCH_CHARS`) are exported as numbered parts on **file boundaries** instead of a single monolithic `.patch`:
-  - `commits/<ts>/<hash>.json` — manifest with `split: true`, `partCount`, and full-commit deterministic layer
-  - `commits/<ts>/<hash>.partN.json` + `.partN.patch` — scoped deterministic + patch slice per part
-  - Oversized single-file hunks may be truncated in their own part (`patchTruncated: true` on the part record only)
-- **Evidence — noise filtering before export/split.** Ignore profiles (JavaScript/TypeScript and Java) drop generated/vendored paths from patch hunks; dropped paths are disclosed in `deterministic.excludedFiles`.
-- **Summarize — split-commit pipeline (6 steps, automatic).** Large commits are summarized part-by-part, merged deterministically, finalized with three LLM passes, then written as a canonical summary:
-  1. Summarize each part → `summaries/<ts>/<hash>.partN.json`
-  2. Deterministic merge → `summaries/<ts>/<hash>.merge.json`
-  3. LLM polish `signalReasons`
-  4. LLM compose `summary`
-  5. LLM reframe `questionsAnalysis` (exactly four items)
-  6. Write canonical → `summaries/<ts>/<hash>.json`
-- **Summarize — empty / noise-only patches.** When a patch has no `diff --git` hunks after filtering, summarize skips the LLM, writes an empty model layer, and records `provenance.model: "(none)"` (console: `skipped (empty patch)`).
-- **Summarize — resume.** Existing `.partN.json` / `.merge.json` audit files are reused; only the missing steps run until the canonical summary exists.
-- **commit-group — empty summary filter.** Commits with `"(none)"` provenance or a blank summary are excluded before `groupByGap` (console reports how many were skipped).
+#### Evidence — patch splitting
+
+After noise filtering, patches over **24 000 characters** (`MAX_PATCH_CHARS`) are split on **file boundaries** instead of one monolithic `.patch`.
+
+| On disk | Role |
+|---------|------|
+| `commits/<ts>/<hash>.json` | Manifest (`split`, `partCount`) + full-commit deterministic |
+| `commits/<ts>/<hash>.partN.json` | Scoped deterministic for part N |
+| `commits/<ts>/<hash>.partN.patch` | Patch slice for part N |
+
+A single oversized file may be truncated inside its own part (`patchTruncated: true` on that part record only).
+
+#### Evidence — noise filtering
+
+Ignore profiles (JavaScript/TypeScript and Java) remove generated/vendored hunks **before** export and split. Dropped paths are listed in `deterministic.excludedFiles` (nothing is hidden silently).
+
+#### Summarize — split commit (6 steps, automatic)
+
+Large commits run inside `summarize` — no separate command:
+
+| Step | LLM | Output |
+|------|-----|--------|
+| 1. Summarize parts | yes × N | `summaries/<ts>/<hash>.partN.json` |
+| 2. Merge | no | `summaries/<ts>/<hash>.merge.json` |
+| 3. Polish `signalReasons` | yes | (in memory) |
+| 4. Compose `summary` | yes | (in memory) |
+| 5. Reframe `questionsAnalysis` (4 items) | yes | (in memory) |
+| 6. Write canonical | no | `summaries/<ts>/<hash>.json` |
+
+Existing `.partN.json` / `.merge.json` files are reused on re-run; only missing steps run until the canonical file exists.
+
+#### Summarize — empty / noise-only patches
+
+If the patch has no `diff --git` hunks after filtering, summarize **skips the LLM**, writes an empty model layer, and sets `provenance.model` to `"(none)"`. Console: `skipped (empty patch)`.
+
+#### commit-group — empty summary filter
+
+Commits with `"(none)"` provenance or a blank `summary` are excluded before `groupByGap`. The console reports how many were skipped.
 
 ### Changed
 
-- **Evidence and summaries are separate on disk.** `commits/` holds deterministic evidence only; `summarize` writes model layers under `summaries/<ts>/<hash>.json`. Downstream stages join evidence with **canonical** summaries (legacy inlined `model` on evidence files is still read when no summary file exists).
-- **commit-group input.** Loads `commits/` + `summaries/`; does not read `.partN.json`, `.merge.json`, or raw `.patch` files.
-- **Model provenance.** `provenance` on summarize/group model layers is `{ model, generatedAt }` only (`patchTruncated` removed from model provenance; truncation remains on evidence part records where applicable).
-- **Dependencies** bumped to current releases, including **`undici`** (explicit HTTP client for Ollama), `@biomejs/biome` 2.5.2, `@types/node` ^26.1, and `knip` ^6.23.
+- **Separate folders:** `commits/` = deterministic evidence only; `summaries/<ts>/<hash>.json` = canonical model layer. Downstream stages join the two (legacy inlined `model` on evidence files still works when no summary file exists).
+- **commit-group** reads `commits/` + canonical summaries only — not `.partN.json`, `.merge.json`, or raw `.patch` files.
+- **Model provenance** is `{ model, generatedAt }` only (`patchTruncated` removed from model layers; it remains on evidence part records when a hunk was truncated).
+- **Dependencies** updated: `undici` (Ollama HTTP client), `@biomejs/biome` 2.5.2, `@types/node` ^26.1, `knip` ^6.23.
 
 ### Fixed
 
-- **Ollama HTTP timeout.** Requests no longer abort after ~5 minutes on slow local models; `headersTimeout` and `bodyTimeout` are set to **1 hour** via undici (fixes premature failures during `summarize`, `commit-group`, and other long LLM steps).
-- Large “Init”-style commits no longer fail or lose context when a single patch exceeds LLM context limits.
-- Noise paths (e.g. `.env`, lockfiles, `node_modules`) no longer inflate patch size or disagree with `changedFiles` after filtering runs **before** chunking.
+- **Ollama timeout:** HTTP requests no longer abort after ~5 minutes on slow local models; `headersTimeout` and `bodyTimeout` are **1 hour** via undici (`summarize`, `commit-group`, and other LLM steps).
+- **Large Init commits** no longer fail when a single patch exceeds LLM context — split + part summarization handles them.
+- **Noise vs `changedFiles`:** filtering runs before chunking, so paths like `.env`, lockfiles, and `node_modules` do not inflate patches or disagree with `changedFiles`.
 
 ### Migration
 
-- **Re-summarize a split commit:** delete `summaries/<ts>/<hash>.json` (and optionally `.partN.json` / `.merge.json`), then run `summarize` again.
-- **Re-export evidence** (e.g. after ignore rule changes): delete the commit folder under `commits/<ts>/`, then run `evidence` again.
-- Append-only behavior is unchanged: existing complete exports and canonical summaries are skipped on re-run.
+| Goal | Action |
+|------|--------|
+| Re-summarize a split commit | Delete `summaries/<ts>/<hash>.json` (optionally `.partN.json` / `.merge.json`), then `summarize` |
+| Re-export evidence | Delete `commits/<ts>/` for that commit, then `evidence` |
+
+Append-only behavior is unchanged: complete exports and canonical summaries are skipped on re-run.
 
 ## [1.0.1] - 2026-06-27
 
