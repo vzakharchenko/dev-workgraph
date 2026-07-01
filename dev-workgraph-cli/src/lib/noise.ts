@@ -5,8 +5,10 @@ import type { IgnoreFiles } from "./ignore/IgnoreFiles.js";
 import { ignoreFiles } from "./ignore.js";
 
 /** Turn a simple glob (`*` only) into a RegExp anchored to the full string. */
+const REGEX_SPECIAL_CHARS = /[.+?^${}()|[\]\\]/g;
+
 function globToRegExp(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  const escaped = pattern.replaceAll(REGEX_SPECIAL_CHARS, String.raw`\$&`).replaceAll("*", ".*");
   return new RegExp(`^${escaped}$`);
 }
 

@@ -200,10 +200,10 @@ function unquoteGitPath(raw: string): string {
   if (raw.startsWith('"') && raw.endsWith('"')) {
     return raw
       .slice(1, -1)
-      .replaceAll("\\n", "\n")
-      .replaceAll("\\t", "\t")
-      .replaceAll('\\"', '"')
-      .replaceAll("\\\\", "\\");
+      .replaceAll(String.raw`\n`, "\n")
+      .replaceAll(String.raw`\t`, "\t")
+      .replaceAll(String.raw`\"`, '"')
+      .replaceAll(String.raw`\\`, "\\");
   }
   return raw;
 }

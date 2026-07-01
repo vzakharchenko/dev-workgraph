@@ -56,16 +56,28 @@ const asStringArray = (value: unknown): string[] =>
 const DEFAULT_THRESHOLD_DAYS = 7;
 const DEFAULT_MAX_COMMITS = 20;
 
-function formatGroupingSummary(
-  commitCount: number,
-  groupingCount: number,
-  emptySkipped: number,
-  sessionCount: number,
-  thresholdDays: number,
-  maxCommits: number,
-  fullyCovered: number,
-  pendingCount: number,
-): string {
+interface GroupingSummaryInput {
+  commitCount: number;
+  groupingCount: number;
+  emptySkipped: number;
+  sessionCount: number;
+  thresholdDays: number;
+  maxCommits: number;
+  fullyCovered: number;
+  pendingCount: number;
+}
+
+function formatGroupingSummary(input: GroupingSummaryInput): string {
+  const {
+    commitCount,
+    groupingCount,
+    emptySkipped,
+    sessionCount,
+    thresholdDays,
+    maxCommits,
+    fullyCovered,
+    pendingCount,
+  } = input;
   const parts = [`\n${commitCount} commit(s)`];
   if (emptySkipped > 0) {
     parts.push(
@@ -298,16 +310,16 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
   const sessions = extensionSessions(rawSessions, covered);
   const fullyCovered = rawSessions.length - sessions.length;
   console.log(
-    formatGroupingSummary(
-      allCommits.length,
-      commits.length,
+    formatGroupingSummary({
+      commitCount: allCommits.length,
+      groupingCount: commits.length,
       emptySkipped,
-      rawSessions.length,
+      sessionCount: rawSessions.length,
       thresholdDays,
       maxCommits,
       fullyCovered,
-      sessions.length,
-    ),
+      pendingCount: sessions.length,
+    }),
   );
   console.log(`Using model "${model}" at ${baseUrl}\n`);
 

@@ -469,6 +469,119 @@ function writeMergedSummary(input: {
   writeRecordJson(mergePath, summary);
 }
 
+interface SummarizeRunContext {
+  evidenceDir: string;
+  summariesDir: string;
+  baseUrl: string;
+  model: string;
+  system: string;
+  projectBlock: string;
+  tracker: TokenUsageTracker;
+}
+
+async function summarizeSingleCommit(
+  item: PendingSingle,
+  commitIndex: number,
+  commitTotal: number,
+  ctx: SummarizeRunContext,
+): Promise<void> {
+  const short = item.evidence.commitHash.slice(0, 8);
+  process.stdout.write(
+    `[${commitIndex}/${commitTotal}] ${short} ${item.evidence.title.slice(0, 50)} ... `,
+  );
+
+  const evidenceJsonPath = path.join(
+    ctx.evidenceDir,
+    String(item.evidence.timestamp),
+    `${item.evidence.commitHash}.json`,
+  );
+  const patchPath = evidenceJsonPath.replace(/\.json$/, ".patch");
+  const patch = fs.existsSync(patchPath) ? fs.readFileSync(patchPath, "utf8") : "";
+
+  if (shouldSkipCommitSummarize(patch)) {
+    const summaryPath = commitSummaryPath(
+      ctx.summariesDir,
+      item.evidence.timestamp,
+      item.evidence.commitHash,
+    );
+    fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
+    writeRecordJson(summaryPath, {
+      commitHash: item.evidence.commitHash,
+      timestamp: item.evidence.timestamp,
+      sourceEvidence: String(item.evidence.timestamp),
+      model: emptyCommitModelLayer(),
+    });
+    console.log("skipped (empty patch)");
+    return;
+  }
+
+  const prompt = buildCommitUserPrompt(item.evidence, patch);
+  const raw = (await chatJson({
+    baseUrl: ctx.baseUrl,
+    model: ctx.model,
+    system: ctx.system,
+    user: prompt,
+    schema: modelJsonSchema(),
+    tracker: ctx.tracker,
+  })) as ModelLayer;
+
+  const layer = enforceSignalReasons(raw);
+  layer.questionsAnalysis = cleanQuestionAnalysis(layer.questionsAnalysis);
+  layer.provenance = {
+    model: ctx.model,
+    generatedAt: new Date().toISOString(),
+  };
+
+  const summaryPath = commitSummaryPath(
+    ctx.summariesDir,
+    item.evidence.timestamp,
+    item.evidence.commitHash,
+  );
+  fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
+  writeRecordJson(summaryPath, {
+    commitHash: item.evidence.commitHash,
+    timestamp: item.evidence.timestamp,
+    sourceEvidence: String(item.evidence.timestamp),
+    model: layer,
+  });
+  console.log("ok");
+}
+
+async function processPendingItem(
+  item: PendingItem,
+  commitIndex: number,
+  commitTotal: number,
+  ctx: SummarizeRunContext,
+): Promise<void> {
+  if (item.kind === "single") {
+    await summarizeSingleCommit(item, commitIndex, commitTotal, ctx);
+    return;
+  }
+
+  await summarizeSplitCommit({
+    commitIndex,
+    commitTotal,
+    baseUrl: ctx.baseUrl,
+    model: ctx.model,
+    system: ctx.system,
+    projectBlock: ctx.projectBlock,
+    evidenceDir: ctx.evidenceDir,
+    summariesDir: ctx.summariesDir,
+    evidence: item.evidence,
+    partCount: item.partCount,
+    tracker: ctx.tracker,
+  });
+}
+
+function logSummarizeFailure(item: PendingItem, err: unknown): void {
+  const message = (err as Error).message;
+  if (item.kind === "single") {
+    console.log(`failed (${message})`);
+  } else {
+    console.log(`  failed (${message})`);
+  }
+}
+
 /**
  * Fills the model layer of every pending commit record by querying Ollama.
  * @param options - Resolved command options.
@@ -516,100 +629,25 @@ export async function summarize(options: SummarizeOptions): Promise<void> {
   const tracker = new TokenUsageTracker(repoPath, options.period);
   tracker.beginStep("summarize");
 
+  const ctx: SummarizeRunContext = {
+    evidenceDir,
+    summariesDir,
+    baseUrl,
+    model,
+    system,
+    projectBlock,
+    tracker,
+  };
+
   let done = 0;
   let failed = 0;
   try {
     for (const [i, item] of work.entries()) {
-      const short = item.evidence.commitHash.slice(0, 8);
-      const commitIndex = i + 1;
-      const commitTotal = work.length;
-
       try {
-        if (item.kind === "single") {
-          process.stdout.write(
-            `[${commitIndex}/${commitTotal}] ${short} ${item.evidence.title.slice(0, 50)} ... `,
-          );
-
-          const evidenceJsonPath = path.join(
-            evidenceDir,
-            String(item.evidence.timestamp),
-            `${item.evidence.commitHash}.json`,
-          );
-          const patchPath = evidenceJsonPath.replace(/\.json$/, ".patch");
-          const patch = fs.existsSync(patchPath) ? fs.readFileSync(patchPath, "utf8") : "";
-
-          if (shouldSkipCommitSummarize(patch)) {
-            const summaryPath = commitSummaryPath(
-              summariesDir,
-              item.evidence.timestamp,
-              item.evidence.commitHash,
-            );
-            fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
-            writeRecordJson(summaryPath, {
-              commitHash: item.evidence.commitHash,
-              timestamp: item.evidence.timestamp,
-              sourceEvidence: String(item.evidence.timestamp),
-              model: emptyCommitModelLayer(),
-            });
-            console.log("skipped (empty patch)");
-            done += 1;
-            continue;
-          }
-
-          const prompt = buildCommitUserPrompt(item.evidence, patch);
-
-          const raw = (await chatJson({
-            baseUrl,
-            model,
-            system,
-            user: prompt,
-            schema: modelJsonSchema(),
-            tracker,
-          })) as ModelLayer;
-
-          const layer = enforceSignalReasons(raw);
-          layer.questionsAnalysis = cleanQuestionAnalysis(layer.questionsAnalysis);
-          layer.provenance = {
-            model,
-            generatedAt: new Date().toISOString(),
-          };
-
-          const summaryPath = commitSummaryPath(
-            summariesDir,
-            item.evidence.timestamp,
-            item.evidence.commitHash,
-          );
-          fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
-          writeRecordJson(summaryPath, {
-            commitHash: item.evidence.commitHash,
-            timestamp: item.evidence.timestamp,
-            sourceEvidence: String(item.evidence.timestamp),
-            model: layer,
-          });
-          console.log("ok");
-        } else {
-          await summarizeSplitCommit({
-            commitIndex,
-            commitTotal,
-            baseUrl,
-            model,
-            system,
-            projectBlock,
-            evidenceDir,
-            summariesDir,
-            evidence: item.evidence,
-            partCount: item.partCount,
-            tracker,
-          });
-        }
-
+        await processPendingItem(item, i + 1, work.length, ctx);
         done += 1;
       } catch (err) {
-        if (item.kind === "single") {
-          console.log(`failed (${(err as Error).message})`);
-        } else {
-          console.log(`  failed (${(err as Error).message})`);
-        }
+        logSummarizeFailure(item, err);
         failed += 1;
       }
     }
