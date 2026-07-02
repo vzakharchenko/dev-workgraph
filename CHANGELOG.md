@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.3] - NEXT RELEASE
 
+### Added
+
+#### Examples
+
+New and extended reconstruction samples under [`examples/`](https://github.com/vzakharchenko/dev-workgraph/tree/main/examples) — see [`examples/README.md`](https://github.com/vzakharchenko/dev-workgraph/blob/main/examples/README.md).
+
+| Example | Role | Files | Notes |
+|---------|------|-------|--------|
+| [forge-sql-orm](https://github.com/forge-sql-orm/forge-sql-orm) | Principal | v1–**v3** | **New** — Drizzle + @forge/sql ORM; deepen on Atlas Camp 2026 talk and two Atlassian blog articles (600K-row EXPLAIN, optimistic locking); **12** cumulative Q&A |
+| [dev-workgraph](https://github.com/vzakharchenko/dev-workgraph) (this repo) | Staff | v1–**v5** | **Extended** — four `deepen` rounds (product motivation → architecture → OSS publish → adoption/security/plugins); **20** cumulative Q&A; dogfooding reference |
+
 ## [1.0.2] - 2026-07-01
 
 Large commits, noise filtering, and long Ollama runs.
@@ -134,7 +145,7 @@ Real reconstructions from dogfooding (MacBook Pro M4 Pro, 48 GB, local Ollama):
 
 - [Forge Secure Notes for Jira](https://github.com/vzakharchenko/dev-workgraph/blob/main/examples/Forge-Secure-Notes-for-Jira/RECONSTRUCTION.Forge-Secure-Notes-for-Jira.v2.md) — Principal, ~300 commits, security-heavy product
 - [keycloak-radius-plugin](https://github.com/vzakharchenko/dev-workgraph/blob/main/examples/keycloak-radius-plugin/RECONSTRUCTION.keycloak-radius-plugin.v2.md) — Staff, open-source IAM / RADIUS
-- [dev-workgraph (this project)](https://github.com/vzakharchenko/dev-workgraph/blob/main/examples/dev-workgraph/RECONSTRUCTION.dev-workgraph.v2.md) — Staff, tooling / DevEx
+- [dev-workgraph (this project)](https://github.com/vzakharchenko/dev-workgraph/blob/main/examples/dev-workgraph/RECONSTRUCTION.dev-workgraph.v5.md) — Staff, tooling / DevEx (v1–v5 deepen chain)
 
 More: [`examples/README.md`](https://github.com/vzakharchenko/dev-workgraph/blob/main/examples/README.md)
 

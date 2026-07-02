@@ -39,7 +39,7 @@ This is **not** a commit counter, activity heatmap, or auto-scored achievement t
 3. **Confirm** — you answer; answers are stored on the finish archive, separate from the prepared narrative.
 4. **Deliver** — `RECONSTRUCTION.<project>.md` (+ optional `.v2.md` after **`deepen`** when you recall more team context, pivots, or review framing).
 
-See real outputs in [`examples/`](./examples/) — e.g. [Forge Secure Notes](examples/Forge-Secure-Notes-for-Jira/RECONSTRUCTION.Forge-Secure-Notes-for-Jira.v2.md) (Principal), [keycloak-radius-plugin](examples/keycloak-radius-plugin/RECONSTRUCTION.keycloak-radius-plugin.v2.md) (Staff, open-source IAM), and [this CLI](examples/dev-workgraph/RECONSTRUCTION.dev-workgraph.v2.md) (Staff).
+See real outputs in [`examples/`](./examples/) — e.g. [Forge Secure Notes](examples/Forge-Secure-Notes-for-Jira/RECONSTRUCTION.Forge-Secure-Notes-for-Jira.v2.md) (Principal), [keycloak-radius-plugin](examples/keycloak-radius-plugin/RECONSTRUCTION.keycloak-radius-plugin.v2.md) (Staff, open-source IAM), and [this CLI](examples/dev-workgraph/RECONSTRUCTION.dev-workgraph.v5.md) (Staff, v1–v5 deepen chain).
 
 ## Quick start
 
