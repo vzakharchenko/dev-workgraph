@@ -62,14 +62,14 @@
   "dependencies": {
     "commander": "^15.0.0",
     "inquirer": "^14.0.2",
-    "undici": "^8.5.0"
+    "undici": "^8.6.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.2",
     "@types/node": "^26.1.0",
     "@vitest/coverage-v8": "^4.1.9",
     "knip": "^6.24.0",
-    "tsx": "^4.22.4",
+    "tsx": "^4.22.5",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"
   }
