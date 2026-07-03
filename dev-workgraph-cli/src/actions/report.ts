@@ -287,6 +287,7 @@ async function mergeFoldModelLayer(
     system: mergeSystem,
     user: buildReportMergePrompt(meta.prev, meta.group),
     schema: reportMergeJsonSchema(),
+    think: false,
     tracker,
   })) as Record<string, unknown>;
   console.log("ok");
@@ -349,6 +350,7 @@ async function growFoldHistory(input: {
       candidate,
     ),
     schema: reportNewHistoryJsonSchema(),
+    think: false,
     tracker,
   })) as { needed?: boolean; text?: string };
 
@@ -394,6 +396,7 @@ async function compactFoldHistory(
     system: compactSystem,
     user: buildReportCompactPrompt([a.text, b.text]),
     schema: reportHistoryJsonSchema(),
+    think: false,
     tracker,
   })) as { history?: unknown };
 
@@ -469,6 +472,7 @@ async function foldGroup(input: {
     system: routineSystem,
     user: buildRoutineCheckPrompt(group),
     schema: routineCheckJsonSchema(),
+    think: false,
     tracker,
   })) as { routine?: boolean };
 

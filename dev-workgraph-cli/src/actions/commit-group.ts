@@ -223,6 +223,7 @@ async function summarizeGroupSession(
     system: ctx.classifySystem,
     user: classifyPrompt,
     schema: groupClassifyJsonSchema(),
+    think: false,
     tracker: ctx.tracker,
   })) as Record<string, unknown>;
 
@@ -245,6 +246,7 @@ async function summarizeGroupSession(
     system: ctx.composeSystem,
     user: composePrompt,
     schema: groupHistoryJsonSchema(),
+    think: false,
     tracker: ctx.tracker,
   })) as { history?: string };
 

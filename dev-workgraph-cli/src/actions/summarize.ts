@@ -186,6 +186,7 @@ async function summarizeOnePart(input: {
     system,
     user: prompt,
     schema: modelJsonSchema(),
+    think: false,
     tracker,
   })) as ModelLayer;
 
@@ -252,6 +253,7 @@ async function finalizeMergedSummary(input: {
       signalReasons: merged.signalReasons,
     }),
     schema: mergeFinalizeReasonsJsonSchema(),
+    think: false,
     tracker,
   })) as { signalReasons: ModelLayer["signalReasons"] };
   const polishedReasons = enforceSignalReasons({
@@ -271,6 +273,7 @@ async function finalizeMergedSummary(input: {
       signalReasons: polishedReasons,
     }),
     schema: mergeFinalizeSummaryJsonSchema(),
+    think: false,
     tracker,
   })) as { summary: string };
   console.log("ok");
@@ -287,6 +290,7 @@ async function finalizeMergedSummary(input: {
       candidateQuestions: merged.questionsAnalysis,
     }),
     schema: mergeFinalizeQuestionsJsonSchema(),
+    think: false,
     tracker,
   })) as { questionsAnalysis: ModelLayer["questionsAnalysis"] };
   const questionsAnalysis = cleanQuestionAnalysis(questionsRaw.questionsAnalysis).slice(0, 4);
@@ -528,6 +532,7 @@ async function summarizeSingleCommit(
     system: ctx.system,
     user: prompt,
     schema: modelJsonSchema(),
+    think: false,
     tracker: ctx.tracker,
   })) as ModelLayer;
 

@@ -15,8 +15,12 @@ New and extended reconstruction samples under [`examples/`](https://github.com/v
 
 | Example | Role | Files | Notes |
 |---------|------|-------|--------|
-| [forge-sql-orm](https://github.com/forge-sql-orm/forge-sql-orm) | Principal | v1–**v3** | **New** — Drizzle + @forge/sql ORM; deepen on Atlas Camp 2026 talk and two Atlassian blog articles (600K-row EXPLAIN, optimistic locking); **12** cumulative Q&A |
+| [forge-sql-orm](https://github.com/forge-sql-orm/forge-sql-orm) | Principal | v1–**v5** | **New** — Drizzle + @forge/sql ORM; deepen chain (Atlas Camp, Atlassian blog, core/extra split, Forge SQL security hardening); **20** cumulative Q&A |
 | [dev-workgraph](https://github.com/vzakharchenko/dev-workgraph) (this repo) | Staff | v1–**v5** | **Extended** — four `deepen` rounds (product motivation → architecture → OSS publish → adoption/security/plugins); **20** cumulative Q&A; dogfooding reference |
+
+### Changed
+
+- **Ollama `think`:** `commitModel` and `reportModel` calls send `think: false`; `narrativeModel` (`init`, `prepare`, `final`, `deepen`) omits `think` so thinking-capable models use Ollama defaults on narrative stages.
 
 ## [1.0.2] - 2026-07-01
 

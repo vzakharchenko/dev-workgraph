@@ -85,6 +85,47 @@ describe("chatJson", () => {
     expect(body.options.num_ctx).toBeUndefined();
   });
 
+  it("omits think by default (narrativeModel stages)", async () => {
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        message: { content: '{"routine": true, "reason": "deps"}' },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await chatJson({
+      baseUrl: "http://127.0.0.1:11434",
+      model: "test",
+      system: "sys",
+      user: "user",
+      schema: routineCheckJsonSchema(),
+    });
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body).not.toHaveProperty("think");
+  });
+
+  it("sends think: false when requested (commitModel / reportModel stages)", async () => {
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        message: { content: '{"routine": true, "reason": "deps"}' },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await chatJson({
+      baseUrl: "http://127.0.0.1:11434",
+      model: "test",
+      system: "sys",
+      user: "user",
+      schema: routineCheckJsonSchema(),
+      think: false,
+    });
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.think).toBe(false);
+  });
+
   it("retries on HTTP failure then succeeds", async () => {
     vi.useFakeTimers();
     const fetchMock = vi

@@ -72,6 +72,8 @@ export async function listModels(baseUrl: string): Promise<string[]> {
  * @param opts.system - System prompt.
  * @param opts.user - User prompt.
  * @param opts.schema - JSON Schema for the `format` parameter.
+ * @param opts.think - When `false`, sends `think: false`. When omitted, the field is not sent
+ *   (Ollama model default — used for `narrativeModel` stages).
  */
 /** Total attempts for a chat call before giving up (HTTP/parse failures are retried). */
 const MAX_ATTEMPTS = 3;
@@ -113,21 +115,25 @@ async function chatJsonOnce(opts: {
   user: string;
   schema: Record<string, unknown>;
   ollamaOptions?: Record<string, unknown>;
+  think?: boolean;
 }): Promise<{ data: unknown; promptTokens: number; completionTokens: number }> {
+  const body: Record<string, unknown> = {
+    model: opts.model,
+    stream: false,
+    format: opts.schema,
+    options: { ...DEFAULT_CHAT_OPTIONS, ...opts.ollamaOptions },
+    messages: [
+      { role: "system", content: opts.system },
+      { role: "user", content: opts.user },
+    ],
+  };
+  if (opts.think !== undefined) {
+    body.think = opts.think;
+  }
   const res = await fetch(`${opts.baseUrl}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: opts.model,
-      stream: false,
-      format: opts.schema,
-      think: false,
-      options: { ...DEFAULT_CHAT_OPTIONS, ...opts.ollamaOptions },
-      messages: [
-        { role: "system", content: opts.system },
-        { role: "user", content: opts.user },
-      ],
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
@@ -161,6 +167,7 @@ export async function chatJson(opts: {
   user: string;
   schema: Record<string, unknown>;
   ollamaOptions?: Record<string, unknown>;
+  think?: boolean;
   maxAttempts?: number;
   tracker?: TokenUsageTracker;
 }): Promise<unknown> {

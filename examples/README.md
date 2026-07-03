@@ -15,7 +15,7 @@ Each file is **CLI output**, not hand-written CV text: Git evidence → local LL
 | *(none)* | First `final` — four prepared questions answered, v1 finish archive |
 | `.v2.md` … `.vN.md` | After one or more **`deepen`** rounds — recalled context + four new Q&A each time; cumulative **Possible questions**, richer IMPACT |
 
-The [dev-workgraph](#dev-workgraph) example includes **v1–v5** (four `deepen` rounds); [forge-sql-orm](#forge-sql-orm) has **v1–v3** — useful to compare how the narrative evolves.
+The [dev-workgraph](#dev-workgraph) and [forge-sql-orm](#forge-sql-orm) examples each include **v1–v5** (four `deepen` rounds) — useful to compare how the narrative evolves.
 
 Files here are **copies for documentation**; your own runs write `RECONSTRUCTION.*.md` to the directory where you invoke the CLI.
 
@@ -50,9 +50,11 @@ TypeScript ORM for Atlassian Forge **@forge/sql** (TiDB) built on Drizzle — cu
 |------|--------|
 | [RECONSTRUCTION.forge-sql-orm.md](forge-sql-orm/RECONSTRUCTION.forge-sql-orm.md) | v1 after `final` |
 | [RECONSTRUCTION.forge-sql-orm.v2.md](forge-sql-orm/RECONSTRUCTION.forge-sql-orm.v2.md) | deepen 1 — Atlas Camp 2026 talk on Forge SQL observability, enterprise OOM patterns, @forge/kvs decomposition |
-| [RECONSTRUCTION.forge-sql-orm.v3.md](forge-sql-orm/RECONSTRUCTION.forge-sql-orm.v3.md) | deepen 2 (**latest**) — two Atlassian blog articles (600K-row EXPLAIN study, optimistic locking); **12** cumulative Q&A |
+| [RECONSTRUCTION.forge-sql-orm.v3.md](forge-sql-orm/RECONSTRUCTION.forge-sql-orm.v3.md) | deepen 2 — two Atlassian blog articles (600K-row EXPLAIN study, optimistic locking) |
+| [RECONSTRUCTION.forge-sql-orm.v4.md](forge-sql-orm/RECONSTRUCTION.forge-sql-orm.v4.md) | deepen 3 — three-package split (`forge-sql-orm` / CLI / `forge-sql-orm-extra`), bundle-size feedback, core vs extra migration path |
+| [RECONSTRUCTION.forge-sql-orm.v5.md](forge-sql-orm/RECONSTRUCTION.forge-sql-orm.v5.md) | deepen 4 (**latest**) — Forge SQL security research (VULN-1917751), `SQL_POLICY_VIOLATION` hardening, ORM 2.2.3 compatibility; **20** cumulative Q&A |
 
-Good reference for an **open-source platform library** — Drizzle integration, multi-tenant SQL performance, AI/Rovo analytics boundaries, Atlassian blog / community validation, and production adoption with Atlassian feedback loop.
+Good reference for an **open-source platform library** — Drizzle integration, modular packages, multi-tenant SQL performance, Atlassian blog / community validation, responsible disclosure, and production adoption with Atlassian feedback loop.
 
 ---
 
