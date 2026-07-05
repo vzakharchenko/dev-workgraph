@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // All LLM-facing prompts live here so the exact wording is easy to find and tune.
-// Two flows: per-commit `summarize` and per-session `commit-group`.
+// Flows: `init`, per-commit `summarize`, `commit-group`, `report`, `prepare`, `final`, `deepen`, evidence path filter.
 
 import { tierOf } from "./grouping.js";
 import type { QuestionAnalyses, QuestionAnalysis } from "./model.js";
@@ -13,68 +13,28 @@ import type {
   ProjectContext,
   ReportRecord,
 } from "./records.js";
+import {
+  cvEmphasisForRole,
+  questionEmphasisForRole,
+  roleDefinitionPromptBlock,
+} from "./role-definitions.js";
 
 export { MAX_HISTORY_ENTRIES } from "./report-provenance.js";
+export { cvEmphasisForRole } from "./role-definitions.js";
 
 // ───────────────────────────── project context (from `init`) ─────────────────
 
-/** Per-role guidance for what `questions` should probe (MVP §0). */
-const ROLE_QUESTION_EMPHASIS: Record<string, string> = {
-  "Principal Developer":
-    "system-wide trade-offs, cross-team boundaries, long-term architectural consequences, org-scale production adoption",
-  "Staff Developer":
-    "design ownership across subsystems, platform direction, integration with adjacent systems",
-  "Senior Developer":
-    "feature/design ownership, customer or product driver, replacing manual processes, mentoring or review scope",
-  "Junior Developer":
-    "assigned vs self-directed work, learning context, scope of autonomy, who reviewed or unblocked",
-};
-
-/** Per-role guidance for CV bullet emphasis (impersonal, seniority-calibrated). */
-const ROLE_CV_EMPHASIS: Record<string, string> = {
-  "Principal Developer":
-    "system boundaries, cross-team architecture, long-term platform direction, org-scale consequences — not line-level implementation unless that is all the evidence shows",
-  "Staff Developer":
-    "design ownership across subsystems, platform/integration direction, technical standards that others build on",
-  "Senior Developer":
-    "end-to-end feature or module ownership, concrete design decisions, product/driver context, mentoring or review scope when stated",
-  "Middle Developer":
-    "delivered features or modules with clear scope, collaboration on design, owned flows or components — no principal/staff-level platform claims",
-  "Junior Developer":
-    "implemented assigned work, contributed under review, bounded autonomy, learning context — honest scope without inflated leadership",
-  "Principal Frontend Developer":
-    "frontend architecture across products, design-system/platform direction, cross-team UI standards, performance and accessibility at scale",
-  "Staff Frontend Developer":
-    "frontend subsystem ownership, design-system or platform direction, integration with backend/API contracts",
-  "Senior Frontend Developer":
-    "feature-level UI ownership, component architecture, UX/product driver context, mentoring or review scope when stated",
-  "Middle Frontend Developer":
-    "shipped UI features or flows with clear scope, component/module ownership, collaboration on design — no staff-level platform claims",
-  "Junior Frontend Developer":
-    "implemented UI tasks under review, contributed to components, bounded autonomy — honest scope without inflated leadership",
-};
-
-/** CV bullet framing for a role; falls back to a generic seniority-safe line. */
-export function cvEmphasisForRole(role: string): string {
-  return (
-    ROLE_CV_EMPHASIS[role] ??
-    "ownership, scope, and technical decisions appropriate to the stated role — no seniority inflation"
-  );
-}
-
 /**
- * Renders the project-context grounding block to prepend to later prompts.
  * Returns "" when `init` has not run (so prompts behave as before).
  * @param ctx - The project context, or null.
  */
 export function projectContextBlock(ctx: ProjectContext | null): string {
   if (!ctx) return "";
   const p = ctx.profile;
-  const emphasis =
-    ROLE_QUESTION_EMPHASIS[ctx.role] ?? "what Git cannot show — ownership, intent, production use";
+  const emphasis = questionEmphasisForRole(ctx.role);
   return [
     "PROJECT CONTEXT (grounding — interpret the work in light of this; NEVER let it inflate impact):",
-    `- Developer role: ${ctx.role}`,
+    roleDefinitionPromptBlock(ctx.role),
     `- Project: ${p.summary}`,
     `- Domains: ${p.domains.join(", ") || "(unknown)"}`,
     `- Apparent stack: ${p.apparentStack.join(", ") || "(unknown)"}`,
@@ -95,8 +55,8 @@ export function withProjectContext(block: string, system: string): string {
 
 // ───────────────────────────── project init (`init`) ─────────────────────────
 
-/** Max README characters sent to the profile session. */
-const MAX_README_CHARS = 12000;
+/** Max README characters sent to the profile session (`init` profile LLM call). */
+export const MAX_README_CHARS = 100_000;
 
 // Session 1: reframe the raw story for the developer's seniority.
 export const STORY_PREPARE_SYSTEM = [
@@ -192,6 +152,34 @@ const ANSWER_CORRECTION_RULE = [
   "- If my answer contradicts the prepared history, the answer wins. Rewrite the narrative instead",
   "  of appending the answer as a separate caveat.",
 ].join("\n");
+
+// ───────────────────────────── evidence path filter (`evidence`) ──────────────
+
+export const PATH_CLASSIFY_SYSTEM = [
+  "You classify file EXTENSIONS and extensionless FILENAMES for a Git evidence export.",
+  'Return JSON { "likelyBinary": string[], "likelyGenerated": string[] }.',
+  "You see extension strings (e.g. `.png`, `.jar`) and extensionless basenames (e.g. `Dockerfile`) —",
+  "no full paths and no file contents.",
+  "Rules:",
+  "- likelyBinary: extensions or names that are almost certainly non-text or opaque binaries",
+  "  (e.g. `.png`, `.jpg`, `.woff`, `.zip`, `.jar`, `.class`, `.so`, `.exe`).",
+  "- likelyGenerated: extensions or names that are almost certainly machine-generated artifacts",
+  "  (e.g. `.min.js`, `.pb.go`, `.g.dart`, compiled bytecode extensions).",
+  "- When uncertain, omit the item — only list signatures you are confident about.",
+  "- Every returned item MUST appear exactly in the input list.",
+  "- Do NOT classify normal authored source extensions (`.ts`, `.java`, `.py`, `.go`, `.rs`, `.md`) as generated.",
+].join("\n");
+
+/**
+ * Builds the user prompt for LLM path classification (extensions / basenames only, no diff).
+ * @param signatures - Unique extensions (`.png`) or extensionless basenames from a split commit.
+ */
+export function buildPathClassifyPrompt(signatures: readonly string[]): string {
+  return [
+    "Classify these file extensions and extensionless filenames:",
+    ...signatures.map((s) => `- ${s}`),
+  ].join("\n");
+}
 
 // ───────────────────────────── per-commit summarize ─────────────────────────────
 

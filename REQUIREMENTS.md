@@ -29,7 +29,7 @@ Git history alone cannot tell us whether work shipped to production, whether it 
 
 The questions are the primary product. Summaries and area context are supporting material.
 
-Every LLM step after `init` receives the **project context** (§0): developer role, prepared project story, and the project profile derived from README + story. Questions are framed according to role.
+Every LLM step after `init` receives the **project context** (§0): developer role (IC competency matrix in `role-definitions.ts`), prepared project story, and the project profile derived from README + story. Questions are framed according to role; summaries stay patch-grounded.
 
 ⸻
 
@@ -41,14 +41,22 @@ Before any export or summarization, the user initializes the repository in dev-w
 
 ### Interactive prompts
 
-1. **Developer role** — which of these best describes the user's role on this project:
+1. **Developer role** — which of these best describes the user's role on **this project** (most senior first; backend and frontend IC ladders):
+
    ```
    Principal Developer
    Staff Developer
    Senior Developer
+   Middle Developer
    Junior Developer
+   Principal Frontend Developer
+   Staff Frontend Developer
+   Senior Frontend Developer
+   Middle Frontend Developer
+   Junior Frontend Developer
    ```
-   The choice is persisted per repository in `~/.workgraph/config.json`. A `--role <name>` flag skips the prompt.
+
+   Each choice is shown as `Role — shortSummary` (one-line impact sphere from the competency matrix). After selection, the CLI prints the **full** role definition to the console (matrix level, level summary, and all four competency dimensions). The choice is persisted per repository in `~/.workgraph/config.json`. A `--role <name>` flag skips the prompt.
 
 2. **Project story** — free-form input (multi-line) covering:
    * what the project is;
@@ -132,11 +140,14 @@ Config holds only the role (and other CLI prefs); the full project context lives
 
 ### Project context in all later LLM calls
 
-Every LLM session in `summarize`, `commit-group`, and `report` must receive a **project context block** prepended to the system or user prompt:
+Every LLM session in `summarize`, `commit-group`, `report`, `prepare`, `final`, and `deepen` must receive a **project context block** prepended to the system prompt (via `withProjectContext`):
 
-* **role** — from config;
+* **role definition** — compact `ROLE DEFINITION` block from `role-definitions.ts` (§0, *Role model*);
+* **role** — the selected role name and question-framing line;
 * **preparedContext** — from `project.json` → `story.preparedContext`;
 * **project profile** — from `project.json` → `profile` (`summary`, domains, stack, themes).
+
+The per-commit **user** prompt (`buildCommitUserPrompt`) contains only commit metadata and the patch — role grounding lives in **system**, not in the diff payload.
 
 The model must use this context to:
 
@@ -146,18 +157,82 @@ The model must use this context to:
 
 If `project.json` is missing when a model step runs, the CLI warns and continues with an empty project context (same as pre-`init` behavior).
 
-### Role-aware questions
+### Role model
 
-Questions must target what Git cannot know, **adjusted for seniority**. Examples:
+Role is **per repository** (and per review period when `project.json` is copied under `periods/<id>/`). The same person may be a Principal Developer on one project and Staff Developer on another; each `project.json` stores one `role` string that calibrates questions and narrative emphasis for that repo only.
+
+#### Source of truth — `role-definitions.ts`
+
+Canonical definitions live in `dev-workgraph-cli/src/lib/role-definitions.ts`. They map each `init` role name to the **Software Developer IC competency matrix** (individual-contributor ladder, not management titles). Every `ROLES` entry must have a definition; startup fails if one is missing.
+
+Each `RoleDefinition` contains:
+
+| Field | Purpose |
+|-------|---------|
+| **`matrixLevel`** | Official matrix name (e.g. `Staff Software Developer`, `Software Developer II (Frontend)`) |
+| **`shortSummary`** | One-line impact sphere for the role picker and compact prompts |
+| **`levelSummary`** | Job-level column blurb from the matrix |
+| **`competencies`** | Four dimensions — **Scope & Impact**, **Execution**, **Collaboration**, **Business Impact** — each a list of competency bullets |
+| **`questionEmphasis`** | What open questions should probe at this seniority (fed into `questionsAnalysis` / `questionsAnalyses`) |
+| **`cvEmphasis`** | How CV bullets and role narrative should be framed when evidence supports it |
+| **`doNotClaim`** | Anti-inflation guard — achievements this seniority must **not** be attributed unless confirmed in human answers |
+
+Backend roles (`Junior` … `Principal Developer`) and frontend roles (`* Frontend Developer`) share the same seniority ladder; frontend definitions emphasize UI surfaces, component architecture, design-system/platform direction, and API/UX integration instead of generic backend scope.
+
+#### Where role appears
+
+| Surface | What the developer sees / what the model gets |
+|---------|------------------------------------------------|
+| **`init` picker** | `roleChoiceLabel` → `Role — shortSummary` |
+| **`init` console** | `formatRoleDefinitionForConsole` → full competency text (all four dimensions) |
+| **LLM system prompts** | `roleDefinitionPromptBlock` inside `projectContextBlock` — compact block only (no full bullet lists on every commit, to save tokens) |
+| **CV / narrative stages** | `cvEmphasisForRole`, `questionEmphasisForRole`; human-answer correction rules still override Git-based reconstructions (§10) |
+
+Compact prompt block shape (illustrative):
+
+```
+ROLE DEFINITION (Staff Software Developer):
+Often the most senior developer on a development team. Their influence extends beyond the team to the entire department and product line.
+Impact sphere: Product-line tech lead; department + triad influence
+Open questions should probe: design ownership across subsystems, platform direction, integration with adjacent systems
+Narrative/CV emphasis: design ownership across subsystems, platform/integration direction, technical standards that others build on
+Do NOT claim unless confirmed in human answers: Do not claim company-wide strategic leadership...
+```
+
+Followed by project profile, prepared story, and:
+
+```
+- Frame questions for a Staff Developer: design ownership across subsystems, ... Avoid questions the background already answers.
+```
+
+Unknown role strings (legacy or typo) fall back to generic seniority-safe emphasis lines; the prompt block degrades to `Developer role: <name>`.
+
+#### What role calibrates — and what it must not do
+
+| Calibrated by role | Not calibrated by role |
+|--------------------|-------------------------|
+| `questionsAnalysis` at commit level; `questionsAnalyses` at group/report/prepare/deepen | `summary` text — must describe **what the patch changed**, not importance |
+| Question ranking and reframing in report merge / prepare | Signal **levels** (`technical` / `architecture` / `security`) — grounded in the patch only |
+| `final` / `deepen` role narrative and CV bullets (when human answers exist) | Inventing production usage, ownership, or customer impact |
+
+The system must **never** use role to inflate impact or imply promotion-worthy achievements. Role shapes *which gaps to ask about* and *how to phrase confirmed work*, not *how impressive the diff sounds*.
+
+#### Question emphasis by role (abbreviated)
 
 | Role | Question emphasis |
 |------|-------------------|
-| **Principal Developer** | system-wide trade-offs, cross-team boundaries, long-term architectural consequences, production adoption at org scale |
+| **Principal Developer** | system-wide trade-offs, cross-team boundaries, long-term architectural consequences, org-scale production adoption |
 | **Staff Developer** | design ownership across subsystems, platform direction, integration with adjacent systems |
 | **Senior Developer** | feature/design ownership, customer or product driver, replacing manual processes, mentoring or review scope |
+| **Middle Developer** | feature/module ownership, design input vs execution-only, production support scope, collaboration across teams |
 | **Junior Developer** | assigned vs self-directed work, learning context, scope of autonomy, who reviewed or unblocked |
+| **Principal Frontend Developer** | cross-product frontend architecture, design-system/platform standards, org-scale UX and performance adoption |
+| **Staff Frontend Developer** | frontend subsystem ownership, design-system or platform direction, integration with backend/API contracts |
+| **Senior Frontend Developer** | feature-level UI ownership, component architecture, UX/product driver context, mentoring or review scope |
+| **Middle Frontend Developer** | shipped UI features/flows, component/module ownership, accessibility responsibility, API integration scope |
+| **Junior Frontend Developer** | assigned vs self-directed UI work, design handoff vs implementation-only, who reviewed or unblocked |
 
-The system must **never** use role to inflate impact or imply promotion-worthy achievements. Role shapes *which gaps to ask about*, not *how impressive the work sounds*.
+Full competency bullets and `doNotClaim` text for every role are in `role-definitions.ts`.
 
 ⸻
 

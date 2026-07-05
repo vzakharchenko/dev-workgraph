@@ -45,7 +45,7 @@ describe("pathsFromDiffGitLine", () => {
 
 describe("truncatePatch", () => {
   it("appends a marker when truncating", () => {
-    const out = truncatePatch("x".repeat(30_000), MAX_PATCH_CHARS);
+    const out = truncatePatch("x".repeat(MAX_PATCH_CHARS + 1), MAX_PATCH_CHARS);
     expect(out.length).toBeLessThanOrEqual(MAX_PATCH_CHARS);
     expect(out).toContain(PATCH_TRUNCATED_MARKER);
   });
@@ -99,7 +99,7 @@ describe("packPatchIntoParts", () => {
     expect(parts[0]!.patchTruncated).toBe(false);
   });
 
-  it("packs multiple file hunks into ~24k parts", () => {
+  it("packs multiple file hunks into bounded parts", () => {
     const big = "+\n".repeat(12_000);
     const patch = `${HEADER}\n${fileHunk("src/a.ts", big)}${fileHunk("src/b.ts", big)}`;
     const parts = packPatchIntoParts(patch);

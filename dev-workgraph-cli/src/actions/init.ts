@@ -18,6 +18,7 @@ import {
 } from "../lib/prompts.js";
 import { writeRecordJson } from "../lib/record-io.js";
 import type { ProjectContext, ProjectProfile } from "../lib/records.js";
+import { formatRoleDefinitionForConsole, roleChoiceLabel } from "../lib/role-definitions.js";
 import { resolveModel } from "../lib/select.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
@@ -59,7 +60,12 @@ export async function resolveRole(flagRole?: string): Promise<string> {
     return flagRole;
   }
   const { role } = await inquirer.prompt<{ role: string }>([
-    { type: "select", name: "role", message: "Your role on this project:", choices: [...ROLES] },
+    {
+      type: "select",
+      name: "role",
+      message: "Your role on this project:",
+      choices: ROLES.map((r) => ({ name: roleChoiceLabel(r), value: r })),
+    },
   ]);
   return role;
 }
@@ -121,6 +127,7 @@ export async function init(options: InitOptions): Promise<void> {
   }
 
   const role = await resolveRole(options.role);
+  console.log(`\n${formatRoleDefinitionForConsole(role)}\n`);
   setRepoConfig(repoPath, { role });
   const story = await resolveStory(options.story);
 

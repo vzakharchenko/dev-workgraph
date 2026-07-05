@@ -233,11 +233,13 @@ package "**Ollama output**" as OUT #FFF3E0 {
 }
 
 note right of CTX
-  Developer role
+  **roleDefinitionPromptBlock** (from role-definitions.ts):
+  matrix level, impact sphere,
+  question + CV emphasis, doNotClaim
   profile.summary, domains, stack, themes
   story.preparedContext
   Frame questions for role
-  Avoid questions background already answers
+  Role in **system** only — not in user patch
   NEVER inflate impact because of context
 end note
 
@@ -278,26 +280,38 @@ skinparam shadowing false
 
 title How **init** shapes the **model layer** (not deterministic)
 
-map "Role -> question emphasis (ROLE_QUESTION_EMPHASIS)" as ROLES {
+rectangle "**role-definitions.ts**\n(questionEmphasisForRole)" as RD #FFF8E1
+
+map "Per-repo role → question emphasis" as ROLES {
   Principal Developer => system-wide trade-offs, cross-team boundaries,\nlong-term architectural consequences, org-scale production adoption
   Staff Developer => design ownership across subsystems,\nplatform direction, integration with adjacent systems
   Senior Developer => feature/design ownership, customer or product driver,\nreplacing manual processes, mentoring or review scope
+  Middle Developer => feature/module ownership, design input vs execution-only,\nproduction support scope, collaboration across teams
   Junior Developer => assigned vs self-directed work, learning context,\nscope of autonomy, who reviewed or unblocked
+  Principal Frontend Developer => cross-product frontend architecture,\ndesign-system/platform standards, org-scale UX adoption
+  Staff Frontend Developer => frontend subsystem ownership,\ndesign-system/platform direction, API contract integration
+  Senior Frontend Developer => feature-level UI ownership, component architecture,\nUX/product driver context, mentoring or review scope
+  Middle Frontend Developer => shipped UI features/flows, component ownership,\naccessibility responsibility, API integration scope
+  Junior Frontend Developer => assigned vs self-directed UI work,\ndesign handoff vs implementation-only, who reviewed or unblocked
 }
 
 rectangle "init → project.json" as PJ #FFF8E1
-rectangle "Influences via system prompt" as INF #FFFDE7 {
-  card "**summary** — interpret patch\nknowing what project is" as S
-  card "**questionsAnalysis[]** — role-aware gaps\n(skip story/README facts)" as Q
-  card "**NOT** used to inflate signals\nor claim impact" as X
+rectangle "Influences via **system** prompt" as INF #FFFDE7 {
+  card "**summary** — patch-grounded;\nproject context for interpretation only" as S
+  card "**questionsAnalysis[]** — role-aware gaps\n(roleDefinitionPromptBlock + emphasis)" as Q
+  card "**signals** — patch only;\nNOT role-calibrated" as SIG
+  card "**NOT** used to inflate impact\n(doNotClaim guard)" as X
 }
 
 PJ --> INF
+RD ..> ROLES
 ROLES ..> Q
 
 note bottom
   Without init: warn + summarize with empty context block.
-  Role shapes **which gaps to ask about**, not how impressive work sounds.
+  Full competency text at init (console only);
+  LLM gets compact ROLE DEFINITION block.
+  Role shapes **which gaps to ask about**, not signal levels.
 end note
 
 @enduml

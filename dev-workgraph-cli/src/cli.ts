@@ -137,19 +137,39 @@ program
   .argument("[repo]", "Path to the Git repository", ".")
   .option("--email <email>", "Override saved author selection (repeatable)", collect, [])
   .option("--period <id>", "Restrict to a defined review period (scopes output too)")
-  .action(async (repo: string, opts: { email: string[]; period?: string }) => {
-    const options: EvidenceOptions = {
-      repo,
-      email: opts.email,
-      period: opts.period,
-    };
-    try {
-      await evidence(options);
-    } catch (err) {
-      console.error(`✖ ${(err as Error).message}`);
-      process.exitCode = 1;
-    }
-  });
+  .option("--url <url>", "Ollama base URL when path filter runs on large split commits")
+  .option(
+    "--model <name>",
+    "Ollama model for path filter (default: narrativeModel → reportModel → commitModel)",
+  )
+  .option("--no-path-filter", "Disable LLM path filter for split commits with more than 15 parts")
+  .action(
+    async (
+      repo: string,
+      opts: {
+        email: string[];
+        period?: string;
+        url?: string;
+        model?: string;
+        noPathFilter?: boolean;
+      },
+    ) => {
+      const options: EvidenceOptions = {
+        repo,
+        email: opts.email,
+        period: opts.period,
+        url: opts.url,
+        model: opts.model,
+        noPathFilter: opts.noPathFilter,
+      };
+      try {
+        await evidence(options);
+      } catch (err) {
+        console.error(`✖ ${(err as Error).message}`);
+        process.exitCode = 1;
+      }
+    },
+  );
 
 // ✅ Command: add the model interpretation layer via a local Ollama model
 program
