@@ -5,6 +5,7 @@ import {
   GROUP_COMPOSE_SYSTEM,
   MAX_CONTEXT_BULLETS,
   MAX_HISTORY_ENTRIES,
+  MAX_README_CHARS,
   PREPARE_HISTORY_SYSTEM,
   PREPARE_QUESTIONS_SYSTEM,
   PREPARE_REASONS_SYSTEM,
@@ -29,6 +30,7 @@ import {
   buildPrepareQuestionsPrompt,
   buildPrepareReasonsPrompt,
   buildPrepareTechPrompt,
+  buildPathClassifyPrompt,
   buildProjectProfilePrompt,
   buildReportCompactPrompt,
   buildReportMergePrompt,
@@ -63,9 +65,11 @@ describe("projectContextBlock", () => {
     expect(projectContextBlock(null)).toBe("");
   });
 
-  it("includes role, profile, and story grounding", () => {
+  it("includes role definition and profile grounding", () => {
     const block = projectContextBlock(sampleContext());
     expect(block).toContain("Senior Developer");
+    expect(block).toContain("ROLE DEFINITION");
+    expect(block).toContain("Senior Software Developer");
     expect(block).toContain("Payments platform");
     expect(block).toContain("Led backend migration.");
   });
@@ -110,8 +114,20 @@ describe("init prompt builders", () => {
   });
 
   it("buildProjectProfilePrompt truncates very long README text", () => {
-    const prompt = buildProjectProfilePrompt("Senior Developer", "prepared", "x".repeat(20_000));
+    const prompt = buildProjectProfilePrompt(
+      "Senior Developer",
+      "prepared",
+      "x".repeat(MAX_README_CHARS + 1),
+    );
     expect(prompt).toContain("[...truncated...]");
+  });
+
+  it("buildPathClassifyPrompt lists extensions and extensionless basenames", () => {
+    const prompt = buildPathClassifyPrompt([".ts", ".bin", "Dockerfile"]);
+    expect(prompt).toContain("Classify these file extensions and extensionless filenames:");
+    expect(prompt).toContain("- .ts");
+    expect(prompt).toContain("- .bin");
+    expect(prompt).toContain("- Dockerfile");
   });
 });
 

@@ -62,7 +62,8 @@ describe("evidence", () => {
   });
 
   it("splits oversized commits into part files without a monolithic patch", async () => {
-    const body = `+${"x".repeat(12_000)}\n`;
+    const lineChars = Math.ceil((MAX_PATCH_CHARS + 1_000) / 2);
+    const body = `+${"x".repeat(lineChars)}\n`;
     const patch = [
       "commit abc",
       "Author: Dev <dev@example.com>",

@@ -18,8 +18,21 @@ New and extended reconstruction samples under [`examples/`](https://github.com/v
 | [forge-sql-orm](https://github.com/forge-sql-orm/forge-sql-orm) | Principal | v1–**v5** | **New** — Drizzle + @forge/sql ORM; deepen chain (Atlas Camp, Atlassian blog, core/extra split, Forge SQL security hardening); **20** cumulative Q&A |
 | [dev-workgraph](https://github.com/vzakharchenko/dev-workgraph) (this repo) | Staff | v1–**v5** | **Extended** — four `deepen` rounds (product motivation → architecture → OSS publish → adoption/security/plugins); **20** cumulative Q&A; dogfooding reference |
 
+#### Role definitions (IC competency matrix)
+
+Canonical role grounding for all ten `init` roles (backend and frontend ladders) in `role-definitions.ts`, mapped from the **Software Developer** IC matrix (Scope & Impact, Execution, Collaboration, Business Impact).
+
+| Surface | Behavior |
+|---------|----------|
+| **`init`** | Role picker shows `Role — shortSummary`; after selection, the full competency text is printed to the console |
+| **LLM prompts** | `projectContextBlock` injects a compact `ROLE DEFINITION` block (matrix level, impact sphere, question/CV emphasis, `doNotClaim` anti-inflation guard) into `summarize`, `prepare`, `final`, `deepen`, `commit-group`, and `report` |
+| **Per-repo** | Role is scoped to `project.json` — the same person can use different seniority framing on different repositories |
+
+Role shapes **which gaps to ask about** (`questionsAnalysis`, open questions), not how impressive the narrative sounds.
+
 ### Changed
 
+- **Role-aware prompts:** inline per-role emphasis maps in `prompts.ts` replaced by `role-definitions.ts`; `cvEmphasisForRole` re-exported from there for CV bullet builders.
 - **Ollama `think`:** `commitModel` and `reportModel` calls send `think: false`; `narrativeModel` (`init`, `prepare`, `final`, `deepen`) omits `think` so thinking-capable models use Ollama defaults on narrative stages.
 
 ## [1.0.2] - 2026-07-01

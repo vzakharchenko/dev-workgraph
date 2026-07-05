@@ -57,7 +57,7 @@ end note
 note as NCTX
   **Project context block** (from init → project.json)
   injected into every LLM call after init:
-  • role
+  • ROLE DEFINITION (role-definitions.ts)
   • story.preparedContext
   • profile (summary, domains, apparentStack, keyThemes)
   Missing project.json → CLI warns, continues with empty context
@@ -248,13 +248,14 @@ else (no — full init)
 endif
 
 partition "Interactive inputs (H)" {
-  :**Developer role** — select or --role;
+  :**Developer role** — select or --role\n(picker: `Role — shortSummary`);
   note right
-    Principal Developer
-    Staff Developer
-    Senior Developer
-    Junior Developer
+    10 IC roles (backend + frontend ladders):
+    Principal / Staff / Senior / Middle / Junior Developer
+    Principal / Staff / Senior / Middle / Junior Frontend Developer
+    Source: role-definitions.ts (competency matrix)
   end note
+  :Print **full competency text** to console\n(formatRoleDefinitionForConsole);
   :Persist role → config.json;
 
   :**Project story** — editor or --story;
@@ -340,7 +341,8 @@ else period && repo-level project.json exists
   CLI -> PJ : copy repo-level → periods/<id>/project.json
   CLI --> DEV : inherited (no LLM)
 else full init
-  DEV -> CLI : role (prompt or --role)
+  DEV -> CLI : role (prompt: Role — shortSummary,\nor --role)
+  CLI --> DEV : print full competency matrix\n(Scope & Impact, Execution, …)
   CLI -> CFG : persist role
   DEV -> CLI : project story (editor or --story)
   CLI -> REPO : read README.md (optional)
@@ -418,8 +420,9 @@ package "Sources" {
   [project.json\nprofile] as PROF
 }
 
-package "Project context block\n(prepended to prompts)" as BLOCK {
-  component "Role" as R
+package "Project context block\n(projectContextBlock → withProjectContext)" as BLOCK {
+  component "**ROLE DEFINITION**\n(roleDefinitionPromptBlock)\nmatrix level, impact sphere,\nquestion + CV emphasis, doNotClaim" as RDEF
+  component "Frame questions for role\n(questionEmphasisForRole)" as RFRAME
   component "Prepared story context" as PS
   component "Profile summary" as SUM
   component "Domains" as DOM
@@ -427,7 +430,8 @@ package "Project context block\n(prepended to prompts)" as BLOCK {
   component "Key themes" as THM
 }
 
-ROLE --> R
+ROLE --> RDEF
+ROLE --> RFRAME
 STORY --> PS
 PROF --> SUM
 PROF --> DOM
@@ -440,6 +444,7 @@ package "Consumed by (M:*)" {
   [report\nfold merge] as REP
   [prepare] as PRE
   [final\nIMPACT + Role Narrative] as FIN
+  [deepen] as DEP
 }
 
 BLOCK --> SUMM
@@ -447,13 +452,15 @@ BLOCK --> CG
 BLOCK --> REP
 BLOCK --> PRE
 BLOCK --> FIN
+BLOCK --> DEP
 
 note bottom of BLOCK
+  Built from **role-definitions.ts** + project.json.
   **Purpose:**
   • interpret patches in light of what the project is
   • avoid questions README/story already answer
-  • frame **questions** by seniority (§8)
-  **Never** use role to inflate impact
+  • frame **questions** by seniority (§0 Role model)
+  **Never** use role to inflate impact or summary/signals
 end note
 
 note bottom of SUMM
@@ -469,20 +476,30 @@ end note
 !theme plain
 skinparam shadowing false
 
-title Role-aware **questions** — how init role shapes later outputs (§0, §8)
+title Role-aware **questions** — role-definitions.ts (§0 Role model)
 
-map "Question emphasis by role" as ROLEMAP {
-  Principal Developer => system-wide trade-offs,\ncross-team boundaries,\nlong-term architectural consequences,\nproduction adoption at org scale
+map "questionEmphasisForRole" as ROLEMAP {
+  Principal Developer => system-wide trade-offs,\ncross-team boundaries,\nlong-term architectural consequences,\norg-scale production adoption
   Staff Developer => design ownership across subsystems,\nplatform direction,\nintegration with adjacent systems
   Senior Developer => feature/design ownership,\ncustomer or product driver,\nreplacing manual processes,\nmentoring or review scope
+  Middle Developer => feature/module ownership,\ndesign input vs execution-only,\nproduction support scope,\ncollaboration across teams
   Junior Developer => assigned vs self-directed work,\nlearning context, scope of autonomy,\nwho reviewed or unblocked
+  Principal Frontend Developer => cross-product frontend architecture,\ndesign-system/platform standards,\norg-scale UX and performance adoption
+  Staff Frontend Developer => frontend subsystem ownership,\ndesign-system or platform direction,\nintegration with backend/API contracts
+  Senior Frontend Developer => feature-level UI ownership,\ncomponent architecture,\nUX/product driver context,\nmentoring or review scope
+  Middle Frontend Developer => shipped UI features/flows,\ncomponent/module ownership,\naccessibility responsibility,\nAPI integration scope
+  Junior Frontend Developer => assigned vs self-directed UI work,\ndesign handoff vs implementation-only,\nwho reviewed or unblocked
 }
 
 note bottom of ROLEMAP
-  Questions target what **Git cannot know**:
-  ownership, intent, production usage, customer driver, …
-  Role shapes **which gaps to ask about**,
+  Canonical source: **role-definitions.ts**
+  (IC competency matrix — Scope & Impact, Execution,
+  Collaboration, Business Impact).
+  Injected via **roleDefinitionPromptBlock** in project context.
+  Questions target what **Git cannot know**;
+  role shapes **which gaps to ask about**,
   not how impressive the work sounds.
+  **doNotClaim** guards against seniority inflation.
 end note
 
 @enduml
