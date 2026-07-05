@@ -17,6 +17,7 @@ New and extended reconstruction samples under [`examples/`](https://github.com/v
 |---------|------|-------|--------|
 | [forge-sql-orm](https://github.com/forge-sql-orm/forge-sql-orm) | Principal | v1–**v5** | **New** — Drizzle + @forge/sql ORM; deepen chain (Atlas Camp, Atlassian blog, core/extra split, Forge SQL security hardening); **20** cumulative Q&A |
 | [dev-workgraph](https://github.com/vzakharchenko/dev-workgraph) (this repo) | Staff | v1–**v5** | **Extended** — four `deepen` rounds (product motivation → architecture → OSS publish → adoption/security/plugins); **20** cumulative Q&A; dogfooding reference |
+| [remote-ctrl-gsm](https://github.com/vzakharchenko/remote-ctrl-gsm) | Staff | v1 | **New** — Outlander PHEV remote control; Smali APK mod, VPN/Docker/MikroTik, SmartThings; large smali-heavy commits |
 
 #### Role definitions (IC competency matrix)
 

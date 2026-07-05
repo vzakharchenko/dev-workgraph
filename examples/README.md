@@ -93,6 +93,22 @@ Good reference for a **tooling / DevEx repo**, **dogfooding** the pipeline on it
 
 ---
 
+## [remote-ctrl-gsm](remote-ctrl-gsm/)
+
+**Repository:** [github.com/vzakharchenko/remote-ctrl-gsm](https://github.com/vzakharchenko/remote-ctrl-gsm) · **Role:** Staff Developer
+
+Personal open-source project for remote climate and vehicle control on a Mitsubishi Outlander PHEV — proprietary binary protocol reverse engineering, **Smali** APK patching, Java crypto utilities, Docker VPN (PPTP / L2TP/IPsec), MikroTik automation, and SmartThings integration.
+
+| File | Notes |
+|------|--------|
+| [RECONSTRUCTION.remote-ctrl-gsm.md](remote-ctrl-gsm/RECONSTRUCTION.remote-ctrl-gsm.md) | v1 after `final` — APK mod + networking stack + SmartThings; honest scope (personal car, not a generic IoT platform) |
+
+**Scale:** ~**190 commits**; large APK-decompile commits with **thousands of `.smali` files** — a stress test for evidence export, path filter, and oversized-split summarize caps.
+
+Good reference for **reverse-engineering / Android modding repos** — Smali-heavy diffs, mixed Java + infrastructure layers, and Q&A that separates authored design from decompiler output.
+
+---
+
 ## How to reproduce
 
 **Prerequisites:** Node.js 20+, Git, [Ollama](https://ollama.com).
