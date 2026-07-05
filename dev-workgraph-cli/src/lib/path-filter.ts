@@ -5,6 +5,7 @@ import { pathClassificationJsonSchema } from "./model.js";
 import { chatJson } from "./ollama.js";
 import { listPatchFilePaths } from "./patch-split.js";
 import { buildPathClassifyPrompt, PATH_CLASSIFY_SYSTEM } from "./prompts.js";
+import { compareLocale } from "./sort.js";
 
 /** When a split commit exceeds this many parts, run LLM path classification on evidence export. */
 export const MAX_SPLIT_PARTS_BEFORE_PATH_FILTER = 15;
@@ -23,7 +24,7 @@ export interface PathClassification {
  * there is no extension (`Dockerfile`, `.gitignore`).
  */
 export function pathSignature(repoPath: string): string {
-  const normalized = repoPath.replace(/\\/g, "/");
+  const normalized = repoPath.replaceAll("\\", "/");
   const slash = normalized.lastIndexOf("/");
   const base = slash >= 0 ? normalized.slice(slash + 1) : normalized;
   const dot = base.lastIndexOf(".");
@@ -80,7 +81,7 @@ export async function classifyPathsByFilename(input: {
   }
 
   const pathsBySignature = indexPathsBySignature(input.paths);
-  const signatures = [...pathsBySignature.keys()].sort();
+  const signatures = [...pathsBySignature.keys()].sort(compareLocale);
   const allowedSignatures = new Set(signatures);
 
   const likelyBinarySignatures: string[] = [];

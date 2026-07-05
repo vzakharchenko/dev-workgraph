@@ -57,6 +57,34 @@ export interface EvidenceOptions {
   noPathFilter?: boolean;
 }
 
+function resolveEvidenceEmails(repoPath: string, emailOverride?: string[]): string[] | undefined {
+  if (emailOverride && emailOverride.length > 0) {
+    return emailOverride.map((e) => e.toLowerCase());
+  }
+  return getRepoConfig(repoPath)?.selectedAuthors;
+}
+
+function noCommitsMessage(period?: string): string {
+  return period
+    ? `No commits found for the selected authors in period "${period}".`
+    : "No commits found for the selected authors.";
+}
+
+function extractionBanner(
+  commitCount: number,
+  emails: string[],
+  period: string | undefined,
+  outDir: string,
+): string {
+  const periodSuffix = period ? ` in period "${period}"` : "";
+  return `Extracting evidence for ${commitCount} commit(s) by ${emails.join(", ")}${periodSuffix} → ${outDir}`;
+}
+
+function exceedsPathFilterThreshold(repoPath: string, commitHash: string): boolean {
+  const patch = filterPatchNoise(getPatch(repoPath, commitHash), isNoise);
+  return packPatchIntoParts(patch).length > MAX_SPLIT_PARTS_BEFORE_PATH_FILTER;
+}
+
 interface PathFilterLlm {
   baseUrl: string;
   model: string;
@@ -454,11 +482,7 @@ async function extractOne(
  */
 export async function evidence(options: EvidenceOptions): Promise<void> {
   const repoPath = resolveRepo(options.repo);
-
-  const emails =
-    options.email && options.email.length > 0
-      ? options.email.map((e) => e.toLowerCase())
-      : getRepoConfig(repoPath)?.selectedAuthors;
+  const emails = resolveEvidenceEmails(repoPath, options.email);
 
   if (!emails || emails.length === 0) {
     console.error("✖ No authors selected. Run `dev-workgraph authors` first, or pass --email.");
@@ -469,32 +493,21 @@ export async function evidence(options: EvidenceOptions): Promise<void> {
   const range = options.period ? resolvePeriodRange(repoPath, options.period) : undefined;
   const commits = getCommits(repoPath, emails, range);
   if (commits.length === 0) {
-    console.log(
-      options.period
-        ? `No commits found for the selected authors in period "${options.period}".`
-        : "No commits found for the selected authors.",
-    );
+    console.log(noCommitsMessage(options.period));
     return;
   }
 
   const outDir = repoCommitsDir(repoPath, options.period);
-  console.log(
-    `Extracting evidence for ${commits.length} commit(s) by ${emails.join(", ")}${
-      options.period ? ` in period "${options.period}"` : ""
-    } → ${outDir}`,
-  );
+  console.log(extractionBanner(commits.length, emails, options.period, outDir));
 
   let extracted = 0;
   let skipped = 0;
   let pathFilterLlm: PathFilterLlm | undefined;
 
   for (const commit of commits) {
-    const preSplit =
-      !options.noPathFilter &&
-      packPatchIntoParts(filterPatchNoise(getPatch(repoPath, commit.hash), isNoise)).length >
-        MAX_SPLIT_PARTS_BEFORE_PATH_FILTER;
+    const preSplit = !options.noPathFilter && exceedsPathFilterThreshold(repoPath, commit.hash);
 
-    if (preSplit && !pathFilterLlm && !options.noPathFilter) {
+    if (preSplit && !pathFilterLlm) {
       pathFilterLlm = (await resolvePathFilterLlm(options, undefined)) ?? undefined;
     }
 
