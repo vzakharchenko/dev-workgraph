@@ -242,7 +242,6 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
     tracker,
   };
 
-  const covered = new Set<string>();
   let summarized = 0;
   let skipped = 0;
   let failed = 0;
@@ -265,7 +264,6 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
       try {
         const summarizedRecord = await summarizeGroupSession(record, members, summarizeCtx);
         writeRecordJson(file, summarizedRecord);
-        for (const c of members) covered.add(c.commitHash);
         console.log("ok");
         summarized += 1;
       } catch (err) {
