@@ -64,11 +64,14 @@ vi.mock("../../../src/lib/lmstudio-session.js", () => ({
   withProviderStep: (...args: unknown[]) => withProviderStepMock(...args),
 }));
 
-vi.mock("../../../src/lib/ollama.js", () => ({
-  providerLabel: vi.fn((id: string) => id),
-  discoverLlmBackends: (...args: unknown[]) => discoverLlmBackendsMock(...args),
-  noLlmBackendsError: () => new Error(""),
-}));
+vi.mock("../../../src/lib/ollama.js", async () => {
+  const { NoLlmBackendsError } = await import("../../../src/lib/llm/install-help.js");
+  return {
+    providerLabel: vi.fn((id: string) => id),
+    discoverLlmBackends: (...args: unknown[]) => discoverLlmBackendsMock(...args),
+    noLlmBackendsError: () => new NoLlmBackendsError(),
+  };
+});
 
 vi.mock("../../../src/lib/select.js", () => ({
   resolveLlmSlot: vi.fn(async (slot: string) => ({

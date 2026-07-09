@@ -13,8 +13,16 @@ export function printNoLlmBackendsHelp(): void {
   console.log(`\nOr pass ${flagHints} and --model explicitly.`);
 }
 
-/** Prints help and returns an error with no message (CLI skips the ✖ line). */
+/** Thrown when no LLM backend is reachable; install help is already printed. */
+export class NoLlmBackendsError extends Error {
+  constructor() {
+    super("No LLM backend is reachable with models loaded");
+    this.name = "NoLlmBackendsError";
+  }
+}
+
+/** Prints help and throws {@link NoLlmBackendsError} (CLI omits the duplicate ✖ line). */
 export function noLlmBackendsError(): Error {
   printNoLlmBackendsHelp();
-  return new Error("");
+  return new NoLlmBackendsError();
 }

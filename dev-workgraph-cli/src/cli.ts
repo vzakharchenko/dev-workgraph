@@ -17,6 +17,7 @@ import { type ReportOptions, report } from "./actions/report.js";
 import { type RunOptions, run } from "./actions/run.js";
 import { type SummarizeOptions, summarize } from "./actions/summarize.js";
 import { pickLlmCommandOptions, registerLlmProviderOptions } from "./lib/llm/cli-options.js";
+import { NoLlmBackendsError } from "./lib/llm/install-help.js";
 
 /**
  * Collects a repeatable CLI option into an array.
@@ -28,6 +29,10 @@ function collect(value: string, previous: string[]): string[] {
 }
 
 function reportActionError(err: unknown): void {
+  if (err instanceof NoLlmBackendsError) {
+    process.exitCode = 1;
+    return;
+  }
   const message = err instanceof Error ? err.message : String(err);
   if (message) console.error(`✖ ${message}`);
   process.exitCode = 1;

@@ -83,6 +83,13 @@ export interface WorkgraphConfig {
   ollama?: LlmConfig;
 }
 
+/** Raw JSON on disk may still use the legacy `ollama` key (merged into `llm` on load). */
+interface WorkgraphConfigDisk {
+  repos?: Record<string, RepoConfig>;
+  llm?: LlmConfig;
+  ollama?: LlmConfig;
+}
+
 const EMPTY_CONFIG: WorkgraphConfig = { repos: {} };
 
 /**
@@ -221,7 +228,7 @@ export function loadConfig(): WorkgraphConfig {
   const file = configPath();
   if (!fs.existsSync(file)) return structuredClone(EMPTY_CONFIG);
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as WorkgraphConfig;
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as WorkgraphConfigDisk;
     const llm = parsed.llm ?? parsed.ollama;
     return { repos: parsed.repos ?? {}, llm };
   } catch {
@@ -245,9 +252,7 @@ function saveConfig(config: WorkgraphConfig): void {
  */
 export function setLlmConfig(llm: LlmConfig): void {
   const config = loadConfig();
-  config.llm = { ...config.llm, ...llm };
-  delete config.ollama;
-  saveConfig(config);
+  saveConfig({ repos: config.repos, llm: { ...config.llm, ...llm } });
 }
 
 /**

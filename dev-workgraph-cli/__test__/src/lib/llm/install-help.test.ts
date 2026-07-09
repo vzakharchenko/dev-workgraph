@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { noLlmBackendsError, printNoLlmBackendsHelp } from "../../../../src/lib/llm/install-help.js";
+import { NoLlmBackendsError, noLlmBackendsError, printNoLlmBackendsHelp } from "../../../../src/lib/llm/install-help.js";
 
 describe("install-help", () => {
   it("prints provider install instructions and flag hints", () => {
@@ -13,10 +13,11 @@ describe("install-help", () => {
     expect(output).toContain("--lmstudio-url");
   });
 
-  it("noLlmBackendsError prints help and returns an empty error", () => {
+  it("noLlmBackendsError prints help and returns NoLlmBackendsError", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const err = noLlmBackendsError();
-    expect(err.message).toBe("");
+    expect(err).toBeInstanceOf(NoLlmBackendsError);
+    expect(err.message).toContain("No LLM backend");
     expect(log).toHaveBeenCalled();
   });
 });

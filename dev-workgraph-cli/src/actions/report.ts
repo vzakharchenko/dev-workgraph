@@ -365,16 +365,20 @@ async function growFoldHistory(input: {
   return { history, historySources };
 }
 
-async function compactFoldHistory(
-  history: ReportHistoryEntry[],
-  historySources: string[][],
-  cursorStart: number,
-  baseUrl: string,
-  model: string,
-  provider: LlmProviderId,
-  compactSystem: string,
-  tracker: TokenUsageTracker,
-): Promise<{ history: ReportHistoryEntry[]; historySources: string[][]; cursor: number }> {
+async function compactFoldHistory(input: {
+  history: ReportHistoryEntry[];
+  historySources: string[][];
+  cursorStart: number;
+  llm: {
+    baseUrl: string;
+    model: string;
+    provider: LlmProviderId;
+    compactSystem: string;
+    tracker: TokenUsageTracker;
+  };
+}): Promise<{ history: ReportHistoryEntry[]; historySources: string[][]; cursor: number }> {
+  const { history, historySources, cursorStart, llm } = input;
+  const { baseUrl, model, provider, compactSystem, tracker } = llm;
   let cursor = cursorStart;
   if (history.length <= MAX_HISTORY_ENTRIES) {
     return { history, historySources, cursor };
@@ -497,16 +501,12 @@ async function foldGroup(input: {
     llm: { baseUrl, model, provider, newSystem, tracker },
   });
   historySources = grown.historySources;
-  const compacted = await compactFoldHistory(
-    grown.history,
+  const compacted = await compactFoldHistory({
+    history: grown.history,
     historySources,
-    prev.mergeCursor ?? 0,
-    baseUrl,
-    model,
-    provider,
-    compactSystem,
-    tracker,
-  );
+    cursorStart: prev.mergeCursor ?? 0,
+    llm: { baseUrl, model, provider, compactSystem, tracker },
+  });
 
   return {
     reportId: group.timestampEnd,
