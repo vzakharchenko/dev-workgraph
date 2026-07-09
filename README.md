@@ -1,5 +1,6 @@
 # dev-workgraph
 
+[![Codacy Badge](https://api.codacy.com/project/badge/Grade/6869f93a7d414f4fae84fc266af85f4a)](https://app.codacy.com/gh/vzakharchenko/dev-workgraph?utm_source=github.com&utm_medium=referral&utm_content=vzakharchenko/dev-workgraph&utm_campaign=Badge_Grade)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=vzakharchenko_dev-workgraph&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=vzakharchenko_dev-workgraph)
 [![Bugs](https://sonarcloud.io/api/project_badges/measure?project=vzakharchenko_dev-workgraph&metric=bugs)](https://sonarcloud.io/summary/new_code?id=vzakharchenko_dev-workgraph)
 [![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=vzakharchenko_dev-workgraph&metric=code_smells)](https://sonarcloud.io/summary/new_code?id=vzakharchenko_dev-workgraph)
