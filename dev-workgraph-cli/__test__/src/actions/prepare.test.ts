@@ -26,7 +26,11 @@ vi.mock("../../../src/lib/ollama.js", async (importOriginal) => {
 });
 
 vi.mock("../../../src/lib/select.js", () => ({
-  resolveModel: vi.fn(async () => "test-model"),
+  resolveLlmSlot: vi.fn(async () => ({
+    providerId: "ollama" as const,
+    baseUrl: "http://127.0.0.1:11434",
+    model: "test-model",
+  })),
 }));
 
 import { prepare } from "../../../src/actions/prepare.js";

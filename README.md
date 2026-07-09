@@ -43,7 +43,7 @@ See real outputs in [`examples/`](./examples/) — e.g. [Forge Secure Notes](exa
 
 ## Quick start
 
-**Prerequisites:** [Node.js](https://nodejs.org) 20+, Git, and [Ollama](https://ollama.com) running locally.
+**Prerequisites:** [Node.js](https://nodejs.org) 20+, Git, and a local LLM backend — [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai). See **[`dev-workgraph-cli/README.md`](./dev-workgraph-cli/README.md)** for setup of either backend.
 
 ```bash
 brew install ollama
@@ -52,6 +52,8 @@ ollama pull gpt-oss:latest
 ollama pull gemma4:31b
 ollama serve
 ```
+
+Or use LM Studio: load models, start the local server, then run `dev-workgraph check`.
 
 ```bash
 cd /path/to/your/repo
@@ -77,15 +79,15 @@ The deliverable is written with a period suffix — `RECONSTRUCTION.<project>.20
 
 ## How it runs
 
-**Local only** — [Ollama](https://ollama.com) on your machine. No cloud API; analysis stays under `~/.workgraph/` unless you `export` a bundle yourself.
+**Local only** — [Ollama](https://ollama.com) and/or [LM Studio](https://lmstudio.ai) on your machine. No cloud API; analysis stays under `~/.workgraph/` unless you `export` a bundle yourself.
 
 **Resumable** — stop anytime before `final`; re-run `dev-workgraph run .` and completed commits, groups, and report folds are skipped. Interactive Q&A starts only after `prepare`.
 
 **Dogfooded** on **MacBook Pro M4 Pro (48 GB)**. One real repo (**~300 commits**): unattended stages took **~6 hours** before the first questions (`final`). Time depends on models, patch size, and cache from prior runs.
 
-### Recommended Ollama models
+### Recommended models (Ollama)
 
-Use strong models for real runs — weak ones work for smoke tests but hurt long reports.
+Use strong models for real runs — weak ones work for smoke tests but hurt long reports. LM Studio works too; pick loaded models in the `run` picker.
 
 | Slot | Model | Used for |
 |------|--------|----------|
@@ -104,7 +106,7 @@ Use strong models for real runs — weak ones work for smoke tests but hurt long
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | Architecture overview + diagrams from `img/` |
 | [`REQUIREMENTS.md`](./REQUIREMENTS.md) | Full product & pipeline specification |
 | [`CHANGELOG.md`](./CHANGELOG.md) | Release history |
-| [`uml/`](./uml/) | Pipeline diagrams (PlantUML, Graphviz) — PNG: `./scripts/generatePNGFromSchemas.sh` → [`img/`](./img/) |
+| [`uml/`](./uml/) | Pipeline diagrams (PlantUML, Graphviz) — see [`uml/README.md`](./uml/README.md); PNG: `./scripts/generatePNGFromSchemas.sh` → [`img/`](./img/) |
 
 ## The work graph
 

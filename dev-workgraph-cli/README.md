@@ -62,11 +62,13 @@ npx dev-workgraph run .
 npm install -g dev-workgraph
 ```
 
-This provides the `dev-workgraph` command. You also need [Ollama](https://ollama.com) running locally (see [Quick start](#quick-start)).
+This provides the `dev-workgraph` command. You also need a **local LLM server** — [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) (see [Quick start](#quick-start)).
 
 ## Quick start
 
-**Prerequisites:** [Node.js](https://nodejs.org) 20+, Git, and [Ollama](https://ollama.com) running locally.
+**Prerequisites:** [Node.js](https://nodejs.org) 20+, Git, and a local LLM backend — **Ollama** or **LM Studio**. `check` and `run` discover both automatically when their servers are running.
+
+### Option A: Ollama
 
 ```bash
 brew install ollama
@@ -75,6 +77,16 @@ ollama pull gpt-oss:latest
 ollama pull gemma4:31b
 ollama serve
 ```
+
+### Option B: LM Studio
+
+1. Install [LM Studio](https://lmstudio.ai) and load models in the app.
+2. Start the **local server** (default `http://127.0.0.1:1234`).
+3. Run `dev-workgraph check` — loaded models appear in the picker alongside Ollama.
+
+You can mix providers: e.g. commit slots on Ollama, narrative on LM Studio. Each of the three model slots (`commit`, `report`, `narrative`) stores `provider`, `baseUrl`, and `model` in `~/.workgraph/config.json`.
+
+### Run the pipeline
 
 ```bash
 cd /path/to/your/repo
@@ -85,7 +97,7 @@ The pipeline ends with **`final`**: you answer up to four questions interactivel
 
 ## Example outputs
 
-Real **`RECONSTRUCTION.*.md`** files from dogfooding on production repos (local Ollama, interactive `final` + **`deepen`**):
+Real **`RECONSTRUCTION.*.md`** files from dogfooding on production repos (local Ollama / LM Studio, interactive `final` + **`deepen`**):
 
 | Project | Role | Output |
 |---------|------|--------|
@@ -107,15 +119,15 @@ The deliverable is `RECONSTRUCTION.<project>.2024.md` — a period review does n
 
 ## How it runs
 
-**Local only** — Ollama on your machine. No cloud API; analysis stays under `~/.workgraph/` unless you `export` a bundle yourself.
+**Local only** — [Ollama](https://ollama.com) and/or [LM Studio](https://lmstudio.ai) on your machine (or another host reachable via `--ollama-url` / `--lmstudio-url`). No cloud API; analysis stays under `~/.workgraph/` unless you `export` a bundle yourself.
 
 **Resumable** — stop anytime before `final`; re-run `npx dev-workgraph run .` and completed commits, groups, and report folds are skipped. Interactive Q&A starts only after `prepare`.
 
 **Dogfooded** on **MacBook Pro M4 Pro (48 GB)**. One real repo (**~300 commits**): unattended stages took **~6 hours** before the first questions (`final`). Time depends on models, patch size, and cache from prior runs.
 
-### Recommended Ollama models
+### Recommended models (Ollama)
 
-Use strong models for real runs — weak ones work for smoke tests but hurt long reports.
+These are the models used for the example outputs below. With **LM Studio**, pick equivalent models in the interactive picker — names depend on what you have loaded.
 
 | Slot | Model | Used for |
 |------|--------|----------|
@@ -129,7 +141,7 @@ Use strong models for real runs — weak ones work for smoke tests but hurt long
 
 | Stage | Command | LLM | What it does |
 |-------|---------|-----|--------------|
-| Preflight | `check` | — | Ollama reachable, models installed |
+| Preflight | `check` | — | LLM backend reachable (Ollama and/or LM Studio), models installed |
 | Authors | `authors` | — | Select your commit emails |
 | Context | `init` | narrative | Role, project story, README → `project.json` |
 | Evidence | `evidence` | — | Patches + deterministic JSON per commit |
@@ -165,8 +177,9 @@ dev-workgraph run:period   ./repo --period 2024
 Common flags:
 
 - `--period <id>` — scope to a review window (`periods/<id>/` data subtree)
-- `--model <name>` — force Ollama model for this command
-- `--url <url>` — Ollama base URL (default `http://127.0.0.1:11434`)
+- `--model <name>` — force model for this command (must be unique across reachable backends)
+- `--ollama-url <url>` — Ollama server URL (default `http://127.0.0.1:11434`)
+- `--lmstudio-url <url>` — LM Studio server URL (default `http://127.0.0.1:1234`)
 - `final --answers-file <path>` — non-interactive answers (JSON)
 - `final --output <path>` — override markdown path
 - `deepen --context-file <path>` — non-interactive recalled context

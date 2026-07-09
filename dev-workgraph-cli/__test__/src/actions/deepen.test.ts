@@ -14,7 +14,7 @@ import {
 import { repoFinishDir, repoPreparedDir } from "../../../src/lib/config.js";
 import { combinePreparedAndPriorHistory } from "../../../src/lib/prompts.js";
 import { latestFinish } from "../../../src/lib/finish-load.js";
-import { chatJson } from "../../../src/lib/ollama.js";
+import { chatJson } from "../../../src/lib/llm";
 
 const { promptMock } = vi.hoisted(() => ({
   promptMock: vi.fn(),
@@ -40,7 +40,11 @@ vi.mock("../../../src/lib/ollama.js", async (importOriginal) => {
 });
 
 vi.mock("../../../src/lib/select.js", () => ({
-  resolveModel: vi.fn(async () => "test-model"),
+  resolveLlmSlot: vi.fn(async () => ({
+    providerId: "ollama" as const,
+    baseUrl: "http://127.0.0.1:11434",
+    model: "test-model",
+  })),
 }));
 
 import { deepen } from "../../../src/actions/deepen.js";

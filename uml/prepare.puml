@@ -8,7 +8,7 @@ title dev-workgraph — **prepare** (§10)\nDistill **latest report** into role-
 legend top left
   |= Tag |= Meaning |
   | **(D)** | Deterministic — no LLM |
-  | **(M:n)** | Ollama **narrativeModel** |
+  | **(M:n)** | **narrativeModel** (Ollama / LM Studio) |
   | **(H) init** | project.json required |
 endlegend
 
@@ -88,7 +88,7 @@ if (prepared/<reportId>.json exists?) then (yes)
 else (no)
 endif
 
-:Pick **narrativeModel** (Ollama);
+:Pick **narrativeModel**\n(Ollama / LM Studio);
 
 :Build project context block from init;
 
@@ -362,7 +362,7 @@ actor "Developer" as DEV
 database "project.json" as PJ
 database "reports/<reportId>.json" as RPT
 participant "**prepare**" as PRE
-participant "Ollama\nnarrativeModel" as LLM
+participant "LLM\nnarrativeModel\nOllama | LM Studio" as LLM
 database "prepared/<reportId>.json" as OUT
 
 DEV -> PRE : prepare ./repo

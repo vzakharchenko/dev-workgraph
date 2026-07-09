@@ -4,13 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import inquirer from "inquirer";
-import {
-  loadConfig,
-  repoFinishDir,
-  repoPreparedDir,
-  repoReportsDir,
-  setOllamaConfig,
-} from "../lib/config.js";
+import { repoFinishDir, repoPreparedDir, repoReportsDir } from "../lib/config.js";
 import {
   extendSourceQuestions,
   finishQuestionsJsonFileName,
@@ -31,6 +25,7 @@ import {
   writeFinishQuestions,
 } from "../lib/finish-questions.js";
 import { resolveRepo } from "../lib/git.js";
+import type { LlmCommandOptions } from "../lib/llm/cli-options.js";
 import {
   cleanQuestionAnalyses,
   cvBulletsJsonSchema,
@@ -39,7 +34,7 @@ import {
   prepareQuestionsJsonSchema,
   roleNarrativeJsonSchema,
 } from "../lib/model.js";
-import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
+import { chatJson } from "../lib/ollama.js";
 import { loadProjectContext } from "../lib/project.js";
 import {
   buildCvBulletsPrompt,
@@ -56,7 +51,7 @@ import {
 } from "../lib/prompts.js";
 import { writeRecordJson } from "../lib/record-io.js";
 import type { FinishAnswer, FinishRecord, ProjectContext } from "../lib/records.js";
-import { resolveModel } from "../lib/select.js";
+import { resolveLlmSlot } from "../lib/select.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
@@ -67,7 +62,7 @@ import { TokenUsageTracker } from "../lib/token-usage.js";
  * cumulative Q&A, and append a versioned finish (`*.v2.json`, …) without overwriting v1.
  * Not part of `run`.
  */
-export interface DeepenOptions {
+export interface DeepenOptions extends LlmCommandOptions {
   /** Absolute or relative path to the Git repository. */
   repo: string;
   /** JSON file with answers to the four **new** questions only (non-interactive). */
@@ -79,10 +74,6 @@ export interface DeepenOptions {
   contextFile?: string;
   /** Override path for the markdown deliverable (default: cwd `RECONSTRUCTION.<project>.vN.md`). */
   output?: string;
-  /** Ollama base URL override. */
-  url?: string;
-  /** `narrativeModel` name; skips the interactive picker when set. */
-  model?: string;
   /** Scope all reads/writes to `periods/<id>/` instead of the repo's all-time data. */
   period?: string;
 }
@@ -275,13 +266,12 @@ export async function deepen(options: DeepenOptions): Promise<void> {
 
   const nextArchive = nextFinishVersion(priorFinish.file);
 
-  const baseUrl = resolveBaseUrl(options.url);
-  const savedOllama = loadConfig().ollama;
-  const model = await resolveModel(baseUrl, options.model, {
-    message: "Which Ollama model should deepen the narrative?",
-    saved: savedOllama?.narrativeModel ?? savedOllama?.reportModel ?? savedOllama?.model,
+  const { providerId, baseUrl, model } = await resolveLlmSlot("narrative", {
+    ollama: options.ollama,
+    lmstudio: options.lmstudio,
+    model: options.model,
+    message: "Which model should deepen the narrative?",
   });
-  setOllamaConfig({ baseUrl, narrativeModel: model });
 
   const projectBlock = projectContextBlock(project);
   const generatedAt = new Date().toISOString();
@@ -317,6 +307,7 @@ export async function deepen(options: DeepenOptions): Promise<void> {
   try {
     process.stdout.write("Generating four new follow-up questions ... ");
     const followUp = (await chatJson({
+      provider: providerId,
       baseUrl,
       model,
       system: withProjectContext(projectBlock, DEEPEN_QUESTIONS_SYSTEM),
@@ -377,6 +368,7 @@ export async function deepen(options: DeepenOptions): Promise<void> {
 
     process.stdout.write("\nRefining Your IMPACT with all answers ... ");
     const refined = (await chatJson({
+      provider: providerId,
       baseUrl,
       model,
       system: withProjectContext(projectBlock, IMPACT_NARRATIVE_SYSTEM),
@@ -389,6 +381,7 @@ export async function deepen(options: DeepenOptions): Promise<void> {
 
     process.stdout.write("Writing Role Narrative ... ");
     const result = (await chatJson({
+      provider: providerId,
       baseUrl,
       model,
       system: withProjectContext(projectBlock, ROLE_NARRATIVE_SYSTEM),
@@ -406,6 +399,7 @@ export async function deepen(options: DeepenOptions): Promise<void> {
 
     process.stdout.write("Writing CV bullets ... ");
     const cvResult = (await chatJson({
+      provider: providerId,
       baseUrl,
       model,
       system: withProjectContext(projectBlock, CV_BULLETS_SYSTEM),

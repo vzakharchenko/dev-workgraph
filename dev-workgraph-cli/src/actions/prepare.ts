@@ -3,16 +3,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import {
-  loadConfig,
-  repoFinishDir,
-  repoPreparedDir,
-  repoReportsDir,
-  setOllamaConfig,
-} from "../lib/config.js";
+import { repoFinishDir, repoPreparedDir, repoReportsDir } from "../lib/config.js";
 import { latestFinish } from "../lib/finish-load.js";
 import { resolveFinishQa } from "../lib/finish-questions.js";
 import { resolveRepo } from "../lib/git.js";
+import type { LlmCommandOptions } from "../lib/llm/cli-options.js";
 import {
   cleanQuestionAnalyses,
   flattenQuestions,
@@ -23,7 +18,7 @@ import {
   prepareTechnologiesJsonSchema,
   type Signal,
 } from "../lib/model.js";
-import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
+import { chatJson } from "../lib/ollama.js";
 import { loadProjectContext } from "../lib/project.js";
 import {
   buildPrepareHistoryPrompt,
@@ -39,19 +34,15 @@ import {
 } from "../lib/prompts.js";
 import { writeRecordJson } from "../lib/record-io.js";
 import type { PreparedModelLayer, PreparedRecord, ReportRecord } from "../lib/records.js";
-import { resolveModel } from "../lib/select.js";
+import { resolveLlmSlot } from "../lib/select.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
  * Options for the `prepare` command.
  */
-export interface PrepareOptions {
+export interface PrepareOptions extends LlmCommandOptions {
   /** Path to the repository. */
   repo: string;
-  /** Ollama base URL override. */
-  url?: string;
-  /** Model name; skips the interactive picker. */
-  model?: string;
   /** Operate on a defined review period's data instead of the repo's all-time data. */
   period?: string;
 }
@@ -104,13 +95,12 @@ export async function prepare(options: PrepareOptions): Promise<void> {
     return;
   }
 
-  const baseUrl = resolveBaseUrl(options.url);
-  const savedOllama = loadConfig().ollama;
-  const model = await resolveModel(baseUrl, options.model, {
-    message: "Which Ollama model should prepare the narrative?",
-    saved: savedOllama?.narrativeModel ?? savedOllama?.reportModel ?? savedOllama?.model,
+  const { providerId, baseUrl, model } = await resolveLlmSlot("narrative", {
+    ollama: options.ollama,
+    lmstudio: options.lmstudio,
+    model: options.model,
+    message: "Which model should prepare the narrative?",
   });
-  setOllamaConfig({ baseUrl, narrativeModel: model });
 
   const projectBlock = projectContextBlock(project);
   const generatedAt = new Date().toISOString();
@@ -129,6 +119,7 @@ export async function prepare(options: PrepareOptions): Promise<void> {
     // Step 2 — compose one unified history.
     process.stdout.write("   [1/4] compose unified history ... ");
     const composed = (await chatJson({
+      provider: providerId,
       baseUrl,
       model,
       system: withProjectContext(projectBlock, PREPARE_HISTORY_SYSTEM),
@@ -152,6 +143,7 @@ export async function prepare(options: PrepareOptions): Promise<void> {
     if (technologies.length > 0) {
       process.stdout.write(`   [2/4] clean technologies (${technologies.length}) ... `);
       const cleaned = (await chatJson({
+        provider: providerId,
         baseUrl,
         model,
         system: withProjectContext(projectBlock, PREPARE_TECH_SYSTEM),
@@ -169,6 +161,7 @@ export async function prepare(options: PrepareOptions): Promise<void> {
     // Step 4 — collapse signal reasons into four.
     process.stdout.write("   [3/4] collapse signal reasons → 4 ... ");
     const collapsed = (await chatJson({
+      provider: providerId,
       baseUrl,
       model,
       system: withProjectContext(projectBlock, PREPARE_REASONS_SYSTEM),
@@ -190,6 +183,7 @@ export async function prepare(options: PrepareOptions): Promise<void> {
         )
       : [];
     const reframed = (await chatJson({
+      provider: providerId,
       baseUrl,
       model,
       system: withProjectContext(projectBlock, PREPARE_QUESTIONS_SYSTEM),

@@ -11,9 +11,9 @@ title dev-workgraph MVP — Pipeline\n(reconstruct forgotten work from Git; ask,
 legend top left
   |= Tag |= Meaning |
   | **(D)** | Deterministic — evidence, no LLM |
-  | **(M:c)** | Ollama **commitModel** |
-  | **(M:r)** | Ollama **reportModel** |
-  | **(M:n)** | Ollama **narrativeModel** |
+  | **(M:c)** | **commitModel** (Ollama / LM Studio) |
+  | **(M:r)** | **reportModel** (Ollama / LM Studio) |
+  | **(M:n)** | **narrativeModel** (Ollama / LM Studio) |
   | **(H)** | Interactive human input |
   | **--period** | Optional review window; data under periods/<id>/ |
 endlegend
@@ -21,7 +21,7 @@ endlegend
 start
 
 partition "Preflight" {
-  :(D) **check**\nVerify Ollama is reachable\nand required models are installed;
+  :(D) **check**\nDiscover Ollama + LM Studio;\nverify models on each backend;
 }
 
 partition "Preconditions (per repository)" {
@@ -159,7 +159,7 @@ participant "prepare" as PRE
 participant "final" as FIN
 participant "Human" as H
 
-CLI -> CHECK : preflight (abort if Ollama not ready)
+CLI -> CHECK : preflight (abort if no LLM backend ready)
 CLI -> CLI : gather upfront inputs\n(3 models, role+story, authors, group thresholds)\nonly if not already saved
 
 alt run:period / --period <id>
@@ -210,7 +210,7 @@ database "prepared/" as PREP
 database "project.json" as PJ
 participant "deepen" as DEP
 participant "Human" as H
-participant "Ollama\nnarrativeModel" as LLM
+participant "LLM\nnarrativeModel\nOllama | LM Studio" as LLM
 database "finish/ vN+1" as FIN2
 database "cwd RECONSTRUCTION.*.vN+1.md" as MD
 
@@ -264,7 +264,7 @@ package "config.json (outside data dir)" {
   [repos.<abs-path>.groupThresholdDays]
   [repos.<abs-path>.groupMaxCommits]
   [repos.<abs-path>.periods.<id> {from, to}]
-  [ollama.commitModel / reportModel / narrativeModel]
+  [llm.commit / report / narrative\n{provider, baseUrl, model}]
 }
 
 folder "data/repos/<repo-id>/" as REPO {

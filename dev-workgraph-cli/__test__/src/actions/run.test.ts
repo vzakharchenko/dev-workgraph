@@ -9,7 +9,7 @@ import {
 import {
   getRepoConfig,
   repoProjectPath,
-  setOllamaConfig,
+  setLlmConfig,
   setPeriod,
   setRepoConfig,
 } from "../../../src/lib/config.js";
@@ -23,9 +23,11 @@ const {
   reportMock,
   prepareMock,
   finalMock,
-  ollamaReadyMock,
+  llmReadyMock,
   getAuthorsMock,
   currentUserEmailMock,
+  withProviderStepMock,
+  discoverLlmBackendsMock,
 } = vi.hoisted(() => ({
   promptMock: vi.fn(),
   initMock: vi.fn(async () => {}),
@@ -35,9 +37,17 @@ const {
   reportMock: vi.fn(async () => {}),
   prepareMock: vi.fn(async () => {}),
   finalMock: vi.fn(async () => {}),
-  ollamaReadyMock: vi.fn(async () => true),
+  llmReadyMock: vi.fn(async () => true),
   getAuthorsMock: vi.fn(() => [{ email: "dev@example.com", name: "Dev", commits: 2 }]),
   currentUserEmailMock: vi.fn(() => "dev@example.com"),
+  withProviderStepMock: vi.fn(async (_choice: unknown, fn: () => Promise<void>) => fn()),
+  discoverLlmBackendsMock: vi.fn(async () => [
+    {
+      providerId: "ollama" as const,
+      baseUrl: "http://127.0.0.1:11434",
+      models: ["test-model"],
+    },
+  ]),
 }));
 
 vi.mock("inquirer", () => ({
@@ -50,17 +60,26 @@ vi.mock("../../../src/lib/git.js", () => ({
   currentUserEmail: currentUserEmailMock,
 }));
 
+vi.mock("../../../src/lib/lmstudio-session.js", () => ({
+  withProviderStep: (...args: unknown[]) => withProviderStepMock(...args),
+}));
+
 vi.mock("../../../src/lib/ollama.js", () => ({
-  resolveBaseUrl: vi.fn(() => "http://127.0.0.1:11434"),
-  listModels: vi.fn(async () => ["test-model"]),
+  providerLabel: vi.fn((id: string) => id),
+  discoverLlmBackends: (...args: unknown[]) => discoverLlmBackendsMock(...args),
+  noLlmBackendsError: () => new Error(""),
 }));
 
 vi.mock("../../../src/lib/select.js", () => ({
-  resolveModel: vi.fn(async () => "test-model"),
+  resolveLlmSlot: vi.fn(async (slot: string) => ({
+    providerId: "ollama" as const,
+    baseUrl: "http://127.0.0.1:11434",
+    model: slot === "report" ? "report-model" : slot === "narrative" ? "narrative-model" : "test-model",
+  })),
 }));
 
 vi.mock("../../../src/actions/check.js", () => ({
-  ollamaReady: ollamaReadyMock,
+  llmReady: llmReadyMock,
 }));
 
 vi.mock("../../../src/actions/init.js", async (importOriginal) => {
@@ -76,6 +95,7 @@ vi.mock("../../../src/actions/prepare.js", () => ({ prepare: prepareMock }));
 vi.mock("../../../src/actions/final.js", () => ({ final: finalMock }));
 
 import { run } from "../../../src/actions/run.js";
+import { resolveLlmSlot } from "../../../src/lib/select.js";
 
 function queueGatheringPrompts(
   overrides: {
@@ -100,7 +120,7 @@ describe("run", () => {
   beforeEach(() => {
     ({ restore: restoreHome } = setupWorkgraphHome());
     promptMock.mockReset();
-    ollamaReadyMock.mockResolvedValue(true);
+    llmReadyMock.mockResolvedValue(true);
     getAuthorsMock.mockReturnValue([{ email: "dev@example.com", name: "Dev", commits: 2 }]);
     currentUserEmailMock.mockReturnValue("dev@example.com");
     for (const mock of [
@@ -111,6 +131,7 @@ describe("run", () => {
       reportMock,
       prepareMock,
       finalMock,
+      withProviderStepMock,
     ]) {
       mock.mockClear();
     }
@@ -134,7 +155,7 @@ describe("run", () => {
   });
 
   it("throws when ollama is not ready", async () => {
-    ollamaReadyMock.mockResolvedValueOnce(false);
+    llmReadyMock.mockResolvedValueOnce(false);
     await expect(run({ repo: FAKE_REPO, model: "test-model" })).rejects.toThrow(/not ready/i);
   });
 
@@ -312,11 +333,55 @@ describe("run", () => {
     );
   });
 
-  it("seeds resolveModel from legacy ollama.model when role slots are unset", async () => {
-    setOllamaConfig({ model: "legacy-model" });
+  it("wraps each pipeline step with LM Studio session boundaries", async () => {
+    await run({ repo: FAKE_REPO, model: "test-model" });
+
+    expect(withProviderStepMock).toHaveBeenCalledTimes(7);
+    expect(withProviderStepMock).toHaveBeenCalledWith(
+      expect.objectContaining({ providerId: "ollama", model: "narrative-model" }),
+      expect.any(Function),
+    );
+    expect(withProviderStepMock).toHaveBeenCalledWith(
+      expect.objectContaining({ providerId: "ollama", model: "test-model" }),
+      expect.any(Function),
+    );
+  });
+
+  it("skips LM Studio session wrapper for init when project already exists", async () => {
+    promptMock.mockReset();
+    writeProjectContext(FAKE_REPO);
+    setRepoConfig(FAKE_REPO, {
+      selectedAuthors: ["dev@example.com"],
+      groupThresholdDays: 5,
+      groupMaxCommits: 10,
+    });
 
     await run({ repo: FAKE_REPO, model: "test-model" });
 
-    expect(initMock).toHaveBeenCalledWith(expect.objectContaining({ model: "test-model" }));
+    expect(withProviderStepMock).toHaveBeenCalledTimes(6);
+    expect(initMock).not.toHaveBeenCalled();
+  });
+
+  it("resolves all three llm slots before running the pipeline", async () => {
+    setLlmConfig({ model: "legacy-model" });
+
+    await run({ repo: FAKE_REPO, model: "test-model" });
+
+    expect(resolveLlmSlot).toHaveBeenCalledTimes(3);
+    expect(resolveLlmSlot).toHaveBeenCalledWith(
+      "commit",
+      expect.objectContaining({ model: "test-model" }),
+    );
+    expect(resolveLlmSlot).toHaveBeenCalledWith(
+      "report",
+      expect.objectContaining({ model: "test-model" }),
+    );
+    expect(resolveLlmSlot).toHaveBeenCalledWith(
+      "narrative",
+      expect.objectContaining({ model: "test-model" }),
+    );
+    expect(initMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "narrative-model" }),
+    );
   });
 });

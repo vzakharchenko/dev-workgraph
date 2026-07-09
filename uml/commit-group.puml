@@ -8,7 +8,7 @@ title dev-workgraph — **commit-group** (§4, §7)\nWork sessions: deterministi
 legend top left
   |= Tag |= Meaning |
   | **(D)** | Deterministic — evidence / pure code |
-  | **(M:c)** | Ollama **commitModel** (same slot as summarize) |
+  | **(M:c)** | **commitModel** (Ollama / LM Studio, same slot as summarize) |
   | **evidence** | Does **not** run here — only its data inside commit .json |
 endlegend
 
@@ -393,7 +393,7 @@ database "commits/*.json\n(D evidence)" as COMM
 database "summaries/*.json\n(M:c canonical)" as SUMM
 database "project.json" as PJ
 participant "**commit-group**" as CG
-participant "Ollama\ncommitModel" as LLM
+participant "LLM\ncommitModel\nOllama | LM Studio" as LLM
 database "groups/<ts>.json" as GRP
 
 DEV -> CG : commit-group ./repo

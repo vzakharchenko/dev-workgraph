@@ -35,9 +35,26 @@ export interface RepoConfig {
 }
 
 /**
- * Saved Ollama preferences so the model need not be re-chosen every run.
+ * Saved provider, base URL, and model for one pipeline stage.
  */
-export interface OllamaConfig {
+export interface LlmSlotConfig {
+  provider: "ollama" | "lmstudio";
+  baseUrl: string;
+  model: string;
+}
+
+/**
+ * Saved local LLM preferences so the model need not be re-chosen every run.
+ * Applies to any registered provider (Ollama, LM Studio, …).
+ */
+export interface LlmConfig {
+  /** Per-provider server URLs (independent hosts). */
+  servers?: {
+    ollama?: string;
+    lmstudio?: string;
+  };
+  /** Legacy default backend; per-slot {@link LlmSlotConfig.provider} takes precedence. */
+  provider?: "ollama" | "lmstudio";
   baseUrl?: string;
   /** Legacy/general model; used as a fallback seed for the role-specific slots. */
   model?: string;
@@ -47,14 +64,23 @@ export interface OllamaConfig {
   reportModel?: string;
   /** Model for project context (`init`) and human-facing narrative (`prepare`, `final`, `deepen`). */
   narrativeModel?: string;
+  /** Per-stage LLM backend + model (preferred over legacy flat fields). */
+  commit?: LlmSlotConfig;
+  report?: LlmSlotConfig;
+  narrative?: LlmSlotConfig;
 }
+
+/** @deprecated Use {@link LlmConfig}. */
+export type OllamaConfig = LlmConfig;
 
 /**
  * Root configuration object stored on disk. Keyed by absolute repo path.
  */
 export interface WorkgraphConfig {
   repos: Record<string, RepoConfig>;
-  ollama?: OllamaConfig;
+  llm?: LlmConfig;
+  /** @deprecated On-disk key from older versions; merged into {@link llm} on load. */
+  ollama?: LlmConfig;
 }
 
 const EMPTY_CONFIG: WorkgraphConfig = { repos: {} };
@@ -196,7 +222,8 @@ export function loadConfig(): WorkgraphConfig {
   if (!fs.existsSync(file)) return structuredClone(EMPTY_CONFIG);
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as WorkgraphConfig;
-    return { repos: parsed.repos ?? {}, ollama: parsed.ollama };
+    const llm = parsed.llm ?? parsed.ollama;
+    return { repos: parsed.repos ?? {}, llm };
   } catch {
     return structuredClone(EMPTY_CONFIG);
   }
@@ -213,12 +240,13 @@ function saveConfig(config: WorkgraphConfig): void {
 }
 
 /**
- * Persists Ollama preferences, merging with any existing config.
- * @param ollama - The Ollama settings to store.
+ * Persists LLM preferences, merging with any existing config.
+ * @param llm - Provider-agnostic LLM settings (per-slot provider, URL, model).
  */
-export function setOllamaConfig(ollama: OllamaConfig): void {
+export function setLlmConfig(llm: LlmConfig): void {
   const config = loadConfig();
-  config.ollama = { ...config.ollama, ...ollama };
+  config.llm = { ...config.llm, ...llm };
+  delete config.ollama;
   saveConfig(config);
 }
 

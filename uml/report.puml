@@ -403,7 +403,7 @@ actor "Developer" as DEV
 database "groups/*.json" as GRP
 database "reports/*.json" as RPT
 participant "**report**" as REP
-participant "Ollama\nreportModel" as LLM
+participant "LLM\nreportModel\nOllama | LM Studio" as LLM
 
 DEV -> REP : report ./repo
 

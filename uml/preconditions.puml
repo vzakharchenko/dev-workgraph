@@ -29,7 +29,7 @@ rectangle "Downstream stages" #E8F5E9 {
   card "final" as FIN
 }
 
-CHECK -down-> INIT : **run** preflight\n(abort if Ollama not ready)
+CHECK -down-> INIT : **run** preflight\n(abort if no LLM backend ready)
 
 AUTH -down-> EVID : **required**\nonly selected emails extracted
 INIT -down-> SUM : **required** for full\nproject context in LLM
@@ -73,46 +73,38 @@ skinparam shadowing false
 skinparam ActivityBorderColor #888888
 skinparam NoteBackgroundColor #E3F2FD
 
-title **check** — Ollama preflight (§14)
+title **check** — LLM preflight (Ollama + LM Studio)
 
 start
 
-:Resolve Ollama base URL\n(default http://127.0.0.1:11434,\noverride with --url);
+:Discover backends\n**Ollama** --ollama-url\n(default http://127.0.0.1:11434)\n**LM Studio** --lmstudio-url\n(default http://127.0.0.1:1234);
 
-:GET /api/tags → list installed models;
+partition "For each reachable backend" {
+  :List models\n(Ollama GET /api/tags;\nLM Studio GET /api/v1/models);
 
-if (Ollama reachable?) then (no)
-  if (ollama binary on PATH?) then (yes)
-    :Print: start server\n`ollama serve`;
-  else (no)
-    :Print OS-specific install help;
+  if (≥ 1 model?) then (no)
+    :Provider install help;
     note right
-      **macOS:** brew install ollama
-      **Linux:** curl … install.sh | sh
-      **Then:** ollama pull <model>
-      Suggested: qwen2.5-coder:14b, gpt-oss:latest
+      **Ollama:** brew / install.sh,\n`ollama pull`, `ollama serve`
+      **LM Studio:** download app,\nload model, start local server
     end note
+  else (yes)
+    :Print models for this backend;
   endif
+}
+
+if (No backend ready?) then (yes)
   #Pink:Exit code 1;
   stop
-else (yes)
+else (no)
 endif
 
-if (≥ 1 model installed?) then (no)
-  #Pink:Print pull suggestions;\nExit code 1;
-  stop
-else (yes)
-  :Print installed model list;
-endif
-
-:Read ~/.workgraph/config.json → ollama slots;
+:Read ~/.workgraph/config.json → **llm** slots\n(commit / report / narrative);
 
 partition "Validate saved preferences" {
-  :Check **commitModel**;
-  :Check **reportModel**;
-  :Check **narrativeModel**;
-  if (Any saved model NOT in installed list?) then (yes)
-    #Pink:Warn + suggest `ollama pull`;\nExit code 1;
+  :Check each slot's model\non its saved provider + baseUrl;
+  if (Any saved model NOT available?) then (yes)
+    #Pink:Warn (pull/load model);\nExit code 1;
     stop
   else (no)
   endif
@@ -121,8 +113,8 @@ partition "Validate saved preferences" {
 #LightGreen:✅ Ready;
 note right
   **Standalone:** `dev-workgraph check`
-  **In run:** `ollamaReady()` preflight — aborts
-  before gathering inputs if not ready
+  **In run:** `llmReady()` preflight — aborts
+  before gathering inputs if no backend is ready
 end note
 
 stop
@@ -272,7 +264,7 @@ partition "Automatic inputs (D)" {
   :Read **README.md** from repo root\n(if missing → continue, not an error);
 }
 
-:Pick **narrativeModel** (Ollama)\n--model overrides;\nsaved in config.ollama.narrativeModel;
+:Pick **narrativeModel**\n(Ollama / LM Studio)\n--model overrides;\nsaved in config.llm.narrative;
 
 partition "LLM session 1 — Prepare story (M:n)" {
   :Input: role + raw story;
@@ -328,7 +320,7 @@ participant "CLI\ninit" as CLI
 database "Git repo" as REPO
 database "config.json" as CFG
 database "project.json" as PJ
-participant "Ollama\n(narrativeModel)" as LLM
+participant "LLM\nnarrativeModel\nOllama | LM Studio" as LLM
 
 DEV -> CLI : dev-workgraph init ./repo\n[--role] [--story]\n[--period] [--from] [--to]
 

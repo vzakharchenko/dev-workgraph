@@ -3,10 +3,12 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { loadConfig, repoCommitsDir, repoSummariesDir, setOllamaConfig } from "../lib/config.js";
+import { repoCommitsDir, repoSummariesDir } from "../lib/config.js";
 import { isCommitEvidenceManifestFile } from "../lib/evidence-files.js";
 import { resolveRepo } from "../lib/git.js";
 import { commitSummaryPath } from "../lib/grouping.js";
+import type { LlmCommandOptions } from "../lib/llm/cli-options.js";
+import type { LlmProviderId } from "../lib/llm/types.js";
 import {
   commitMergedSummaryPath,
   commitSummaryPartPath,
@@ -25,7 +27,7 @@ import {
   modelJsonSchema,
   oversizedSplitModelLayer,
 } from "../lib/model.js";
-import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
+import { chatJson, providerLabel } from "../lib/ollama.js";
 import { isEmptySummarizePatch } from "../lib/patch-split.js";
 import { loadProjectContext } from "../lib/project.js";
 import {
@@ -46,20 +48,16 @@ import type {
   CommitEvidenceRecord,
   CommitSummaryRecord,
 } from "../lib/records.js";
-import { resolveModel } from "../lib/select.js";
+import { resolveLlmSlot } from "../lib/select.js";
 import { compareLocale } from "../lib/sort.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
  * Options for the `summarize` command.
  */
-export interface SummarizeOptions {
+export interface SummarizeOptions extends LlmCommandOptions {
   /** Path to the repository whose exported commits should be summarized. */
   repo: string;
-  /** Ollama base URL override. */
-  url?: string;
-  /** Model name; skips the interactive picker when given. */
-  model?: string;
   /** Only process the first N pending commits (useful for trials). */
   limit?: number;
   /** Operate on a defined review period's data instead of the repo's all-time data. */
@@ -150,6 +148,7 @@ function allEvidencePatchesEmpty(evidenceDir: string, evidence: CommitEvidenceRe
 async function summarizeOnePart(input: {
   baseUrl: string;
   model: string;
+  provider: LlmProviderId;
   system: string;
   evidenceDir: string;
   summariesDir: string;
@@ -157,7 +156,8 @@ async function summarizeOnePart(input: {
   part: number;
   tracker: TokenUsageTracker;
 }): Promise<ModelLayer> {
-  const { baseUrl, model, system, evidenceDir, summariesDir, evidence, part, tracker } = input;
+  const { baseUrl, model, provider, system, evidenceDir, summariesDir, evidence, part, tracker } =
+    input;
   const ts = String(evidence.timestamp);
   const hash = evidence.commitHash;
   const partEvidencePath = path.join(evidenceDir, ts, `${hash}.part${part}.json`);
@@ -198,6 +198,7 @@ async function summarizeOnePart(input: {
   const prompt = buildCommitUserPrompt(partEvidence, patch);
 
   const raw = (await chatJson({
+    provider,
     baseUrl,
     model,
     system,
@@ -229,6 +230,7 @@ async function summarizeOnePart(input: {
 async function finalizeMergedSummary(input: {
   baseUrl: string;
   model: string;
+  provider: LlmProviderId;
   projectBlock: string;
   evidenceDir: string;
   evidence: CommitEvidenceRecord;
@@ -236,7 +238,17 @@ async function finalizeMergedSummary(input: {
   partCount: number;
   tracker: TokenUsageTracker;
 }): Promise<ModelLayer> {
-  const { baseUrl, model, projectBlock, evidenceDir, evidence, merged, partCount, tracker } = input;
+  const {
+    baseUrl,
+    model,
+    provider,
+    projectBlock,
+    evidenceDir,
+    evidence,
+    merged,
+    partCount,
+    tracker,
+  } = input;
 
   if (allEvidencePatchesEmpty(evidenceDir, evidence)) {
     console.log("  [3/6] polish signal reasons ... skipped (empty patch)");
@@ -262,6 +274,7 @@ async function finalizeMergedSummary(input: {
 
   process.stdout.write("  [3/6] polish signal reasons ... ");
   const reasonsRaw = (await chatJson({
+    provider,
     baseUrl,
     model,
     system: withProjectContext(projectBlock, MERGE_FINALIZE_REASONS_SYSTEM),
@@ -281,6 +294,7 @@ async function finalizeMergedSummary(input: {
 
   process.stdout.write("  [4/6] compose summary ... ");
   const summaryRaw = (await chatJson({
+    provider,
     baseUrl,
     model,
     system: withProjectContext(projectBlock, MERGE_FINALIZE_SUMMARY_SYSTEM),
@@ -297,6 +311,7 @@ async function finalizeMergedSummary(input: {
 
   process.stdout.write("  [5/6] reframe questions (4) ... ");
   const questionsRaw = (await chatJson({
+    provider,
     baseUrl,
     model,
     system: withProjectContext(projectBlock, MERGE_FINALIZE_QUESTIONS_SYSTEM),
@@ -351,6 +366,7 @@ interface SplitCommitContext {
   commitTotal: number;
   baseUrl: string;
   model: string;
+  provider: LlmProviderId;
   system: string;
   projectBlock: string;
   evidenceDir: string;
@@ -404,6 +420,7 @@ async function summarizeSplitParts(ctx: SplitCommitContext): Promise<ModelLayer[
     const layer = await summarizeOnePart({
       baseUrl: ctx.baseUrl,
       model: ctx.model,
+      provider: ctx.provider,
       system: ctx.system,
       evidenceDir: ctx.evidenceDir,
       summariesDir: ctx.summariesDir,
@@ -468,6 +485,7 @@ async function summarizeSplitCommit(input: SplitCommitContext): Promise<void> {
   const finalModel = await finalizeMergedSummary({
     baseUrl: input.baseUrl,
     model: input.model,
+    provider: input.provider,
     projectBlock: input.projectBlock,
     evidenceDir: input.evidenceDir,
     evidence: input.evidence,
@@ -511,6 +529,7 @@ interface SummarizeRunContext {
   summariesDir: string;
   baseUrl: string;
   model: string;
+  provider: LlmProviderId;
   system: string;
   projectBlock: string;
   tracker: TokenUsageTracker;
@@ -554,6 +573,7 @@ async function summarizeSingleCommit(
 
   const prompt = buildCommitUserPrompt(item.evidence, patch);
   const raw = (await chatJson({
+    provider: ctx.provider,
     baseUrl: ctx.baseUrl,
     model: ctx.model,
     system: ctx.system,
@@ -602,6 +622,7 @@ async function processPendingItem(
     commitTotal,
     baseUrl: ctx.baseUrl,
     model: ctx.model,
+    provider: ctx.provider,
     system: ctx.system,
     projectBlock: ctx.projectBlock,
     evidenceDir: ctx.evidenceDir,
@@ -631,21 +652,19 @@ export async function summarize(options: SummarizeOptions): Promise<void> {
   const repoPath = resolveRepo(options.repo);
   const evidenceDir = repoCommitsDir(repoPath, options.period);
   const summariesDir = repoSummariesDir(repoPath, options.period);
-  const baseUrl = resolveBaseUrl(options.url);
+  const { providerId, baseUrl, model } = await resolveLlmSlot("commit", {
+    ollama: options.ollama,
+    lmstudio: options.lmstudio,
+    model: options.model,
+    message: "Which model should summarize commit patches?",
+  });
+  console.log(`Using model "${model}" (${providerLabel(providerId)}) at ${baseUrl}\n`);
 
   const allFiles = listEvidenceJsonFiles(evidenceDir);
   if (allFiles.length === 0) {
     console.log(`No exported commits found for ${repoPath}. Run \`dev-workgraph evidence\` first.`);
     return;
   }
-
-  const savedOllama = loadConfig().ollama;
-  const model = await resolveModel(baseUrl, options.model, {
-    message: "Which Ollama model should summarize commit patches?",
-    saved: savedOllama?.commitModel ?? savedOllama?.model,
-  });
-  setOllamaConfig({ baseUrl, commitModel: model });
-  console.log(`Using model "${model}" at ${baseUrl}\n`);
 
   const projectBlock = projectContextBlock(loadProjectContext(repoPath, options.period));
   if (!projectBlock) {
@@ -673,6 +692,7 @@ export async function summarize(options: SummarizeOptions): Promise<void> {
   const ctx: SummarizeRunContext = {
     evidenceDir,
     summariesDir,
+    provider: providerId,
     baseUrl,
     model,
     system,

@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import inquirer from "inquirer";
-import { loadConfig, repoFinishDir, repoPreparedDir, setOllamaConfig } from "../lib/config.js";
+import { repoFinishDir, repoPreparedDir } from "../lib/config.js";
 import {
   defaultReconstructionName,
   extendSourceQuestions,
@@ -27,13 +27,15 @@ import {
   writeFinishQuestions,
 } from "../lib/finish-questions.js";
 import { resolveRepo } from "../lib/git.js";
+import type { LlmCommandOptions } from "../lib/llm/cli-options.js";
+import type { LlmProviderId } from "../lib/llm/types.js";
 import {
   cvBulletsJsonSchema,
   flattenQuestions,
   groupHistoryJsonSchema,
   roleNarrativeJsonSchema,
 } from "../lib/model.js";
-import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
+import { chatJson } from "../lib/ollama.js";
 import { loadProjectContext } from "../lib/project.js";
 import {
   buildCvBulletsPrompt,
@@ -53,23 +55,19 @@ import type {
   FinishRecord,
   PreparedRecord,
 } from "../lib/records.js";
-import { resolveModel } from "../lib/select.js";
+import { resolveLlmSlot } from "../lib/select.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
  * Options for the `final` command.
  */
-export interface FinalOptions {
+export interface FinalOptions extends LlmCommandOptions {
   /** Path to the repository. */
   repo: string;
   /** Pre-written Q&A as JSON (non-interactive). */
   answersFile?: string;
   /** Output markdown path (default: ./RECONSTRUCTION.<project>.md). */
   output?: string;
-  /** Ollama base URL override. */
-  url?: string;
-  /** Model name; skips the interactive picker. */
-  model?: string;
   /** Operate on a defined review period's data instead of the repo's all-time data. */
   period?: string;
 }
@@ -196,6 +194,7 @@ interface FinalNarratives {
 interface FinalNarrativeLlm {
   baseUrl: string;
   model: string;
+  provider: LlmProviderId;
   projectBlock: string;
   tracker: TokenUsageTracker;
 }
@@ -211,7 +210,7 @@ interface FinalNarrativeInput {
 
 async function generateFinalNarratives(input: FinalNarrativeInput): Promise<FinalNarratives> {
   const { prepared, project, qa, isExtension, priorFinish, llm } = input;
-  const { baseUrl, model, projectBlock, tracker } = llm;
+  const { baseUrl, model, provider, projectBlock, tracker } = llm;
   process.stdout.write(
     isExtension
       ? "Refining Your IMPACT with all answers ... "
@@ -222,6 +221,7 @@ async function generateFinalNarratives(input: FinalNarrativeInput): Promise<Fina
       ? buildDeepenImpactNarrativePrompt(prepared.model.history, priorFinish.record.history, qa)
       : buildImpactNarrativePrompt(prepared.model.history, qa);
   const refined = (await chatJson({
+    provider,
     baseUrl,
     model,
     system: withProjectContext(projectBlock, IMPACT_NARRATIVE_SYSTEM),
@@ -234,6 +234,7 @@ async function generateFinalNarratives(input: FinalNarrativeInput): Promise<Fina
 
   process.stdout.write("Writing Role Narrative ... ");
   const result = (await chatJson({
+    provider,
     baseUrl,
     model,
     system: withProjectContext(projectBlock, ROLE_NARRATIVE_SYSTEM),
@@ -246,6 +247,7 @@ async function generateFinalNarratives(input: FinalNarrativeInput): Promise<Fina
 
   process.stdout.write("Writing CV bullets ... ");
   const cvResult = (await chatJson({
+    provider,
     baseUrl,
     model,
     system: withProjectContext(projectBlock, CV_BULLETS_SYSTEM),
@@ -566,13 +568,12 @@ export async function final(options: FinalOptions): Promise<void> {
     roundAnswers,
   );
 
-  const baseUrl = resolveBaseUrl(options.url);
-  const savedOllama = loadConfig().ollama;
-  const model = await resolveModel(baseUrl, options.model, {
-    message: "Which Ollama model should write the Role Narrative?",
-    saved: savedOllama?.narrativeModel ?? savedOllama?.reportModel ?? savedOllama?.model,
+  const { providerId, baseUrl, model } = await resolveLlmSlot("narrative", {
+    ollama: options.ollama,
+    lmstudio: options.lmstudio,
+    model: options.model,
+    message: "Which model should write the Role Narrative?",
   });
-  setOllamaConfig({ baseUrl, narrativeModel: model });
 
   const tracker = new TokenUsageTracker(repoPath, options.period);
   tracker.beginStep("final");
@@ -584,7 +585,13 @@ export async function final(options: FinalOptions): Promise<void> {
       qa,
       isExtension: state.isExtension,
       priorFinish: state.priorFinish,
-      llm: { baseUrl, model, projectBlock: projectContextBlock(project), tracker },
+      llm: {
+        baseUrl,
+        model,
+        provider: providerId,
+        projectBlock: projectContextBlock(project),
+        tracker,
+      },
     });
   } finally {
     tracker.endStep();

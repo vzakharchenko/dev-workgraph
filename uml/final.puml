@@ -8,7 +8,7 @@ title dev-workgraph — **final** (§11)\nClose the loop: human answers -> **REC
 legend top left
   |= Tag |= Meaning |
   | **(H)** | Human input — primary product |
-  | **(M:n)** | Ollama **narrativeModel** |
+  | **(M:n)** | **narrativeModel** (Ollama / LM Studio) |
   | **(D)** | Deterministic assembly / persist |
 endlegend
 
@@ -111,7 +111,7 @@ else (first run / same prepared)
   }
 endif
 
-:Pick **narrativeModel** (Ollama);
+:Pick **narrativeModel**\n(Ollama / LM Studio);
 
 partition "**Step 2a — Refine Your IMPACT (M:n)**" {
   :Input: prepared.model.history\n+ prior finish.history (extension)\n+ **all** Q&A + project context;
@@ -409,7 +409,7 @@ actor "Developer" as DEV
 database "prepared/<id>.json" as PREP
 database "project.json" as PJ
 participant "**final**" as FIN
-participant "Ollama\nnarrativeModel" as LLM
+participant "LLM\nnarrativeModel\nOllama | LM Studio" as LLM
 database "cwd/RECONSTRUCTION.*.md" as MD
 database "finish/*.question.json" as QFILE
 database "finish/" as ARCH

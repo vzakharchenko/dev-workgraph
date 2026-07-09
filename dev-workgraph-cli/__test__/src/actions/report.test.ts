@@ -11,11 +11,11 @@ import {
   writeProjectContext,
 } from "../helpers/action-fixtures.js";
 import { emptyDeterministic, sampleGroupModel, sampleReport, sampleReportModel } from "../../helpers.js";
-import { repoGroupsDir, repoProjectPath, repoReportsDir, setOllamaConfig } from "../../../src/lib/config.js";
+import { repoGroupsDir, repoProjectPath, repoReportsDir, setLlmConfig } from "../../../src/lib/config.js";
 import { MAX_HISTORY_ENTRIES } from "../../../src/lib/report-provenance.js";
 import type { GroupRecord, ReportRecord } from "../../../src/lib/records.js";
-import { chatJson } from "../../../src/lib/ollama.js";
-import { resolveModel } from "../../../src/lib/select.js";
+import { chatJson } from "../../../src/lib/llm";
+import { resolveLlmSlot } from "../../../src/lib/select.js";
 
 vi.mock("../../../src/lib/git.js", () => ({
   resolveRepo: vi.fn((repo: string) => path.resolve(repo === "." ? FAKE_REPO : repo)),
@@ -33,7 +33,11 @@ vi.mock("../../../src/lib/ollama.js", async (importOriginal) => {
 });
 
 vi.mock("../../../src/lib/select.js", () => ({
-  resolveModel: vi.fn(async () => "test-model"),
+  resolveLlmSlot: vi.fn(async () => ({
+    providerId: "ollama" as const,
+    baseUrl: "http://127.0.0.1:11434",
+    model: "test-model",
+  })),
 }));
 
 import { report } from "../../../src/actions/report.js";
@@ -72,7 +76,11 @@ describe("report", () => {
     ({ restore: restoreHome } = setupWorkgraphHome());
     writeProjectContext(FAKE_REPO);
     vi.mocked(chatJson).mockImplementation(async (opts) => chatJsonFromSchema(opts.schema));
-    vi.mocked(resolveModel).mockResolvedValue("test-model");
+    vi.mocked(resolveLlmSlot).mockResolvedValue({
+      providerId: "ollama",
+      baseUrl: "http://127.0.0.1:11434",
+      model: "test-model",
+    });
   });
 
   afterEach(() => {
@@ -180,25 +188,25 @@ describe("report", () => {
     expect(fs.existsSync(path.join(repoReportsDir(FAKE_REPO), "1700086400.json"))).toBe(false);
   });
 
-  it("uses saved reportModel from config when resolving the model", async () => {
-    setOllamaConfig({ reportModel: "saved-report-model" });
+  it("resolves the report slot from config when no model flag is given", async () => {
+    setLlmConfig({ reportModel: "saved-report-model" });
     seedGroup(FAKE_REPO, summarizedGroup());
     await report({ repo: FAKE_REPO });
-    expect(resolveModel).toHaveBeenCalledWith(
-      "http://127.0.0.1:11434",
-      undefined,
-      expect.objectContaining({ saved: "saved-report-model" }),
+    expect(resolveLlmSlot).toHaveBeenCalledWith(
+      "report",
+      expect.objectContaining({
+        message: expect.stringContaining("fold the report"),
+      }),
     );
   });
 
-  it("falls back to legacy ollama.model when reportModel is unset", async () => {
-    setOllamaConfig({ model: "legacy-model" });
+  it("passes explicit model flag to the report slot", async () => {
+    setLlmConfig({ model: "legacy-model" });
     seedGroup(FAKE_REPO, summarizedGroup());
-    await report({ repo: FAKE_REPO });
-    expect(resolveModel).toHaveBeenCalledWith(
-      "http://127.0.0.1:11434",
-      undefined,
-      expect.objectContaining({ saved: "legacy-model" }),
+    await report({ repo: FAKE_REPO, model: "test-model" });
+    expect(resolveLlmSlot).toHaveBeenCalledWith(
+      "report",
+      expect.objectContaining({ model: "test-model" }),
     );
   });
 

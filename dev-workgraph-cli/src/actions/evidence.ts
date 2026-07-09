@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { areaOf } from "../lib/areas.js";
-import { getRepoConfig, loadConfig, repoCommitsDir } from "../lib/config.js";
+import { getRepoConfig, repoCommitsDir } from "../lib/config.js";
 import {
   type ChangedFile,
   type Commit,
@@ -14,8 +14,9 @@ import {
   getPatch,
   resolveRepo,
 } from "../lib/git.js";
+import type { LlmCommandOptions } from "../lib/llm/cli-options.js";
+import type { LlmProviderId } from "../lib/llm/types.js";
 import { isNoise } from "../lib/noise.js";
-import { listModels, resolveBaseUrl } from "../lib/ollama.js";
 import {
   buildBucketManifestPatch,
   filterPatchNoise,
@@ -36,23 +37,19 @@ import type {
   CommitEvidenceRecord,
   DeterministicLayer,
 } from "../lib/records.js";
-import { resolveModel } from "../lib/select.js";
+import { resolveLlmSlot, resolveLlmWithModel } from "../lib/select.js";
 import { uniqSorted } from "../lib/sort.js";
 
 /**
  * Options for the `evidence` command.
  */
-export interface EvidenceOptions {
+export interface EvidenceOptions extends LlmCommandOptions {
   /** Path to the repository (relative or absolute). */
   repo: string;
   /** Override the saved author selection with these emails. */
   email?: string[];
   /** Restrict extraction to a defined review period (scopes output too). */
   period?: string;
-  /** Ollama base URL override (used when path filter runs). */
-  url?: string;
-  /** Override path-filter model; else narrativeModel → reportModel → commitModel → legacy model, then prompt (not saved). */
-  model?: string;
   /** Disable LLM path filter even when split would exceed {@link MAX_SPLIT_PARTS_BEFORE_PATH_FILTER}. */
   noPathFilter?: boolean;
 }
@@ -88,6 +85,7 @@ function exceedsPathFilterThreshold(repoPath: string, commitHash: string): boole
 interface PathFilterLlm {
   baseUrl: string;
   model: string;
+  provider: LlmProviderId;
 }
 
 /**
@@ -309,6 +307,7 @@ async function maybePeelBinaryAndGenerated(input: {
   const classified = await classifyPathsByFilename({
     baseUrl: input.llm.baseUrl,
     model: input.llm.model,
+    provider: input.llm.provider,
     paths,
   });
   const exclude = new Set([...classified.likelyBinary, ...classified.likelyGenerated]);
@@ -406,13 +405,6 @@ async function writeSplitCommit(
   }
 }
 
-async function assertModelInstalled(baseUrl: string, model: string): Promise<void> {
-  const available = await listModels(baseUrl);
-  if (!available.includes(model)) {
-    throw new Error(`Model "${model}" not found on Ollama. Available: ${available.join(", ")}`);
-  }
-}
-
 async function resolvePathFilterLlm(
   options: EvidenceOptions,
   llm: PathFilterLlm | undefined,
@@ -420,24 +412,17 @@ async function resolvePathFilterLlm(
   if (options.noPathFilter) return null;
   if (llm) return llm;
 
-  const baseUrl = resolveBaseUrl(options.url);
-  const savedOllama = loadConfig().ollama;
-  const preset =
-    options.model ??
-    savedOllama?.narrativeModel ??
-    savedOllama?.reportModel ??
-    savedOllama?.commitModel ??
-    savedOllama?.model;
+  const resolveOpts = {
+    ollama: options.ollama,
+    lmstudio: options.lmstudio,
+    model: options.model,
+    message: "Which model should classify paths for large split commits?",
+  };
 
-  if (preset) {
-    await assertModelInstalled(baseUrl, preset);
-    return { baseUrl, model: preset };
-  }
-
-  const model = await resolveModel(baseUrl, undefined, {
-    message: "Which Ollama model should classify paths for large split commits?",
-  });
-  return { baseUrl, model };
+  const choice = options.model
+    ? await resolveLlmWithModel(resolveOpts)
+    : await resolveLlmSlot("commit", resolveOpts);
+  return { baseUrl: choice.baseUrl, model: choice.model, provider: choice.providerId };
 }
 
 /**

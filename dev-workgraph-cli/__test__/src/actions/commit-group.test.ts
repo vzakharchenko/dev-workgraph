@@ -38,11 +38,15 @@ vi.mock("../../../src/lib/ollama.js", async (importOriginal) => {
 });
 
 vi.mock("../../../src/lib/select.js", () => ({
-  resolveModel: vi.fn(async () => "test-model"),
+  resolveLlmSlot: vi.fn(async () => ({
+    providerId: "ollama" as const,
+    baseUrl: "http://127.0.0.1:11434",
+    model: "test-model",
+  })),
 }));
 
 import { commitGroup } from "../../../src/actions/commit-group.js";
-import { chatJson } from "../../../src/lib/ollama.js";
+import { chatJson } from "../../../src/lib/llm";
 
 describe("commitGroup", () => {
   let restoreHome: () => void;

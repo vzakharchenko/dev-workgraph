@@ -81,7 +81,7 @@ Before any export or summarization, the user initializes the repository in dev-w
    
    Output: a **project profile** — what the project appears to be about, its domain, apparent technical stack, and key themes/events the README and story support. This is interpretation, not proof.
 
-Both LLM sessions use Ollama. `init` builds human-facing project context (story + profile), so it uses the **`narrativeModel`** slot (see §13).
+Both LLM sessions use a **local backend** (Ollama or LM Studio; see §13). `init` builds human-facing project context (story + profile), so it uses the **`narrativeModel`** slot (see §13).
 
 ### On-disk layout
 
@@ -508,7 +508,7 @@ The two layers are kept in **separate files**:
 
 `commit-group` loads evidence from `commits/` and joins each commit with its **canonical** summary from `summaries/<ts>/<hash>.json` (legacy evidence files that still inline `model` are supported when no summary file exists). **Split commit manifests** are included only after the canonical summary exists. Each summary file records `sourceEvidence` (the evidence timestamp directory); each group file records parallel `sourceEvidence` / `sourceSummaries` arrays aligned with `groups.commits`.
 
-The model layer is produced by a **local model via Ollama** (HTTP API, default `http://127.0.0.1:11434`). The model is chosen interactively from the installed models and the choice is remembered. Generation uses Ollama structured output (a JSON Schema is passed via the `format` parameter). On response, the CLI **extracts** the JSON object from the raw text (handles markdown fences and surrounding prose), **parses** it, and **schema-validates** the result before accepting — via the shared `chatJson` helper (§13 Resilience). Each generated layer records its provenance (`model` name, timestamp). The **project context block** (§0) is included in every summarize prompt. Summarize is append-only: commits that already have a **canonical** summary file are skipped on re-run.
+The model layer is produced by a **local LLM backend** — [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) (HTTP API; defaults `http://127.0.0.1:11434` and `http://127.0.0.1:1234`). The model is chosen interactively from all reachable backends and the choice is remembered per slot (`provider`, `baseUrl`, `model`). Generation uses structured JSON output (`chatJson` — §13 Resilience): a JSON Schema is passed to the backend; on response, the CLI **extracts** the JSON object from the raw text (handles markdown fences and surrounding prose), **parses** it, and **schema-validates** the result before accepting. Each generated layer records its provenance (`model` name, timestamp). The **project context block** (§0) is included in every summarize prompt. Summarize is append-only: commits that already have a **canonical** summary file are skipped on re-run.
 
 ### Normal commit (one LLM call)
 
@@ -631,7 +631,7 @@ deployment
 
 `confidence` — the model's confidence in its own summary, `low | medium | high`.
 
-`provenance` — attached by the CLI (not model output): `model` (Ollama model name, or `"(none)"` when summarize skipped the LLM), `generatedAt`.
+`provenance` — attached by the CLI (not model output): `model` (chosen model name, or `"(none)"` when summarize skipped the LLM), `generatedAt`.
 
 #### Example (canonical summary; evidence lives in `commits/…`)
 
@@ -891,7 +891,7 @@ This layer is evidence. It is written at group-creation time, before the LLM cal
 
 #### Model layer (group interpretation) — two LLM sessions
 
-The group model layer is built in **two separate LLM sessions** per group via Ollama (same stack as `summarize`: `chatJson` with structured JSON output, extract/parse/schema validation — §13, provenance, signal-without-reason enforcement). Both sessions include the **project context block** (§0). Splitting the work keeps each call focused and lets the `history` be a faithful *merge* of the per-commit summaries rather than a fresh invention.
+The group model layer is built in **two separate LLM sessions** per group via a local backend (same stack as `summarize`: `chatJson` with structured JSON output, extract/parse/schema validation — §13, provenance, signal-without-reason enforcement). Both sessions include the **project context block** (§0). Splitting the work keeps each call focused and lets the `history` be a faithful *merge* of the per-commit summaries rather than a fresh invention.
 
 **Session 1 — classify** (`groupClassifyJsonSchema`, no `summary`):
 
@@ -1018,7 +1018,7 @@ For every group:
 2. **Write `groups.commits`** — ordered list of member commit hashes.
 3. **Aggregate the deterministic layer** — merge `changedFiles`, churn, folders, areas, and `excludedFiles` from member commits (§4).
 4. **Partition signal tiers** — compute the deterministic `groups.tiers` (`low` / `medium` / `hi`) from per-commit model signals.
-5. **Session 1 — classify** — send the group deterministic layer, the tier-annotated member commits, and the `groups.tiers` reference to Ollama; get session signals + the three context-bullet arrays.
+5. **Session 1 — classify** — send the group deterministic layer, the tier-annotated member commits, and the `groups.tiers` reference to the local model backend; get session signals + the three context-bullet arrays.
 6. **Session 2 — compose** — send the classification + the per-commit summaries grouped by tier; get the merged first-person `history`.
 7. **Write the model layer** — assemble session-1 fields + session-2 `history` + `provenance`.
 8. **Persist** the group JSON to `~/.workgraph/data/repos/<repo-id>/groups/[timestampEnd].json`.
@@ -1788,11 +1788,11 @@ These may be added later. The personal `RECONSTRUCTION.<project>.md` from `final
 
 Command flow (all commands take the repository path, for consistency):
 ```
-dev-workgraph check                 # verify Ollama is running + has models           [BUILT]
+dev-workgraph check                 # verify local LLM backend(s) + models              [BUILT]
 dev-workgraph init         ./repo   # role, project story, README → project profile   [BUILT]
 dev-workgraph authors      ./repo   # scan history, select your author emails          [BUILT]
 dev-workgraph evidence     ./repo   # extract commits + patches + deterministic JSON   [BUILT]
-dev-workgraph summarize    ./repo   # add per-commit model layer via local Ollama      [BUILT]
+dev-workgraph summarize    ./repo   # add per-commit model layer via local LLM         [BUILT]
 dev-workgraph commit-group ./repo   # group commits by day threshold, 2 LLM sessions   [BUILT]
 dev-workgraph report       ./repo   # fold groups into a cumulative narrative report   [BUILT]
 dev-workgraph prepare      ./repo   # distill final report → role-aligned narrative    [BUILT]
@@ -1824,13 +1824,30 @@ manifest.json         # { schemaVersion, repoId, repoPath, exportedAt, config }
 
 ### `run` — unattended pipeline
 
-`check` is a standalone preflight: it verifies the Ollama server is reachable and has at least one model, and otherwise prints OS-specific install help (macOS: `brew install ollama`; Linux: `curl -fsSL https://ollama.com/install.sh | sh`) plus `ollama pull` suggestions; it also flags any saved `commitModel`/`reportModel`/`narrativeModel` that is no longer installed. `run` invokes the same check as a **preflight** and aborts before prompting if Ollama is not ready.
+`check` is a standalone preflight: it probes **Ollama** and **LM Studio** (when reachable), verifies each discovered server has at least one model, and otherwise prints provider-specific install help (Ollama: `brew install ollama` / install script + `ollama pull`; LM Studio: download + start local server). When the Ollama binary is installed but the server is down, it suggests `ollama serve`. It also flags any saved slot (`commit` / `report` / `narrative`) whose model is no longer available on its backend. `run` invokes the same discovery as a **preflight** and aborts before prompting if no backend is ready.
 
-`run` is an orchestrator that **gathers every upfront input first** (after the Ollama preflight), then executes `init → evidence → summarize → commit-group → report → prepare` without further prompts, and finishes with **`final`** which asks the four prepared questions interactively. Upfront it asks only for what is missing: the three models (below), developer role + project story (if `project.json` is absent), author identities (if none saved), and the group-threshold days (if not saved). Each unattended stage runs with those values passed as flags. Stages skip work that is already done (append-only / resume / extension groups), so `run` is safe to re-run after new commits. On re-run, `evidence` and `summarize` process only new commits; `commit-group` writes **extension groups** for uncovered commits (§4); `report` resumes the fold chain; `prepare` runs for a new `reportId`; **`final`** enters **extension mode** when a finish with answers exists and the prepared file is new — asks up to four new questions, merges cumulative Q&A, and appends `finish` vN. On the **same** prepared, `final` reuses saved answers. `final` can also be run on its own. **`deepen`** is a separate post-`final` step (§10.5) — not invoked by `run`.
+`run` is an orchestrator that **gathers every upfront input first** (after the LLM preflight), then executes `init → evidence → summarize → commit-group → report → prepare` without further prompts, and finishes with **`final`** which asks the four prepared questions interactively. Upfront it asks only for what is missing: the three models (below), developer role + project story (if `project.json` is absent), author identities (if none saved), and the group-threshold days (if not saved). Each unattended stage runs with those values passed as flags. Stages skip work that is already done (append-only / resume / extension groups), so `run` is safe to re-run after new commits. On re-run, `evidence` and `summarize` process only new commits; `commit-group` writes **extension groups** for uncovered commits (§4); `report` resumes the fold chain; `prepare` runs for a new `reportId`; **`final`** enters **extension mode** when a finish with answers exists and the prepared file is new — asks up to four new questions, merges cumulative Q&A, and appends `finish` vN. On the **same** prepared, `final` reuses saved answers. `final` can also be run on its own. **`deepen`** is a separate post-`final` step (§10.5) — not invoked by `run`.
+
+### Local LLM backends (Ollama and LM Studio)
+
+dev-workgraph uses **local** LLM servers only — no cloud API. Two backends are built in:
+
+| Backend | Default URL | CLI flag |
+|---------|-------------|----------|
+| **Ollama** | `http://127.0.0.1:11434` | `--ollama-url <url>` |
+| **LM Studio** | `http://127.0.0.1:1234` | `--lmstudio-url <url>` |
+
+**Discovery** — `check` and model pickers probe both backends; only servers that respond with at least one model are listed. Models appear as `name (Ollama)` / `name (LM Studio)`. LM Studio is detected via native `GET /api/v1/models` so Ollama on port `11434` is never mistaken for LM Studio.
+
+**Mixing providers** — Ollama and LM Studio may run on the same machine or different hosts. Each pipeline stage can use a different backend and model.
+
+**LM Studio lifecycle** — when a step uses LM Studio, the CLI unloads all models, loads the chosen model for that step, then unloads all in `finally` (frees VRAM between steps and after the run).
+
+**Config overrides** — `WORKGRAPH_OLLAMA_URL`, `WORKGRAPH_LLM_URL`, `OLLAMA_HOST`, `LM_STUDIO_BASE_URL`, and optional `config.llm.servers.ollama` / `servers.lmstudio`.
 
 ### Three models (commit-level vs report-level vs narrative)
 
-The local model is chosen and remembered **per stage group**, in `~/.workgraph/config.json` under `ollama`:
+The local model is chosen and remembered **per stage group**, in `~/.workgraph/config.json` under `llm` (legacy top-level key `ollama` and flat `commitModel` / `reportModel` / `narrativeModel` are still read on load). Each slot stores `{ provider, baseUrl, model }`:
 
 - **`commitModel`** — used by `summarize` and `commit-group` (per-commit and per-session work).
 - **`reportModel`** — used by `report` (cumulative fold over work-session groups).
@@ -1840,7 +1857,7 @@ Each command seeds its picker from its own slot, falling back through the more g
 
 ### Resilience
 
-- **JSON validation:** every LLM call (`chatJson` in `src/lib/ollama.ts`) passes a JSON Schema via Ollama's `format` parameter; the response is extracted from raw text (markdown fences tolerated), parsed, and schema-validated before acceptance (`parseAndValidateModelJson` in `src/lib/json-response.ts`). **`commitModel`** and **`reportModel`** calls send `think: false`; **`narrativeModel`** calls omit `think` so Ollama uses the model default (thinking-capable models may reason on narrative stages). All calls use **`temperature: 0.2` only** — `num_ctx` / `num_predict` are left to the model's Modelfile defaults.
+- **JSON validation:** every LLM call (`chatJson`) requests structured JSON output (Ollama via the `format` parameter; LM Studio via OpenAI-compatible chat with `response_format` and fallbacks). The response is extracted from raw text (markdown fences tolerated), parsed, and schema-validated before acceptance (`parseAndValidateModelJson` in `src/lib/json-response.ts`). **`commitModel`** and **`reportModel`** calls send `think: false` on Ollama; **`narrativeModel`** calls omit `think` so Ollama uses the model default (thinking-capable models may reason on narrative stages). All calls use **`temperature: 0.2` only** — `num_ctx` / `num_predict` are left to the model's defaults where applicable.
 - **Truncation:** `done_reason === "length"` does **not** fail by itself; if the response still parses and passes schema validation it is accepted (with a stderr warning). Truly truncated JSON fails at parse/schema validation like any other bad response.
 - **Retries:** every LLM call retries up to **2 attempts** with backoff on HTTP/transport, parse, or validation errors. After exhaustion the stage throws and the pipeline stops at that item.
 - **`report` resume:** each fold writes `reports/<timestampEnd>.json`, so a re-run loads the longest existing prefix and **continues from the next group** instead of restarting. Adding new groups later extends the chain incrementally.
@@ -1858,7 +1875,7 @@ Each command seeds its picker from its own slot, falling back through the more g
 - **Data layout** is namespaced per repository: `~/.workgraph/data/repos/<repo-id>/{project.json,commits/...,summaries/...,groups/...,reports/...,prepared/...}`. A **review period** (§0.5) nests the same sub-tree under `periods/<id>/`; all path helpers take an optional `period` argument.
 - **Project context block** — role + `story.preparedContext` + `profile` injected into every LLM prompt in `summarize`, `commit-group`, and `report`.
 - **Noise filter** and **area detection** are deterministic, shared library modules.
-- **Model layer** is generated by a local Ollama model (chosen interactively, remembered) using `chatJson` structured JSON output with post-response extract/parse/schema validation (§13 Resilience); the signal-without-reason rule is enforced after generation.
+- **Model layer** is generated by a local LLM backend (Ollama or LM Studio; chosen interactively, remembered per slot) using `chatJson` structured JSON output with post-response extract/parse/schema validation (§13 Resilience); the signal-without-reason rule is enforced after generation.
 - **Report provenance** — cumulative group files in root-level `sourceGroups`; per-entry provenance in `deterministic.historySource` parallel to `history` (same length, same indices); legacy formats are read for backward compatibility.
 - `prepare` reads the latest report + `project.json`, runs four `narrativeModel` sessions (compose history, clean technologies, collapse reasons, reframe questionsAnalyses with **prior finish Q&A** resolved from finish archive + question files when present), writes `prepared/<reportId>.json` (no answers).
 - `final` reads the latest `prepared/<reportId>.json` + `project.json`, writes question text to `finish/<finishId>.question.json` (or `.question.vN.json`), collects Q&A (four on first run; **extension mode** merges prior finish `answers` + up to four new questions), persists cumulative `answers[]` + `sourceQuestions` on the finish archive, runs three `narrativeModel` sessions (refine IMPACT — combined history in extension mode — then Role Narrative, then CV bullets over **all** Q&A), writes `RECONSTRUCTION.<project>.md` or `.vN.md` to **cwd**, and archives under `finish/<preparedId>.{md,json,question.json}` or `<preparedId>.vN.{md,json}` + `.question.vN.json` (`version` 1 or N+1).

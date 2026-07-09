@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { routineCheckJsonSchema } from "../../../src/lib/model.js";
-import { chatJson, listModels, resolveBaseUrl } from "../../../src/lib/ollama.js";
+import { loadConfig } from "../../../src/lib/config.js";
+import { chatJson, listModels, resolveBaseUrl } from "../../../src/lib/llm";
+
+vi.mock("../../../src/lib/config.js", () => ({
+  loadConfig: vi.fn(() => ({})),
+}));
 
 describe("resolveBaseUrl", () => {
   let previousHost: string | undefined;
@@ -8,22 +13,61 @@ describe("resolveBaseUrl", () => {
   afterEach(() => {
     if (previousHost === undefined) delete process.env.OLLAMA_HOST;
     else process.env.OLLAMA_HOST = previousHost;
+    delete process.env.WORKGRAPH_OLLAMA_URL;
+    vi.mocked(loadConfig).mockReturnValue({});
   });
 
   it("defaults to localhost when no flag or env is set", () => {
     previousHost = process.env.OLLAMA_HOST;
     delete process.env.OLLAMA_HOST;
-    expect(resolveBaseUrl()).toBe("http://127.0.0.1:11434");
+    expect(resolveBaseUrl("ollama")).toBe("http://127.0.0.1:11434");
   });
 
   it("normalizes host:port and strips trailing slashes", () => {
-    expect(resolveBaseUrl("192.168.1.10:11434/")).toBe("http://192.168.1.10:11434");
+    expect(resolveBaseUrl("ollama", { ollama: "192.168.1.10:11434/" })).toBe(
+      "http://192.168.1.10:11434",
+    );
   });
 
   it("prefers the flag over OLLAMA_HOST", () => {
     previousHost = process.env.OLLAMA_HOST;
     process.env.OLLAMA_HOST = "http://env-host:11434";
-    expect(resolveBaseUrl("http://flag-host:11434")).toBe("http://flag-host:11434");
+    expect(resolveBaseUrl("ollama", { ollama: "http://flag-host:11434" })).toBe(
+      "http://flag-host:11434",
+    );
+  });
+
+  it("honors servers.ollama and legacy config baseUrl", () => {
+    vi.mocked(loadConfig).mockReturnValue({
+      repos: {},
+      llm: { servers: { ollama: "http://servers:11434" } },
+    });
+    expect(resolveBaseUrl("ollama")).toBe("http://servers:11434");
+
+    process.env.WORKGRAPH_OLLAMA_URL = "http://env-ollama:11434";
+    expect(resolveBaseUrl("ollama")).toBe("http://servers:11434");
+
+    vi.mocked(loadConfig).mockReturnValue({
+      repos: {},
+      llm: { provider: "ollama", baseUrl: "http://legacy:11434" },
+    });
+    delete process.env.WORKGRAPH_OLLAMA_URL;
+    delete process.env.OLLAMA_HOST;
+    expect(resolveBaseUrl("ollama")).toBe("http://legacy:11434");
+  });
+
+  it("createOllamaProvider isReachable handles empty and failing backends", async () => {
+    const { createLlmProvider } = await import("../../../src/lib/llm/providers.js");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }) }));
+    await expect(createLlmProvider("ollama", "http://127.0.0.1:11434").isReachable()).resolves.toBe(
+      false,
+    );
+
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("down")));
+    await expect(createLlmProvider("ollama", "http://127.0.0.1:11434").isReachable()).resolves.toBe(
+      false,
+    );
+    vi.unstubAllGlobals();
   });
 });
 
@@ -40,17 +84,17 @@ describe("listModels", () => {
         json: async () => ({ models: [{ name: "alpha" }, { name: "beta" }] }),
       }),
     );
-    await expect(listModels("http://127.0.0.1:11434")).resolves.toEqual(["alpha", "beta"]);
+    await expect(listModels("http://127.0.0.1:11434", "ollama")).resolves.toEqual(["alpha", "beta"]);
   });
 
   it("throws when the server is unreachable", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("connection refused")));
-    await expect(listModels("http://127.0.0.1:11434")).rejects.toThrow(/cannot reach ollama/i);
+    await expect(listModels("http://127.0.0.1:11434", "ollama")).rejects.toThrow(/cannot reach ollama/i);
   });
 
   it("throws on non-OK response", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 503 }));
-    await expect(listModels("http://127.0.0.1:11434")).rejects.toThrow(/503/);
+    await expect(listModels("http://127.0.0.1:11434", "ollama")).rejects.toThrow(/503/);
   });
 });
 
@@ -75,6 +119,7 @@ describe("chatJson", () => {
       model: "test",
       system: "sys",
       user: "user",
+      provider: "ollama",
       schema: routineCheckJsonSchema(),
     });
     expect(result).toEqual({ routine: true, reason: "deps" });
@@ -99,6 +144,7 @@ describe("chatJson", () => {
       model: "test",
       system: "sys",
       user: "user",
+      provider: "ollama",
       schema: routineCheckJsonSchema(),
     });
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
@@ -119,6 +165,7 @@ describe("chatJson", () => {
       model: "test",
       system: "sys",
       user: "user",
+      provider: "ollama",
       schema: routineCheckJsonSchema(),
       think: false,
     });
@@ -143,6 +190,7 @@ describe("chatJson", () => {
       model: "test",
       system: "sys",
       user: "user",
+      provider: "ollama",
       schema: routineCheckJsonSchema(),
     });
     await vi.runAllTimersAsync();
@@ -169,7 +217,8 @@ describe("chatJson", () => {
         model: "test",
         system: "sys",
         user: "user",
-        schema: routineCheckJsonSchema(),
+        provider: "ollama",
+      schema: routineCheckJsonSchema(),
       }),
     ).resolves.toEqual({ routine: true, reason: "ok" });
     expect(stderr).toHaveBeenCalledWith(
@@ -202,6 +251,7 @@ describe("chatJson", () => {
       model: "test",
       system: "sys",
       user: "user",
+      provider: "ollama",
       schema: routineCheckJsonSchema(),
     });
     await vi.runAllTimersAsync();
@@ -234,6 +284,7 @@ describe("chatJson", () => {
       model: "test",
       system: "sys",
       user: "user",
+      provider: "ollama",
       schema: routineCheckJsonSchema(),
     });
     await vi.runAllTimersAsync();

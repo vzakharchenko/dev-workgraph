@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Vasyl Zakharchenko
 // SPDX-License-Identifier: Apache-2.0
 
+import type { LlmProviderId } from "./llm/types.js";
 import { pathClassificationJsonSchema } from "./model.js";
 import { chatJson } from "./ollama.js";
 import { listPatchFilePaths } from "./patch-split.js";
@@ -75,6 +76,7 @@ export async function classifyPathsByFilename(input: {
   baseUrl: string;
   model: string;
   paths: string[];
+  provider?: LlmProviderId;
 }): Promise<PathClassification> {
   if (input.paths.length === 0) {
     return { likelyBinary: [], likelyGenerated: [] };
@@ -95,6 +97,7 @@ export async function classifyPathsByFilename(input: {
     const raw = (await chatJson({
       baseUrl: input.baseUrl,
       model: input.model,
+      provider: input.provider,
       system: PATH_CLASSIFY_SYSTEM,
       user: buildPathClassifyPrompt(batch),
       schema: pathClassificationJsonSchema(),

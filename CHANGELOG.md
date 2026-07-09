@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### LM Studio support
+
+**LM Studio** is a first-class local backend alongside Ollama. Ollama and LM Studio can run on **different machines**; each pipeline stage can use a different provider and model.
+
+| Surface | Behavior |
+|---------|----------|
+| **Discovery** | `check` and model pickers probe **both** backends; only servers that respond with at least one model are listed |
+| **CLI URLs** | `--ollama-url <url>` (default `http://127.0.0.1:11434`), `--lmstudio-url <url>` (default `http://127.0.0.1:1234`) |
+| **`run`** | Three interactive picks — **commit**, **report**, **narrative** — with models from all reachable backends in one list (`model name (Ollama)` / `(LM Studio)`) |
+| **Config** | Each slot stores `provider`, `baseUrl`, and `model` under `commit` / `report` / `narrative` in `~/.workgraph/config.json` |
+| **LM Studio lifecycle** | On each pipeline step: unload all models → load the chosen model → unload all in `finally` (frees VRAM between steps and after the run) |
+| **Safety** | LM Studio is detected via native `GET /api/v1/models` so Ollama on port `11434` is never mistaken for LM Studio |
+
+Environment overrides: `WORKGRAPH_OLLAMA_URL`, `WORKGRAPH_LLM_URL`, `OLLAMA_HOST`, `LM_STUDIO_BASE_URL`, and optional `config.llm.servers.ollama` / `servers.lmstudio`.
+
+#### Pluggable LLM providers
+
+LLM backends are a **plugin layer** (`LlmProviderKind` + `LlmProvider` in `src/lib/llm/`). Built-in providers register in `LLM_PROVIDER_KINDS` (`providers.ts`).
+
+| Step | What to implement |
+|------|-------------------|
+| 1 | Extend `LlmProviderId` in `types.ts` |
+| 2 | Runtime: `LlmProvider` (`getModels`, `chatJson`, …) |
+| 3 | Plugin: `LlmProviderKind` (CLI URL flag, discovery, install help) — see `ollamaKind` / `lmstudioKind` |
+| 4 | Append to `LLM_PROVIDER_KINDS` |
+
+After registration, `check`, model pickers, and `--<id>-url` flags work without extra CLI wiring. Documented in [`ARCHITECTURE.md`](ARCHITECTURE.md) — *Extending LLM providers*.
+
+**Contributions welcome:** if you add a provider for another popular local stack, please open a PR — thank you for contributing!
+
 #### Examples
 
 New and extended reconstruction samples under [`examples/`](https://github.com/vzakharchenko/dev-workgraph/tree/main/examples) — see [`examples/README.md`](https://github.com/vzakharchenko/dev-workgraph/blob/main/examples/README.md).
@@ -30,6 +60,8 @@ Canonical role grounding for all ten `init` roles (backend and frontend ladders)
 | **Per-repo** | Role is scoped to `project.json` — the same person can use different seniority framing on different repositories |
 
 Role shapes **which gaps to ask about** (`questionsAnalysis`, open questions), not how impressive the narrative sounds.
+
+
 
 ### Changed
 
