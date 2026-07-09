@@ -9,7 +9,7 @@ import {
   repoCommitsDir,
   repoDataDir,
   repoSummariesDir,
-  setOllamaConfig,
+  setLlmConfig,
   setPeriod,
   setRepoConfig,
 } from "../../../src/lib/config.js";
@@ -52,9 +52,26 @@ describe("config", () => {
     });
   });
 
-  it("persists ollama preferences", () => {
-    setOllamaConfig({ baseUrl: "http://127.0.0.1:11434", commitModel: "qwen2.5-coder:14b" });
-    expect(loadConfig().ollama?.commitModel).toBe("qwen2.5-coder:14b");
+  it("persists LLM preferences under the llm key", () => {
+    setLlmConfig({ baseUrl: "http://127.0.0.1:11434", commitModel: "qwen2.5-coder:14b" });
+    expect(loadConfig().llm?.commitModel).toBe("qwen2.5-coder:14b");
+    const raw = JSON.parse(fs.readFileSync(path.join(tmpHome, "config.json"), "utf8"));
+    expect(raw.llm?.commitModel).toBe("qwen2.5-coder:14b");
+    expect(raw.ollama).toBeUndefined();
+  });
+
+  it("loads legacy ollama key from disk into llm", () => {
+    const home = process.env.WORKGRAPH_HOME!;
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(
+      path.join(home, "config.json"),
+      JSON.stringify({
+        repos: {},
+        ollama: { commitModel: "legacy-model", provider: "lmstudio" },
+      }),
+    );
+    expect(loadConfig().llm?.commitModel).toBe("legacy-model");
+    expect(loadConfig().llm?.provider).toBe("lmstudio");
   });
 
   it("builds stable repo data paths under WORKGRAPH_HOME", () => {

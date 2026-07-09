@@ -6,11 +6,9 @@ import path from "node:path";
 import inquirer from "inquirer";
 import {
   getRepoConfig,
-  loadConfig,
   repoCommitsDir,
   repoGroupsDir,
   repoSummariesDir,
-  setOllamaConfig,
   setRepoConfig,
 } from "../lib/config.js";
 import { resolveRepo } from "../lib/git.js";
@@ -22,6 +20,8 @@ import {
   loadCommitRecords,
   partitionTiers,
 } from "../lib/grouping.js";
+import type { LlmCommandOptions } from "../lib/llm/cli-options.js";
+import type { LlmProviderId } from "../lib/llm/types.js";
 import {
   cleanQuestionAnalyses,
   enforceSignalReasons,
@@ -31,7 +31,7 @@ import {
   type ModelLayer,
   mergeTechnologies,
 } from "../lib/model.js";
-import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
+import { chatJson } from "../lib/ollama.js";
 import { loadProjectContext } from "../lib/project.js";
 import {
   buildGroupClassifyPrompt,
@@ -44,7 +44,7 @@ import {
 } from "../lib/prompts.js";
 import { writeRecordJson } from "../lib/record-io.js";
 import type { CommitRecord, GroupRecord } from "../lib/records.js";
-import { resolveModel } from "../lib/select.js";
+import { resolveLlmSlot } from "../lib/select.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /** Coerces an LLM-provided value into an array of non-empty strings. */
@@ -94,17 +94,13 @@ function formatGroupingSummary(input: GroupingSummaryInput): string {
 /**
  * Options for the `commit-group` command.
  */
-export interface CommitGroupOptions {
+export interface CommitGroupOptions extends LlmCommandOptions {
   /** Path to the repository. */
   repo: string;
   /** Days between commits before a new group starts; skips the prompt. */
   days?: number;
   /** Max commits per group (0 = unlimited); skips the prompt. */
   maxCommits?: number;
-  /** Ollama base URL override. */
-  url?: string;
-  /** Model name; skips the interactive picker. */
-  model?: string;
   /** Only process the first N groups that need summarizing (useful for trials). */
   limit?: number;
   /** Operate on a defined review period's data instead of the repo's all-time data. */
@@ -190,6 +186,7 @@ function buildGroupRecord(members: CommitRecord[]): GroupRecord {
 interface GroupSummarizeContext {
   baseUrl: string;
   model: string;
+  provider: LlmProviderId;
   classifySystem: string;
   composeSystem: string;
   tracker: TokenUsageTracker;
@@ -218,6 +215,7 @@ async function summarizeGroupSession(
 ): Promise<GroupRecord> {
   const classifyPrompt = buildGroupClassifyPrompt(record, members);
   const rawClassify = (await chatJson({
+    provider: ctx.provider,
     baseUrl: ctx.baseUrl,
     model: ctx.model,
     system: ctx.classifySystem,
@@ -241,6 +239,7 @@ async function summarizeGroupSession(
 
   const composePrompt = buildGroupComposePrompt(record, tiers, members);
   const rawCompose = (await chatJson({
+    provider: ctx.provider,
     baseUrl: ctx.baseUrl,
     model: ctx.model,
     system: ctx.composeSystem,
@@ -296,13 +295,12 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
 
   const thresholdDays = await resolveThreshold(repoPath, options.days);
   const maxCommits = await resolveMaxCommits(repoPath, options.maxCommits);
-  const baseUrl = resolveBaseUrl(options.url);
-  const savedOllama = loadConfig().ollama;
-  const model = await resolveModel(baseUrl, options.model, {
-    message: "Which Ollama model should summarize work sessions?",
-    saved: savedOllama?.commitModel ?? savedOllama?.model,
+  const { providerId, baseUrl, model } = await resolveLlmSlot("commit", {
+    ollama: options.ollama,
+    lmstudio: options.lmstudio,
+    model: options.model,
+    message: "Which model should summarize work sessions?",
   });
-  setOllamaConfig({ baseUrl, commitModel: model });
 
   const groupsDir = repoGroupsDir(repoPath, options.period);
   fs.mkdirSync(groupsDir, { recursive: true });
@@ -338,6 +336,7 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
   const summarizeCtx: GroupSummarizeContext = {
     baseUrl,
     model,
+    provider: providerId,
     classifySystem,
     composeSystem,
     tracker,

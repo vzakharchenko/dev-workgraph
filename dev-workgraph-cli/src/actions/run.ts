@@ -3,18 +3,15 @@
 
 import fs from "node:fs";
 import inquirer from "inquirer";
-import {
-  getRepoConfig,
-  loadConfig,
-  repoProjectPath,
-  setOllamaConfig,
-  setRepoConfig,
-} from "../lib/config.js";
+import { getRepoConfig, repoProjectPath, setRepoConfig } from "../lib/config.js";
 import { currentUserEmail, getAuthors, resolveRepo } from "../lib/git.js";
-import { resolveBaseUrl } from "../lib/ollama.js";
+import type { LlmCommandOptions } from "../lib/llm/cli-options.js";
+import type { LlmModelChoice } from "../lib/llm/types.js";
+import { withProviderStep } from "../lib/lmstudio-session.js";
+import { discoverLlmBackends, noLlmBackendsError, providerLabel } from "../lib/ollama.js";
 import { resolvePeriodDefinition } from "../lib/periods.js";
-import { resolveModel } from "../lib/select.js";
-import { ollamaReady } from "./check.js";
+import { resolveLlmSlot } from "../lib/select.js";
+import { llmReady } from "./check.js";
 import { commitGroup } from "./commit-group.js";
 import { evidence } from "./evidence.js";
 import { final } from "./final.js";
@@ -26,13 +23,9 @@ import { summarize } from "./summarize.js";
 /**
  * Options for the `run` command (the whole-pipeline orchestrator).
  */
-export interface RunOptions {
+export interface RunOptions extends LlmCommandOptions {
   /** Path to the repository. */
   repo: string;
-  /** Ollama base URL override. */
-  url?: string;
-  /** Model name; skips the model picker. */
-  model?: string;
   /** Review-period label to scope the whole pipeline under. */
   period?: string;
   /** Period start date, ISO `YYYY-MM-DD` (defines/updates the period). */
@@ -46,10 +39,10 @@ export interface RunOptions {
 const DEFAULT_THRESHOLD_DAYS = 7;
 const DEFAULT_MAX_COMMITS = 20;
 
-interface RunModels {
-  commitModel: string;
-  reportModel: string;
-  narrativeModel: string;
+interface RunSlots {
+  commit: LlmModelChoice;
+  report: LlmModelChoice;
+  narrative: LlmModelChoice;
 }
 
 interface RunGroupSettings {
@@ -99,22 +92,49 @@ async function resolveRunPeriod(
   return resolved.id;
 }
 
-async function resolveRunModels(baseUrl: string, options: RunOptions): Promise<RunModels> {
-  const savedOllama = loadConfig().ollama;
-  const commitModel = await resolveModel(baseUrl, options.model, {
+async function resolveRunSlots(options: RunOptions): Promise<RunSlots> {
+  const shared = {
+    ollama: options.ollama,
+    lmstudio: options.lmstudio,
+    model: options.model?.trim() || undefined,
+  };
+
+  const backends = await discoverLlmBackends(shared);
+  if (backends.length === 0) {
+    throw noLlmBackendsError();
+  }
+
+  console.log(
+    "\nSelect a model for each pipeline stage (Ollama and LM Studio models appear together).\n",
+  );
+
+  const commit = await resolveLlmSlot("commit", {
+    ...shared,
     message: "Model for commit summaries & commit-group?",
-    saved: savedOllama?.commitModel ?? savedOllama?.model,
   });
-  const reportModel = await resolveModel(baseUrl, options.model, {
+  const reportSlot = await resolveLlmSlot("report", {
+    ...shared,
     message: "Model for report?",
-    saved: savedOllama?.reportModel ?? savedOllama?.model,
   });
-  const narrativeModel = await resolveModel(baseUrl, options.model, {
+  const narrative = await resolveLlmSlot("narrative", {
+    ...shared,
     message: "Model for project context (init), prepare & final?",
-    saved: savedOllama?.narrativeModel ?? savedOllama?.reportModel ?? savedOllama?.model,
   });
-  setOllamaConfig({ baseUrl, commitModel, reportModel, narrativeModel });
-  return { commitModel, reportModel, narrativeModel };
+  return { commit, report: reportSlot, narrative };
+}
+
+async function ensureBackendsReady(slots: RunSlots): Promise<void> {
+  const seen = new Set<string>();
+  for (const slot of [slots.commit, slots.report, slots.narrative]) {
+    const key = `${slot.providerId}\0${slot.baseUrl}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const label = providerLabel(slot.providerId);
+    console.log(`Checking ${label} at ${slot.baseUrl} ...`);
+    if (!(await llmReady(slot.baseUrl, slot.providerId))) {
+      throw new Error(`LLM backend ${label} is not ready (see above). Fix it, then re-run.`);
+    }
+  }
 }
 
 async function resolveRunInitContext(
@@ -197,17 +217,13 @@ async function resolveRunGroupSettings(repoPath: string): Promise<RunGroupSettin
  */
 export async function run(options: RunOptions): Promise<void> {
   const repoPath = resolveRepo(options.repo);
-  const baseUrl = resolveBaseUrl(options.url);
 
   console.log("=== dev-workgraph run — gathering inputs ===\n");
 
   const period = await resolveRunPeriod(repoPath, options);
+  const slots = await resolveRunSlots(options);
+  await ensureBackendsReady(slots);
 
-  if (!(await ollamaReady(baseUrl))) {
-    throw new Error("Ollama is not ready (see above). Fix it, then re-run.");
-  }
-
-  const models = await resolveRunModels(baseUrl, options);
   const initCtx = await resolveRunInitContext(repoPath, period);
   const emails = await resolveRunAuthors(repoPath);
   const groupSettings = await resolveRunGroupSettings(repoPath);
@@ -216,42 +232,75 @@ export async function run(options: RunOptions): Promise<void> {
 
   if (initCtx.needInit) {
     console.log("\n[1/7] init");
-    await init({
-      repo: repoPath,
-      role: initCtx.role,
-      story: initCtx.story,
-      model: models.narrativeModel,
-      url: baseUrl,
-      period,
-    });
+    await withProviderStep(slots.narrative, () =>
+      init({
+        repo: repoPath,
+        role: initCtx.role,
+        story: initCtx.story,
+        model: slots.narrative.model,
+        period,
+      }),
+    );
   } else {
     console.log("\n[1/7] init — skipped (already initialized)");
   }
 
   console.log("\n[2/7] evidence");
-  await evidence({ repo: repoPath, email: emails, period });
+  await withProviderStep(slots.commit, () =>
+    evidence({
+      repo: repoPath,
+      email: emails,
+      period,
+      model: slots.commit.model,
+    }),
+  );
 
   console.log("\n[3/7] summarize");
-  await summarize({ repo: repoPath, model: models.commitModel, url: baseUrl, period });
+  await withProviderStep(slots.commit, () =>
+    summarize({
+      repo: repoPath,
+      model: slots.commit.model,
+      period,
+    }),
+  );
 
   console.log("\n[4/7] commit-group");
-  await commitGroup({
-    repo: repoPath,
-    model: models.commitModel,
-    url: baseUrl,
-    days: groupSettings.days,
-    maxCommits: groupSettings.maxCommits,
-    period,
-  });
+  await withProviderStep(slots.commit, () =>
+    commitGroup({
+      repo: repoPath,
+      model: slots.commit.model,
+      days: groupSettings.days,
+      maxCommits: groupSettings.maxCommits,
+      period,
+    }),
+  );
 
   console.log("\n[5/7] report");
-  await report({ repo: repoPath, model: models.reportModel, url: baseUrl, period });
+  await withProviderStep(slots.report, () =>
+    report({
+      repo: repoPath,
+      model: slots.report.model,
+      period,
+    }),
+  );
 
   console.log("\n[6/7] prepare");
-  await prepare({ repo: repoPath, model: models.narrativeModel, url: baseUrl, period });
+  await withProviderStep(slots.narrative, () =>
+    prepare({
+      repo: repoPath,
+      model: slots.narrative.model,
+      period,
+    }),
+  );
 
   console.log("\n[7/7] final");
-  await final({ repo: repoPath, model: models.narrativeModel, url: baseUrl, period });
+  await withProviderStep(slots.narrative, () =>
+    final({
+      repo: repoPath,
+      model: slots.narrative.model,
+      period,
+    }),
+  );
 
   console.log("\n✅ Pipeline complete.");
 }

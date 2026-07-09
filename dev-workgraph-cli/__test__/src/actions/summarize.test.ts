@@ -26,12 +26,17 @@ vi.mock("../../../src/lib/git.js", () => ({
 
 vi.mock("../../../src/lib/ollama.js", () => ({
   chatJson: chatJsonMock,
+  providerLabel: vi.fn((id: string) => id),
   resolveBaseUrl: vi.fn(() => "http://127.0.0.1:11434"),
   listModels: vi.fn(async () => ["test-model"]),
 }));
 
 vi.mock("../../../src/lib/select.js", () => ({
-  resolveModel: vi.fn(async () => "test-model"),
+  resolveLlmSlot: vi.fn(async () => ({
+    providerId: "ollama" as const,
+    baseUrl: "http://127.0.0.1:11434",
+    model: "test-model",
+  })),
 }));
 
 import { summarize } from "../../../src/actions/summarize.js";

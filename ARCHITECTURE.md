@@ -1,10 +1,10 @@
 # dev-workgraph — Architecture
 
-High-level architecture of the **dev-workgraph-cli** pipeline: how Git evidence becomes a defensible career narrative (`RECONSTRUCTION.<project>.md`). Product rules and field-level specs live in [`REQUIREMENTS.md`](REQUIREMENTS.md). Diagram sources: [`uml/`](uml/) — regenerate PNGs with [`scripts/generatePNGFromSchemas.sh`](scripts/generatePNGFromSchemas.sh) → [`img/`](img/).
+High-level architecture of the **dev-workgraph-cli** pipeline: how Git evidence becomes a defensible career narrative (`RECONSTRUCTION.<project>.md`). Product rules and field-level specs live in [`REQUIREMENTS.md`](REQUIREMENTS.md). Diagram sources: [`uml/`](uml/) ([`uml/README.md`](uml/README.md) — Ollama / LM Studio legend) — regenerate PNGs with [`scripts/generatePNGFromSchemas.sh`](scripts/generatePNGFromSchemas.sh) → [`img/`](img/).
 
 ## Purpose
 
-dev-workgraph is a **local CLI** (Node.js + TypeScript + Ollama) that:
+dev-workgraph is a **local CLI** (Node.js + TypeScript + Ollama / LM Studio) that:
 
 - reconstructs *what* changed and *where* from **your** Git history;
 - asks **role-aware questions** about what Git cannot know (ownership, intent, production, design vs implementation);
@@ -32,25 +32,31 @@ Every LLM step after `init` receives a **project context block** (role, prepared
 ## System context
 
 ```text
-┌─────────────┐     HTTP      ┌──────────────┐
-│ dev-workgraph│ ────────────► │ Ollama (local)│
-│ CLI (Node)  │   chatJson    │ 3 model slots │
-└──────┬──────┘               └──────────────┘
-       │ read/write
-       ▼
-┌──────────────────────────────────────────────┐
-│ ~/.workgraph/                                 │
-│   config.json          — authors, models, role │
-│   data/repos/<repo-id>/ — pipeline artifacts   │
-└──────────────────────────────────────────────┘
-       │ git
-       ▼
-┌─────────────┐
-│ Your repo   │
-└─────────────┘
+                    ┌─────────────────────────────┐
+                    │ Local LLM backends          │
+                    │  • Ollama      (:11434)     │
+                    │  • LM Studio   (:1234)      │
+                    │  3 slots: commit/report/    │
+                    │           narrative         │
+                    └──────────────▲──────────────┘
+                                   │ HTTP chatJson
+┌─────────────┐                    │
+│ Your repo   │◄── git ── ┌────────┴────────┐
+└─────────────┘           │ dev-workgraph   │
+                          │ CLI (Node)      │
+                          └────────┬────────┘
+                                   │ read/write
+                                   ▼
+                          ┌────────────────────┐
+                          │ ~/.workgraph/      │
+                          │  config.json (llm) │
+                          │  data/repos/…      │
+                          └────────────────────┘
 ```
 
-**Stack:** `commander` (CLI), `inquirer` (prompts), structured JSON via Ollama `format` + schema validation (`chatJson` → `parseAndValidateModelJson`). Each written JSON artifact carries `schemaVersion` (encoded CLI semver).
+`check` and `run` discover **both** backends. Each slot stores `{ provider, baseUrl, model }` in `config.json` → `llm`. LM Studio pipeline steps unload/load models between stages.
+
+**Stack:** `commander` (CLI), `inquirer` (prompts), pluggable LLM providers (`src/lib/llm/`), structured JSON via `chatJson` (Ollama `format`; LM Studio OpenAI-compatible `response_format` with fallbacks) + schema validation (`parseAndValidateModelJson`). Each written JSON artifact carries `schemaVersion` (encoded CLI semver).
 
 ## End-to-end pipeline
 
@@ -73,7 +79,7 @@ Stages run in order; `run` orchestrates through `final`. **`deepen`** is optiona
 
 ![Run orchestrator](img/dev-workgraph-run-orchestrator.png)
 
-### Three Ollama models
+### Three model slots (Ollama / LM Studio)
 
 | Slot | Commands | Typical use |
 |------|----------|-------------|
@@ -81,7 +87,9 @@ Stages run in order; `run` orchestrates through `final`. **`deepen`** is optiona
 | `reportModel` | `report` | Cumulative fold over groups |
 | `narrativeModel` | `init`, `prepare`, `final`, `deepen` | Prose, claim-safe narrative |
 
-Saved in `~/.workgraph/config.json` under `ollama`. `run` asks once upfront.
+Saved in `~/.workgraph/config.json` under `llm` (`commit` / `report` / `narrative` with `provider`, `baseUrl`, `model`). `run` asks once upfront — models from all reachable backends appear in one picker (`name (Ollama)` / `name (LM Studio)`).
+
+CLI flags: `--ollama-url`, `--lmstudio-url`. See [`REQUIREMENTS.md`](REQUIREMENTS.md) §13.
 
 ## On-disk layout
 
@@ -112,7 +120,7 @@ data/repos/<repo-id>/
 
 - **`authors`** — filter commits by selected author emails (required before `evidence`).
 - **`init`** — role + project story + README → `project.json` (required before model layers on commits/groups/report).
-- **`check`** — Ollama reachable, models installed.
+- **`check`** — discover Ollama + LM Studio; verify each backend has models; validate saved slots.
 
 ![Project context block](img/preconditions-project-context.png)
 
@@ -234,7 +242,8 @@ Each `chatJson` call logs tokens to stderr; `project.json` accumulates `tokenUsa
 ### Resilience
 
 - JSON Schema validation on every model response; retries (2×) with backoff.
-- `temperature: 0.2` only; `num_ctx` / `num_predict` left to Modelfile defaults.
+- `temperature: 0.2` only; context/predict limits left to backend defaults (`num_ctx` / Modelfile on Ollama).
+- **`commitModel`** / **`reportModel`**: `think: false` on Ollama; **`narrativeModel`**: Ollama default for thinking-capable models.
 - Append-only / resumable stages — safe to stop mid-pipeline and re-run `dev-workgraph run .`.
 
 ## CLI module map
@@ -245,11 +254,44 @@ Implementation lives in [`dev-workgraph-cli/src/`](dev-workgraph-cli/src/):
 |------|------|
 | Commands | `src/actions/*.ts` — one file per pipeline stage |
 | Records / types | `src/lib/records.ts`, `model.ts` |
-| Ollama + validation | `src/lib/ollama.ts`, `json-response.ts` |
+| LLM providers | `src/lib/llm/` — Ollama, LM Studio, registry, `chatJson` |
+| Legacy re-exports | `src/lib/ollama.ts` |
+| JSON validation | `src/lib/json-response.ts` |
+| LM Studio lifecycle | `src/lib/lmstudio-session.ts` |
 | Grouping / evidence merge | `src/lib/grouping.ts` |
 | Finish + Q&A | `src/lib/finish-questions.ts`, `finish-load.ts` |
 | Config / paths | `src/lib/config.ts` |
 | Prompts | `src/lib/prompts.ts` |
+
+### Extending LLM providers
+
+Local LLM backends are **plugins**. Ollama and LM Studio ship in-tree; you can add another server without touching every pipeline command.
+
+**Registration point:** `LLM_PROVIDER_KINDS` in `src/lib/llm/providers.ts`.
+
+```typescript
+export const LLM_PROVIDER_KINDS: readonly LlmProviderKind[] = [ollamaKind, lmstudioKind];
+```
+
+**Steps to add a provider:**
+
+1. **`LlmProviderId`** — extend the union in `src/lib/llm/types.ts` (e.g. `"ollama" | "lmstudio" | "myserver"`).
+2. **`LlmProvider`** — runtime at a fixed base URL: `isReachable`, `getModels`, `chatJson` (structured JSON + schema validation via `parseAndValidateModelJson`), optional `loadModel` / `unloadAll`.
+3. **`LlmProviderKind`** — static plugin object. Templates: `ollamaKind` in `ollama.ts`, `lmstudioKind` in `lmstudio.ts`. Required fields: `id`, `displayName`, `defaultBaseUrl`, `cliUrlOption`, `cliUrlDescription`, `create`, `resolveUrl`, `acceptForDiscovery`, `printInstallHelp`, `printNoModelsHelp`. Optional: `needsStepLifecycle` + `prepareStep` / `releaseStep`, `aliases`, `isBinaryInstalled`.
+4. **Register** — import your kind and append it to `LLM_PROVIDER_KINDS`.
+
+Once registered, the backend is picked up automatically:
+
+| Wired for you | How |
+|---------------|-----|
+| CLI URL flag | `registerLlmProviderOptions` reads `cliUrlOption` (`--myserver-url`) |
+| Discovery / `check` | `LlmProviderRegistry.discover` iterates `LLM_PROVIDER_KINDS` |
+| Model picker | `listModelChoices` lists models from all reachable backends |
+| Install help | `printNoLlmBackendsHelp` calls each kind's `printInstallHelp` |
+
+Config slots store `{ provider, baseUrl, model }` under `config.llm` — the new `id` must match `LlmProviderId`.
+
+If you implement a provider for a widely used local stack, please open a pull request — thank you for contributing!
 
 ## Diagram index
 
@@ -268,7 +310,7 @@ Implementation lives in [`dev-workgraph-cli/src/`](dev-workgraph-cli/src/):
 | Final | `uml/final.puml` | `img/final-*.png` |
 | Deepen / run | `uml/pipeline.puml` | `img/dev-workgraph-deepen.png`, `dev-workgraph-run-orchestrator.png` |
 
-Regenerate all PNGs:
+Regenerate all PNGs (see [`uml/README.md`](uml/README.md) for diagram legend):
 
 ```bash
 ./scripts/generatePNGFromSchemas.sh

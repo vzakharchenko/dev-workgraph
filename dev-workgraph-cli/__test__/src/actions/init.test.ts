@@ -7,7 +7,7 @@ import {
   setupWorkgraphHome,
   writeProjectContext,
 } from "../helpers/action-fixtures.js";
-import { getRepoConfig, repoProjectPath, setRepoConfig } from "../../../src/lib/config.js";
+import { getRepoConfig, repoProjectPath } from "../../../src/lib/config.js";
 
 vi.mock("../../../src/lib/git.js", () => ({
   resolveRepo: vi.fn((repo: string) => path.resolve(repo === "." ? FAKE_REPO : repo)),
@@ -25,7 +25,11 @@ vi.mock("../../../src/lib/ollama.js", async (importOriginal) => {
 });
 
 vi.mock("../../../src/lib/select.js", () => ({
-  resolveModel: vi.fn(async () => "test-model"),
+  resolveLlmSlot: vi.fn(async () => ({
+    providerId: "ollama" as const,
+    baseUrl: "http://127.0.0.1:11434",
+    model: "test-model",
+  })),
 }));
 
 import { init, resolveRole, resolveStory } from "../../../src/actions/init.js";

@@ -16,6 +16,8 @@ import { type PrepareOptions, prepare } from "./actions/prepare.js";
 import { type ReportOptions, report } from "./actions/report.js";
 import { type RunOptions, run } from "./actions/run.js";
 import { type SummarizeOptions, summarize } from "./actions/summarize.js";
+import { pickLlmCommandOptions, registerLlmProviderOptions } from "./lib/llm/cli-options.js";
+import { NoLlmBackendsError } from "./lib/llm/install-help.js";
 
 /**
  * Collects a repeatable CLI option into an array.
@@ -24,6 +26,16 @@ import { type SummarizeOptions, summarize } from "./actions/summarize.js";
  */
 function collect(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+function reportActionError(err: unknown): void {
+  if (err instanceof NoLlmBackendsError) {
+    process.exitCode = 1;
+    return;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  if (message) console.error(`✖ ${message}`);
+  process.exitCode = 1;
 }
 
 // 📌 Initialize CLI
@@ -35,38 +47,38 @@ program
   .version("1.0.0");
 
 // ✅ Command: verify Ollama is installed/running and has models
-program
-  .command("check")
-  .description("Check that Ollama is running and has models; suggest install if not.")
-  .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
-  .action(async (opts: { url?: string }) => {
-    const options: CheckOptions = { url: opts.url };
-    try {
-      await check(options);
-    } catch (err) {
-      console.error(`✖ ${(err as Error).message}`);
-      process.exitCode = 1;
-    }
-  });
+registerLlmProviderOptions(
+  program
+    .command("check")
+    .description("Check that the LLM backend is running and has models; suggest install if not."),
+).action(async (opts: Record<string, unknown>) => {
+  const options: CheckOptions = pickLlmCommandOptions(opts);
+  try {
+    await check(options);
+  } catch (err) {
+    reportActionError(err);
+  }
+});
 
 // ✅ Command: capture developer role + project story → project profile
 // Registered twice: `init` (repo-level) and `init:period` (scoped to a review
 // window, inheriting the repo-level context by default).
 function registerInit(name: string, periodMode: boolean): void {
-  program
-    .command(name)
-    .description(
-      periodMode
-        ? "Init a review period (inherits the repo-level context)."
-        : "Capture developer role and project story, build a project profile.",
-    )
-    .argument("[repo]", "Path to the Git repository", ".")
-    .option("--role <name>", "Developer role (skips the prompt)")
-    .option("--story <text>", "Project story text (skips the editor prompt)")
-    .option("--period <id>", "Review period label (e.g. 2022, 2022-H1)")
-    .option("--from <date>", "Period start date, ISO YYYY-MM-DD (inclusive)")
-    .option("--to <date>", "Period end date, ISO YYYY-MM-DD (exclusive)")
-    .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
+  registerLlmProviderOptions(
+    program
+      .command(name)
+      .description(
+        periodMode
+          ? "Init a review period (inherits the repo-level context)."
+          : "Capture developer role and project story, build a project profile.",
+      )
+      .argument("[repo]", "Path to the Git repository", ".")
+      .option("--role <name>", "Developer role (skips the prompt)")
+      .option("--story <text>", "Project story text (skips the editor prompt)")
+      .option("--period <id>", "Review period label (e.g. 2022, 2022-H1)")
+      .option("--from <date>", "Period start date, ISO YYYY-MM-DD (inclusive)")
+      .option("--to <date>", "Period end date, ISO YYYY-MM-DD (exclusive)"),
+  )
     .option("--model <name>", "Model to use (skips the interactive picker)")
     .action(
       async (
@@ -77,7 +89,6 @@ function registerInit(name: string, periodMode: boolean): void {
           period?: string;
           from?: string;
           to?: string;
-          url?: string;
           model?: string;
         },
       ) => {
@@ -89,14 +100,12 @@ function registerInit(name: string, periodMode: boolean): void {
           from: opts.from,
           to: opts.to,
           periodMode,
-          url: opts.url,
-          model: opts.model,
+          ...pickLlmCommandOptions(opts),
         };
         try {
           await init(options);
         } catch (err) {
-          console.error(`✖ ${(err as Error).message}`);
-          process.exitCode = 1;
+          reportActionError(err);
         }
       },
     );
@@ -125,22 +134,22 @@ program
     try {
       await authors(options);
     } catch (err) {
-      console.error(`✖ ${(err as Error).message}`);
-      process.exitCode = 1;
+      reportActionError(err);
     }
   });
 
 // ✅ Command: extract commit evidence — patches + deterministic JSON — for your work
-program
-  .command("evidence")
-  .description("Extract your commits as patches and a deterministic evidence layer.")
-  .argument("[repo]", "Path to the Git repository", ".")
-  .option("--email <email>", "Override saved author selection (repeatable)", collect, [])
-  .option("--period <id>", "Restrict to a defined review period (scopes output too)")
-  .option("--url <url>", "Ollama base URL when path filter runs on large split commits")
+registerLlmProviderOptions(
+  program
+    .command("evidence")
+    .description("Extract your commits as patches and a deterministic evidence layer.")
+    .argument("[repo]", "Path to the Git repository", ".")
+    .option("--email <email>", "Override saved author selection (repeatable)", collect, [])
+    .option("--period <id>", "Restrict to a defined review period (scopes output too)"),
+)
   .option(
     "--model <name>",
-    "Ollama model for path filter (default: narrativeModel → reportModel → commitModel)",
+    "Model for path filter (default: narrativeModel → reportModel → commitModel)",
   )
   .option("--no-path-filter", "Disable LLM path filter for split commits with more than 15 parts")
   .action(
@@ -149,7 +158,6 @@ program
       opts: {
         email: string[];
         period?: string;
-        url?: string;
         model?: string;
         noPathFilter?: boolean;
       },
@@ -158,61 +166,54 @@ program
         repo,
         email: opts.email,
         period: opts.period,
-        url: opts.url,
-        model: opts.model,
         noPathFilter: opts.noPathFilter,
+        ...pickLlmCommandOptions(opts),
       };
       try {
         await evidence(options);
       } catch (err) {
-        console.error(`✖ ${(err as Error).message}`);
-        process.exitCode = 1;
+        reportActionError(err);
       }
     },
   );
 
 // ✅ Command: add the model interpretation layer via a local Ollama model
-program
-  .command("summarize")
-  .description("Summarize a repository's extracted patches with a local Ollama model.")
-  .argument("[repo]", "Path to the Git repository", ".")
-  .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
+registerLlmProviderOptions(
+  program
+    .command("summarize")
+    .description("Summarize a repository's extracted patches with a local LLM.")
+    .argument("[repo]", "Path to the Git repository", "."),
+)
   .option("--model <name>", "Model to use (skips the interactive picker)")
   .option("--limit <n>", "Only process the first N pending commits", (v) => Number.parseInt(v, 10))
   .option("--period <id>", "Operate on a defined review period's data")
-  .action(
-    async (
-      repo: string,
-      opts: { url?: string; model?: string; limit?: number; period?: string },
-    ) => {
-      const options: SummarizeOptions = {
-        repo,
-        url: opts.url,
-        model: opts.model,
-        limit: opts.limit,
-        period: opts.period,
-      };
-      try {
-        await summarize(options);
-      } catch (err) {
-        console.error(`✖ ${(err as Error).message}`);
-        process.exitCode = 1;
-      }
-    },
-  );
+  .action(async (repo: string, opts: { model?: string; limit?: number; period?: string }) => {
+    const options: SummarizeOptions = {
+      repo,
+      limit: opts.limit,
+      period: opts.period,
+      ...pickLlmCommandOptions(opts),
+    };
+    try {
+      await summarize(options);
+    } catch (err) {
+      reportActionError(err);
+    }
+  });
 
 // ✅ Command: group commits into work sessions and summarize each session
-program
-  .command("commit-group")
-  .description("Group commits into work sessions and summarize each with a local model.")
-  .argument("[repo]", "Path to the Git repository", ".")
-  .option("--days <n>", "Max days between commits before a new group (skips prompt)", (v) =>
-    Number.parseInt(v, 10),
-  )
-  .option("--max-commits <n>", "Max commits per group, 0 = unlimited (skips prompt)", (v) =>
-    Number.parseInt(v, 10),
-  )
-  .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
+registerLlmProviderOptions(
+  program
+    .command("commit-group")
+    .description("Group commits into work sessions and summarize each with a local model.")
+    .argument("[repo]", "Path to the Git repository", ".")
+    .option("--days <n>", "Max days between commits before a new group (skips prompt)", (v) =>
+      Number.parseInt(v, 10),
+    )
+    .option("--max-commits <n>", "Max commits per group, 0 = unlimited (skips prompt)", (v) =>
+      Number.parseInt(v, 10),
+    ),
+)
   .option("--model <name>", "Model to use (skips the interactive picker)")
   .option("--limit <n>", "Only summarize the first N groups (useful for trials)", (v) =>
     Number.parseInt(v, 10),
@@ -224,7 +225,6 @@ program
       opts: {
         days?: number;
         maxCommits?: number;
-        url?: string;
         model?: string;
         limit?: number;
         period?: string;
@@ -234,83 +234,75 @@ program
         repo,
         days: opts.days,
         maxCommits: opts.maxCommits,
-        url: opts.url,
-        model: opts.model,
         limit: opts.limit,
         period: opts.period,
+        ...pickLlmCommandOptions(opts),
       };
       try {
         await commitGroup(options);
       } catch (err) {
-        console.error(`✖ ${(err as Error).message}`);
-        process.exitCode = 1;
+        reportActionError(err);
       }
     },
   );
 
 // ✅ Command: fold work-session groups into a cumulative narrative report
-program
-  .command("report")
-  .description("Fold work-session groups into a cumulative narrative report.")
-  .argument("[repo]", "Path to the Git repository", ".")
-  .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
+registerLlmProviderOptions(
+  program
+    .command("report")
+    .description("Fold work-session groups into a cumulative narrative report.")
+    .argument("[repo]", "Path to the Git repository", "."),
+)
   .option("--model <name>", "Model to use (skips the interactive picker)")
   .option("--limit <n>", "Only fold the first N groups (useful for trials)", (v) =>
     Number.parseInt(v, 10),
   )
   .option("--period <id>", "Operate on a defined review period's data")
-  .action(
-    async (
-      repo: string,
-      opts: { url?: string; model?: string; limit?: number; period?: string },
-    ) => {
-      const options: ReportOptions = {
-        repo,
-        url: opts.url,
-        model: opts.model,
-        limit: opts.limit,
-        period: opts.period,
-      };
-      try {
-        await report(options);
-      } catch (err) {
-        console.error(`✖ ${(err as Error).message}`);
-        process.exitCode = 1;
-      }
-    },
-  );
+  .action(async (repo: string, opts: { model?: string; limit?: number; period?: string }) => {
+    const options: ReportOptions = {
+      repo,
+      limit: opts.limit,
+      period: opts.period,
+      ...pickLlmCommandOptions(opts),
+    };
+    try {
+      await report(options);
+    } catch (err) {
+      reportActionError(err);
+    }
+  });
 
 // ✅ Command: distill the latest report into a role-aligned prepared narrative
-program
-  .command("prepare")
-  .description("Distill the latest report into a single role-aligned narrative.")
-  .argument("[repo]", "Path to the Git repository", ".")
-  .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
+registerLlmProviderOptions(
+  program
+    .command("prepare")
+    .description("Distill the latest report into a single role-aligned narrative.")
+    .argument("[repo]", "Path to the Git repository", "."),
+)
   .option("--model <name>", "Model to use (skips the interactive picker)")
   .option("--period <id>", "Operate on a defined review period's data")
-  .action(async (repo: string, opts: { url?: string; model?: string; period?: string }) => {
+  .action(async (repo: string, opts: { model?: string; period?: string }) => {
     const options: PrepareOptions = {
       repo,
-      url: opts.url,
-      model: opts.model,
       period: opts.period,
+      ...pickLlmCommandOptions(opts),
     };
     try {
       await prepare(options);
     } catch (err) {
-      console.error(`✖ ${(err as Error).message}`);
-      process.exitCode = 1;
+      reportActionError(err);
     }
   });
 
 // ✅ Command: collect answers to prepared questions → RECONSTRUCTION.<project>.md
-program
-  .command("final")
-  .description("Answer the prepared questions and write RECONSTRUCTION.<project>.md.")
-  .argument("[repo]", "Path to the Git repository", ".")
-  .option("--answers-file <path>", "Pre-written Q&A as JSON (non-interactive)")
-  .option("--output <path>", "Output markdown path (default: ./RECONSTRUCTION.<project>.md)")
-  .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
+registerLlmProviderOptions(
+  program
+    .command("final")
+    .description("Answer the prepared questions and write RECONSTRUCTION.<project>.md.")
+    .argument("[repo]", "Path to the Git repository", ".")
+    .option("--answers-file <path>", "Pre-written Q&A as JSON (non-interactive)")
+    .option("--output <path>", "Output markdown path (default: ./RECONSTRUCTION.<project>.md)"),
+)
   .option("--model <name>", "Model to use (skips the interactive picker)")
   .option("--period <id>", "Operate on a defined review period's data")
   .action(
@@ -319,7 +311,6 @@ program
       opts: {
         answersFile?: string;
         output?: string;
-        url?: string;
         model?: string;
         period?: string;
       },
@@ -328,36 +319,35 @@ program
         repo,
         answersFile: opts.answersFile,
         output: opts.output,
-        url: opts.url,
-        model: opts.model,
         period: opts.period,
+        ...pickLlmCommandOptions(opts),
       };
       try {
         await final(options);
       } catch (err) {
-        console.error(`✖ ${(err as Error).message}`);
-        process.exitCode = 1;
+        reportActionError(err);
       }
     },
   );
 
 // ✅ Command: extend latest finish with four new Q&A → refined RECONSTRUCTION
-program
-  .command("deepen")
-  .description(
-    "Extend the latest finish: recalled context, four new questions, refined narrative (8+ Q&A).",
-  )
-  .argument("[repo]", "Path to the Git repository", ".")
-  .option(
-    "--context-file <path>",
-    "Recalled non-code project context as plain text (skips the editor prompt)",
-  )
-  .option(
-    "--answers-file <path>",
-    "Pre-written answers to the four NEW questions only (non-interactive)",
-  )
-  .option("--output <path>", "Output markdown path (default: ./RECONSTRUCTION.<project>.md)")
-  .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
+registerLlmProviderOptions(
+  program
+    .command("deepen")
+    .description(
+      "Extend the latest finish: recalled context, four new questions, refined narrative (8+ Q&A).",
+    )
+    .argument("[repo]", "Path to the Git repository", ".")
+    .option(
+      "--context-file <path>",
+      "Recalled non-code project context as plain text (skips the editor prompt)",
+    )
+    .option(
+      "--answers-file <path>",
+      "Pre-written answers to the four NEW questions only (non-interactive)",
+    )
+    .option("--output <path>", "Output markdown path (default: ./RECONSTRUCTION.<project>.md)"),
+)
   .option("--model <name>", "Model to use (skips the interactive picker)")
   .option("--period <id>", "Operate on a defined review period's data")
   .action(
@@ -367,7 +357,6 @@ program
         contextFile?: string;
         answersFile?: string;
         output?: string;
-        url?: string;
         model?: string;
         period?: string;
       },
@@ -377,15 +366,13 @@ program
         contextFile: opts.contextFile,
         answersFile: opts.answersFile,
         output: opts.output,
-        url: opts.url,
-        model: opts.model,
         period: opts.period,
+        ...pickLlmCommandOptions(opts),
       };
       try {
         await deepen(options);
       } catch (err) {
-        console.error(`✖ ${(err as Error).message}`);
-        process.exitCode = 1;
+        reportActionError(err);
       }
     },
   );
@@ -393,18 +380,19 @@ program
 // ✅ Command: run the whole pipeline unattended (gather inputs upfront)
 // Registered twice: `run` (repo-level) and `run:period` (a year/period review).
 function registerRun(name: string, periodMode: boolean): void {
-  program
-    .command(name)
-    .description(
-      periodMode
-        ? "Run the whole pipeline for a review period (init:period → … → final)."
-        : "Gather all inputs, then run init → evidence → summarize → commit-group → report.",
-    )
-    .argument("[repo]", "Path to the Git repository", ".")
-    .option("--period <id>", "Review period label (e.g. 2022, 2022-H1)")
-    .option("--from <date>", "Period start date, ISO YYYY-MM-DD (inclusive)")
-    .option("--to <date>", "Period end date, ISO YYYY-MM-DD (exclusive)")
-    .option("--url <url>", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
+  registerLlmProviderOptions(
+    program
+      .command(name)
+      .description(
+        periodMode
+          ? "Run the whole pipeline for a review period (init:period → … → final)."
+          : "Gather all inputs, then run init → evidence → summarize → commit-group → report.",
+      )
+      .argument("[repo]", "Path to the Git repository", ".")
+      .option("--period <id>", "Review period label (e.g. 2022, 2022-H1)")
+      .option("--from <date>", "Period start date, ISO YYYY-MM-DD (inclusive)")
+      .option("--to <date>", "Period end date, ISO YYYY-MM-DD (exclusive)"),
+  )
     .option("--model <name>", "Model to use for every stage (skips the picker)")
     .action(
       async (
@@ -413,7 +401,6 @@ function registerRun(name: string, periodMode: boolean): void {
           period?: string;
           from?: string;
           to?: string;
-          url?: string;
           model?: string;
         },
       ) => {
@@ -423,14 +410,12 @@ function registerRun(name: string, periodMode: boolean): void {
           from: opts.from,
           to: opts.to,
           periodMode,
-          url: opts.url,
-          model: opts.model,
+          ...pickLlmCommandOptions(opts),
         };
         try {
           await run(options);
         } catch (err) {
-          console.error(`✖ ${(err as Error).message}`);
-          process.exitCode = 1;
+          reportActionError(err);
         }
       },
     );
@@ -449,8 +434,7 @@ program
     try {
       await exportRepo(options);
     } catch (err) {
-      console.error(`✖ ${(err as Error).message}`);
-      process.exitCode = 1;
+      reportActionError(err);
     }
   });
 
@@ -465,8 +449,7 @@ program
     try {
       await importRepo(options);
     } catch (err) {
-      console.error(`✖ ${(err as Error).message}`);
-      process.exitCode = 1;
+      reportActionError(err);
     }
   });
 

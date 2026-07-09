@@ -4,10 +4,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import inquirer from "inquirer";
-import { loadConfig, repoProjectPath, setOllamaConfig, setRepoConfig } from "../lib/config.js";
+import { repoProjectPath, setRepoConfig } from "../lib/config.js";
 import { resolveRepo } from "../lib/git.js";
+import type { LlmCommandOptions } from "../lib/llm/cli-options.js";
 import { projectProfileJsonSchema, storyPrepareJsonSchema } from "../lib/model.js";
-import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
+import { chatJson } from "../lib/ollama.js";
 import { resolvePeriodDefinition } from "../lib/periods.js";
 import { ROLES } from "../lib/project.js";
 import {
@@ -19,23 +20,19 @@ import {
 import { writeRecordJson } from "../lib/record-io.js";
 import type { ProjectContext, ProjectProfile } from "../lib/records.js";
 import { formatRoleDefinitionForConsole, roleChoiceLabel } from "../lib/role-definitions.js";
-import { resolveModel } from "../lib/select.js";
+import { resolveLlmSlot } from "../lib/select.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
  * Options for the `init` command.
  */
-export interface InitOptions {
+export interface InitOptions extends LlmCommandOptions {
   /** Path to the repository. */
   repo: string;
   /** Developer role; skips the role prompt. */
   role?: string;
   /** Project story text; skips the editor prompt. */
   story?: string;
-  /** Ollama base URL override. */
-  url?: string;
-  /** Model name; skips the interactive picker. */
-  model?: string;
   /** Review-period label to scope this init under. */
   period?: string;
   /** Period start date, ISO `YYYY-MM-DD` (defines/updates the period). */
@@ -135,13 +132,12 @@ export async function init(options: InitOptions): Promise<void> {
   const readmePresent = fs.existsSync(readmePath);
   const readme = readmePresent ? fs.readFileSync(readmePath, "utf8") : "";
 
-  const baseUrl = resolveBaseUrl(options.url);
-  const savedOllama = loadConfig().ollama;
-  const model = await resolveModel(baseUrl, options.model, {
-    message: "Which Ollama model should prepare project context?",
-    saved: savedOllama?.narrativeModel ?? savedOllama?.reportModel ?? savedOllama?.model,
+  const { providerId, baseUrl, model } = await resolveLlmSlot("narrative", {
+    ollama: options.ollama,
+    lmstudio: options.lmstudio,
+    model: options.model,
+    message: "Which model should prepare project context?",
   });
-  setOllamaConfig({ baseUrl, narrativeModel: model });
   console.log(`\nPreparing project context for a ${role} with "${model}"...`);
 
   const tracker = new TokenUsageTracker(repoPath, period);
@@ -149,6 +145,7 @@ export async function init(options: InitOptions): Promise<void> {
 
   // Session 1 — reframe the raw story for the role.
   const prepared = (await chatJson({
+    provider: providerId,
     baseUrl,
     model,
     system: STORY_PREPARE_SYSTEM,
@@ -160,6 +157,7 @@ export async function init(options: InitOptions): Promise<void> {
 
   // Session 2 — build a structured project profile.
   const rawProfile = (await chatJson({
+    provider: providerId,
     baseUrl,
     model,
     system: PROJECT_PROFILE_SYSTEM,

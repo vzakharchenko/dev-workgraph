@@ -3,9 +3,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { loadConfig, repoGroupsDir, repoReportsDir, setOllamaConfig } from "../lib/config.js";
+import { repoGroupsDir, repoReportsDir } from "../lib/config.js";
 import { resolveRepo } from "../lib/git.js";
 import { loadGroupRecords, mergeDeterministic } from "../lib/grouping.js";
+import type { LlmCommandOptions } from "../lib/llm/cli-options.js";
+import type { LlmProviderId } from "../lib/llm/types.js";
 import {
   cleanQuestionAnalyses,
   maxSignal,
@@ -16,7 +18,7 @@ import {
   routineCheckJsonSchema,
   type Signal,
 } from "../lib/model.js";
-import { chatJson, resolveBaseUrl } from "../lib/ollama.js";
+import { chatJson } from "../lib/ollama.js";
 import { loadProjectContext } from "../lib/project.js";
 import {
   buildReportCompactPrompt,
@@ -45,19 +47,15 @@ import {
   readReportProvenance,
   stripLegacyProvenance,
 } from "../lib/report-provenance.js";
-import { resolveModel } from "../lib/select.js";
+import { resolveLlmSlot } from "../lib/select.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
  * Options for the `report` command.
  */
-export interface ReportOptions {
+export interface ReportOptions extends LlmCommandOptions {
   /** Path to the repository. */
   repo: string;
-  /** Ollama base URL override. */
-  url?: string;
-  /** Model name; skips the interactive picker. */
-  model?: string;
   /** Only fold the first N groups (useful for trials). */
   limit?: number;
   /** Operate on a defined review period's data instead of the repo's all-time data. */
@@ -174,13 +172,12 @@ export async function report(options: ReportOptions): Promise<void> {
     return;
   }
 
-  const baseUrl = resolveBaseUrl(options.url);
-  const savedOllama = loadConfig().ollama;
-  const model = await resolveModel(baseUrl, options.model, {
-    message: "Which Ollama model should fold the report?",
-    saved: savedOllama?.reportModel ?? savedOllama?.model,
+  const { providerId, baseUrl, model } = await resolveLlmSlot("report", {
+    ollama: options.ollama,
+    lmstudio: options.lmstudio,
+    model: options.model,
+    message: "Which model should fold the report?",
   });
-  setOllamaConfig({ baseUrl, reportModel: model });
 
   const reportsDir = repoReportsDir(repoPath, options.period);
   const selected = options.limit ? groups.slice(0, options.limit) : groups;
@@ -222,7 +219,7 @@ export async function report(options: ReportOptions): Promise<void> {
           group: record,
           generatedAt,
           projectBlock,
-          llm: { baseUrl, model, tracker },
+          llm: { baseUrl, model, provider: providerId, tracker },
         });
       }
 
@@ -275,6 +272,7 @@ function buildRoutineFoldResult(meta: FoldMergeMeta): ReportRecord {
 async function mergeFoldModelLayer(
   meta: FoldMergeMeta,
   baseUrl: string,
+  provider: LlmProviderId,
   mergeSystem: string,
   tracker: TokenUsageTracker,
 ): Promise<ReportModelLayer> {
@@ -282,6 +280,7 @@ async function mergeFoldModelLayer(
   const cap = (items: string[]): string[] => items.slice(0, MAX_CONTEXT_BULLETS);
   process.stdout.write("   [2/4] merge signals + context tiers ... ");
   const merged = (await chatJson({
+    provider,
     baseUrl,
     model: meta.model,
     system: mergeSystem,
@@ -326,12 +325,13 @@ async function growFoldHistory(input: {
   llm: {
     baseUrl: string;
     model: string;
+    provider: LlmProviderId;
     newSystem: string;
     tracker: TokenUsageTracker;
   };
 }): Promise<{ history: ReportHistoryEntry[]; historySources: string[][] }> {
   const { prev, file, group, contexts, historySources, llm } = input;
-  const { baseUrl, model, newSystem, tracker } = llm;
+  const { baseUrl, model, provider, newSystem, tracker } = llm;
   const history: ReportHistoryEntry[] = prev.history.map((h) => ({ text: h.text }));
   const candidate = group.model?.history ?? "";
   if (!candidate) {
@@ -341,6 +341,7 @@ async function growFoldHistory(input: {
 
   process.stdout.write(`   [3/4] history add-if-new (have ${history.length}) ... `);
   const verdict = (await chatJson({
+    provider,
     baseUrl,
     model,
     system: newSystem,
@@ -364,15 +365,20 @@ async function growFoldHistory(input: {
   return { history, historySources };
 }
 
-async function compactFoldHistory(
-  history: ReportHistoryEntry[],
-  historySources: string[][],
-  cursorStart: number,
-  baseUrl: string,
-  model: string,
-  compactSystem: string,
-  tracker: TokenUsageTracker,
-): Promise<{ history: ReportHistoryEntry[]; historySources: string[][]; cursor: number }> {
+async function compactFoldHistory(input: {
+  history: ReportHistoryEntry[];
+  historySources: string[][];
+  cursorStart: number;
+  llm: {
+    baseUrl: string;
+    model: string;
+    provider: LlmProviderId;
+    compactSystem: string;
+    tracker: TokenUsageTracker;
+  };
+}): Promise<{ history: ReportHistoryEntry[]; historySources: string[][]; cursor: number }> {
+  const { history, historySources, cursorStart, llm } = input;
+  const { baseUrl, model, provider, compactSystem, tracker } = llm;
   let cursor = cursorStart;
   if (history.length <= MAX_HISTORY_ENTRIES) {
     return { history, historySources, cursor };
@@ -391,6 +397,7 @@ async function compactFoldHistory(
 
   process.stdout.write(`   [4/4] compact pair @${cursor}+${cursor + 1} → 1 ... `);
   const condensed = (await chatJson({
+    provider,
     baseUrl,
     model,
     system: compactSystem,
@@ -429,11 +436,12 @@ async function foldGroup(input: {
   llm: {
     baseUrl: string;
     model: string;
+    provider: LlmProviderId;
     tracker: TokenUsageTracker;
   };
 }): Promise<ReportRecord> {
   const { prev, file, group, generatedAt, projectBlock, llm } = input;
-  const { baseUrl, model, tracker } = llm;
+  const { baseUrl, model, provider, tracker } = llm;
   const g = group.model;
   const prevProvenance = readReportProvenance(prev);
   const sourceGroups = [...prevProvenance.sourceGroups, file];
@@ -467,6 +475,7 @@ async function foldGroup(input: {
 
   process.stdout.write("   [1/4] classify routine vs substantive ... ");
   const check = (await chatJson({
+    provider,
     baseUrl,
     model,
     system: routineSystem,
@@ -482,25 +491,22 @@ async function foldGroup(input: {
   }
   console.log("substantive");
 
-  const newModel = await mergeFoldModelLayer(meta, baseUrl, mergeSystem, tracker);
+  const newModel = await mergeFoldModelLayer(meta, baseUrl, provider, mergeSystem, tracker);
   const grown = await growFoldHistory({
     prev,
     file,
     group,
     contexts: newModel,
     historySources,
-    llm: { baseUrl, model, newSystem, tracker },
+    llm: { baseUrl, model, provider, newSystem, tracker },
   });
   historySources = grown.historySources;
-  const compacted = await compactFoldHistory(
-    grown.history,
+  const compacted = await compactFoldHistory({
+    history: grown.history,
     historySources,
-    prev.mergeCursor ?? 0,
-    baseUrl,
-    model,
-    compactSystem,
-    tracker,
-  );
+    cursorStart: prev.mergeCursor ?? 0,
+    llm: { baseUrl, model, provider, compactSystem, tracker },
+  });
 
   return {
     reportId: group.timestampEnd,

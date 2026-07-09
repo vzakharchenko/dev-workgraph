@@ -80,9 +80,9 @@ describe("cli", () => {
     expect(program.version()).toBe("1.0.0");
   });
 
-  it("check forwards --url and sets exitCode on failure", async () => {
-    await runCli(["check", "--url", "http://ollama:11434"]);
-    expect(actionMocks.check).toHaveBeenCalledWith({ url: "http://ollama:11434" });
+  it("check forwards --ollama-url and sets exitCode on failure", async () => {
+    await runCli(["check", "--ollama-url", "http://ollama:11434"]);
+    expect(actionMocks.check).toHaveBeenCalledWith({ ollama: "http://ollama:11434" });
 
     actionMocks.check.mockRejectedValueOnce(new Error("down"));
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -105,7 +105,7 @@ describe("cli", () => {
       "2022-01-01",
       "--to",
       "2023-01-01",
-      "--url",
+      "--ollama-url",
       "http://ollama:11434",
       "--model",
       "test-model",
@@ -118,7 +118,7 @@ describe("cli", () => {
       from: "2022-01-01",
       to: "2023-01-01",
       periodMode: false,
-      url: "http://ollama:11434",
+      ollama: "http://ollama:11434",
       model: "test-model",
     });
   });
@@ -159,7 +159,7 @@ describe("cli", () => {
     await runCli([
       "summarize",
       ".",
-      "--url",
+      "--ollama-url",
       "http://ollama:11434",
       "--model",
       "m",
@@ -170,7 +170,7 @@ describe("cli", () => {
     ]);
     expect(actionMocks.summarize).toHaveBeenCalledWith({
       repo: ".",
-      url: "http://ollama:11434",
+      ollama: "http://ollama:11434",
       model: "m",
       limit: 5,
       period: "2022",
@@ -194,8 +194,6 @@ describe("cli", () => {
       repo: ".",
       days: 7,
       maxCommits: 20,
-      url: undefined,
-      model: undefined,
       limit: 2,
       period: "2022",
     });
@@ -205,7 +203,6 @@ describe("cli", () => {
     await runCli(["report", ".", "--model", "m", "--limit", "3", "--period", "2022"]);
     expect(actionMocks.report).toHaveBeenCalledWith({
       repo: ".",
-      url: undefined,
       model: "m",
       limit: 3,
       period: "2022",
@@ -216,8 +213,6 @@ describe("cli", () => {
     await runCli(["prepare", ".", "--period", "2022"]);
     expect(actionMocks.prepare).toHaveBeenCalledWith({
       repo: ".",
-      url: undefined,
-      model: undefined,
       period: "2022",
     });
   });
@@ -239,7 +234,6 @@ describe("cli", () => {
       repo: ".",
       answersFile: "answers.json",
       output: "out.md",
-      url: undefined,
       model: "m",
       period: "2022",
     });
@@ -265,7 +259,6 @@ describe("cli", () => {
       contextFile: "ctx.txt",
       answersFile: "new.json",
       output: "deep.md",
-      url: undefined,
       model: "m",
       period: "2022",
     });
@@ -290,7 +283,6 @@ describe("cli", () => {
       from: "2022-01-01",
       to: "2023-01-01",
       periodMode: false,
-      url: undefined,
       model: "m",
     });
   });

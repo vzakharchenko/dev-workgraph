@@ -3,7 +3,7 @@
 skinparam shadowing false
 skinparam ArrowColor #555555
 
-title dev-workgraph — **summarize** (§3)\nPer-commit **model layer** via Ollama **commitModel**
+title dev-workgraph — **summarize** (§3)\nPer-commit **model layer** via **commitModel** (Ollama / LM Studio)
 
 legend top left
   |= Tag |= Meaning |
@@ -20,7 +20,7 @@ rectangle "**Precondition**" #FFF8E1 {
 
 rectangle "**summarize (M:c)**" #FFF3E0 {
   card "Read evidence +\nwrite **summaries/**" as IN
-  card "Ollama commitModel\n1× normal · N× split + finalize" as LLM
+  card "LLM commitModel\n(Ollama | LM Studio)\n1× normal · N× split + finalize" as LLM
   card "**canonical** summaries/<ts>/<hash>.json" as OUT
 }
 
@@ -64,7 +64,7 @@ if (None found?) then (yes)
 else (no)
 endif
 
-:Pick **commitModel** (Ollama);\n--model overrides;\nsaved in config.ollama.commitModel;
+:Pick **commitModel**\n(Ollama / LM Studio);\n--model overrides;\nsaved in config.llm.commit;
 
 :loadProjectContext(repo [, period]);
 note right
@@ -104,7 +104,7 @@ partition "Per commit" {
     note right: skipped (empty patch)\nno LLM call
   else (has diff hunks)
     repeat
-      :Ollama POST /api/chat\nformat = modelJsonSchema();
+      :chatJson — Ollama or LM Studio\nformat / response_format = modelJsonSchema();
       :extract + schema-validate;
     repeat while (fail?) is (yes)
     ->no;
@@ -140,7 +140,7 @@ class "CommitSummaryRecord\n(after summarize)" as CR {
   model : ModelLayer **(M:c)**
 }
 
-class "ModelLayer\n**(M:c) — from Ollama**" as MOD #FFF3E0 {
+class "ModelLayer\n**(M:c) — from LLM backend**" as MOD #FFF3E0 {
   ..
   **Narrative**
   --
@@ -194,7 +194,7 @@ class "ModelLayer\n**(M:c) — from Ollama**" as MOD #FFF3E0 {
 }
 
 class "provenance\n**(D) — CLI attaches**" as PROV #E3F2FD {
-  model : Ollama name or **(none)**
+  model : model name or **(none)**
   generatedAt : ISO timestamp
 }
 
@@ -227,7 +227,7 @@ package "**User prompt**\nbuildCommitUserPrompt (D inputs)" #E8F5E9 {
   component "Patch body" as PATCH
 }
 
-package "**Ollama output**" as OUT #FFF3E0 {
+package "**LLM output**" as OUT #FFF3E0 {
   component "commitModel" as LLM
   [ModelLayer JSON\nschema-validated]
 }
@@ -415,7 +415,7 @@ database "commits/<ts>/\nevidence files" as COMM
 database "summaries/<ts>/\ncanonical .json" as SUMM
 database "project.json" as PJ
 participant "**summarize**" as SUM
-participant "Ollama\ncommitModel" as LLM
+participant "LLM\ncommitModel\nOllama | LM Studio" as LLM
 
 DEV -> SUM : dev-workgraph summarize ./repo\n[--period] [--limit N]
 
@@ -549,7 +549,7 @@ partition "[1/6] Summarize parts (M:c)" {
     if (part patch empty?) then (yes)
       :Write partN.json\nprovenance (none);
     else (no)
-      :Ollama to summaries/partN.json;
+      :LLM to summaries/partN.json;
     endif
   endwhile (no)
 }

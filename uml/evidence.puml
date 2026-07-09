@@ -8,7 +8,7 @@ title dev-workgraph — Evidence layer (§2–3)\n**evidence** (deterministic) +
 legend top left
   |= Layer |= Trust |= Produced by |
   | **(D) Deterministic** | Evidence — always trustworthy | Pure code, no LLM |
-  | **(M:c) Model** | Interpretation — may be wrong | Ollama **commitModel** |
+  | **(M:c) Model** | Interpretation — may be wrong | **commitModel** (Ollama / LM Studio) |
   | **(H) Human / init** | Starting context — not proof | `init` → project.json |
 endlegend
 
@@ -304,7 +304,7 @@ end
 EVID --> DEV : extracted / skipped counts
 
 note over DISK
-  Evidence only — no Ollama.
+  Evidence only — no LLM backend call.
   **summarize** reads commits/ + writes summaries/.
 end note
 
