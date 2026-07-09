@@ -16,6 +16,10 @@ import { type PrepareOptions, prepare } from "./actions/prepare.js";
 import { type ReportOptions, report } from "./actions/report.js";
 import { type RunOptions, run } from "./actions/run.js";
 import { type SummarizeOptions, summarize } from "./actions/summarize.js";
+import {
+  pickCommitGroupStrategyOptions,
+  registerCommitGroupStrategyOptions,
+} from "./lib/commit-group/index.js";
 import { pickLlmCommandOptions, registerLlmProviderOptions } from "./lib/llm/cli-options.js";
 import { NoLlmBackendsError } from "./lib/llm/install-help.js";
 
@@ -202,18 +206,15 @@ registerLlmProviderOptions(
   });
 
 // ✅ Command: group commits into work sessions and summarize each session
-registerLlmProviderOptions(
-  program
-    .command("commit-group")
-    .description("Group commits into work sessions and summarize each with a local model.")
-    .argument("[repo]", "Path to the Git repository", ".")
-    .option("--days <n>", "Max days between commits before a new group (skips prompt)", (v) =>
-      Number.parseInt(v, 10),
-    )
-    .option("--max-commits <n>", "Max commits per group, 0 = unlimited (skips prompt)", (v) =>
-      Number.parseInt(v, 10),
-    ),
+registerCommitGroupStrategyOptions(
+  registerLlmProviderOptions(
+    program
+      .command("commit-group")
+      .description("Group commits into work sessions and summarize each with a local model.")
+      .argument("[repo]", "Path to the Git repository", "."),
+  ),
 )
+  .option("--strategy <id>", "Grouping strategy (default: first registered)")
   .option("--model <name>", "Model to use (skips the interactive picker)")
   .option("--limit <n>", "Only summarize the first N groups (useful for trials)", (v) =>
     Number.parseInt(v, 10),
@@ -223,17 +224,19 @@ registerLlmProviderOptions(
     async (
       repo: string,
       opts: {
-        days?: number;
-        maxCommits?: number;
+        strategy?: string;
         model?: string;
         limit?: number;
         period?: string;
+        days?: number;
+        maxCommits?: number;
       },
     ) => {
+      const groupStrategy = opts.strategy;
       const options: CommitGroupOptions = {
         repo,
-        days: opts.days,
-        maxCommits: opts.maxCommits,
+        groupStrategy,
+        strategyCli: pickCommitGroupStrategyOptions(groupStrategy, opts),
         limit: opts.limit,
         period: opts.period,
         ...pickLlmCommandOptions(opts),

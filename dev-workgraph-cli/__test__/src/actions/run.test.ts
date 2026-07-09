@@ -28,6 +28,7 @@ const {
   currentUserEmailMock,
   withProviderStepMock,
   discoverLlmBackendsMock,
+  listCommitGroupStrategiesMock,
 } = vi.hoisted(() => ({
   promptMock: vi.fn(),
   initMock: vi.fn(async () => {}),
@@ -46,6 +47,17 @@ const {
       providerId: "ollama" as const,
       baseUrl: "http://127.0.0.1:11434",
       models: ["test-model"],
+    },
+  ]),
+  listCommitGroupStrategiesMock: vi.fn(() => [
+    {
+      id: "day-gap",
+      displayName: "Work sessions by day gap",
+      cliOptions: [],
+      pickCliOptions: () => ({}),
+      init: vi.fn(),
+      partition: vi.fn(),
+      formatSummary: () => "",
     },
   ]),
 }));
@@ -70,6 +82,14 @@ vi.mock("../../../src/lib/ollama.js", async () => {
     providerLabel: vi.fn((id: string) => id),
     discoverLlmBackends: (...args: unknown[]) => discoverLlmBackendsMock(...args),
     noLlmBackendsError: () => new NoLlmBackendsError(),
+  };
+});
+
+vi.mock("../../../src/lib/commit-group/registry.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/lib/commit-group/registry.js")>();
+  return {
+    ...actual,
+    listCommitGroupStrategies: (...args: unknown[]) => listCommitGroupStrategiesMock(...args),
   };
 });
 
@@ -105,16 +125,16 @@ function queueGatheringPrompts(
     role?: string;
     story?: string;
     picked?: string[];
-    days?: number;
-    maxCommits?: number;
+    strategyId?: string;
   } = {},
 ): void {
   promptMock
     .mockResolvedValueOnce({ role: overrides.role ?? "Senior Developer" })
     .mockResolvedValueOnce({ story: overrides.story ?? "Built the CLI." })
-    .mockResolvedValueOnce({ picked: overrides.picked ?? ["dev@example.com"] })
-    .mockResolvedValueOnce({ days: overrides.days ?? 7 })
-    .mockResolvedValueOnce({ maxCommits: overrides.maxCommits ?? 20 });
+    .mockResolvedValueOnce({ picked: overrides.picked ?? ["dev@example.com"] });
+  if (overrides.strategyId !== undefined) {
+    promptMock.mockResolvedValueOnce({ strategyId: overrides.strategyId });
+  }
 }
 
 describe("run", () => {
@@ -123,6 +143,18 @@ describe("run", () => {
   beforeEach(() => {
     ({ restore: restoreHome } = setupWorkgraphHome());
     promptMock.mockReset();
+    listCommitGroupStrategiesMock.mockReset();
+    listCommitGroupStrategiesMock.mockReturnValue([
+      {
+        id: "day-gap",
+        displayName: "Work sessions by day gap",
+        cliOptions: [],
+        pickCliOptions: () => ({}),
+        init: vi.fn(),
+        partition: vi.fn(),
+        formatSummary: () => "",
+      },
+    ]);
     llmReadyMock.mockResolvedValue(true);
     getAuthorsMock.mockReturnValue([{ email: "dev@example.com", name: "Dev", commits: 2 }]);
     currentUserEmailMock.mockReturnValue("dev@example.com");
@@ -167,8 +199,6 @@ describe("run", () => {
     writeProjectContext(FAKE_REPO);
     setRepoConfig(FAKE_REPO, {
       selectedAuthors: ["dev@example.com"],
-      groupThresholdDays: 5,
-      groupMaxCommits: 10,
     });
 
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -180,13 +210,12 @@ describe("run", () => {
     expect(evidenceMock).toHaveBeenCalledWith(expect.objectContaining({ period: undefined }));
   });
 
-  it("reuses saved authors, group threshold, and max commits", async () => {
+  it("reuses saved authors and passes the default group strategy", async () => {
     promptMock.mockReset();
     writeProjectContext(FAKE_REPO);
     setRepoConfig(FAKE_REPO, {
       selectedAuthors: ["saved@example.com"],
-      groupThresholdDays: 9,
-      groupMaxCommits: 15,
+      commitGroupStrategy: "day-gap",
     });
 
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -194,27 +223,42 @@ describe("run", () => {
 
     expect(promptMock).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith("Using saved authors: saved@example.com");
-    expect(log).toHaveBeenCalledWith("Using saved group threshold: 9 day(s)");
-    expect(log).toHaveBeenCalledWith("Using saved max commits/group: 15");
     expect(commitGroupMock).toHaveBeenCalledWith(
-      expect.objectContaining({ days: 9, maxCommits: 15 }),
+      expect.objectContaining({ groupStrategy: "day-gap" }),
     );
   });
 
-  it("logs unlimited when saved maxCommits is zero", async () => {
+  it("prompts for grouping strategy when several are registered", async () => {
+    listCommitGroupStrategiesMock.mockReturnValue([
+      {
+        id: "day-gap",
+        displayName: "Work sessions by day gap",
+        cliOptions: [],
+        pickCliOptions: () => ({}),
+        init: vi.fn(),
+        partition: vi.fn(),
+        formatSummary: () => "",
+      },
+      {
+        id: "jira",
+        displayName: "Jira tickets",
+        cliOptions: [],
+        pickCliOptions: () => ({}),
+        init: vi.fn(),
+        partition: vi.fn(),
+        formatSummary: () => "",
+      },
+    ]);
     promptMock.mockReset();
-    writeProjectContext(FAKE_REPO);
-    setRepoConfig(FAKE_REPO, {
-      selectedAuthors: ["saved@example.com"],
-      groupThresholdDays: 7,
-      groupMaxCommits: 0,
-    });
+    queueGatheringPrompts({ strategyId: "jira" });
 
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
     await run({ repo: FAKE_REPO, model: "test-model" });
 
-    expect(log).toHaveBeenCalledWith("Using saved max commits/group: unlimited");
-    expect(commitGroupMock).toHaveBeenCalledWith(expect.objectContaining({ maxCommits: 0 }));
+    expect(promptMock).toHaveBeenCalledTimes(4);
+    expect(getRepoConfig(FAKE_REPO)?.commitGroupStrategy).toBe("jira");
+    expect(commitGroupMock).toHaveBeenCalledWith(
+      expect.objectContaining({ groupStrategy: "jira" }),
+    );
   });
 
   it("period run inherits repo context without prompting for role/story", async () => {
@@ -223,8 +267,6 @@ describe("run", () => {
     setPeriod(FAKE_REPO, "2022", { from: "2022-01-01", to: "2023-01-01" });
     setRepoConfig(FAKE_REPO, {
       selectedAuthors: ["dev@example.com"],
-      groupThresholdDays: 7,
-      groupMaxCommits: 20,
     });
 
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -253,8 +295,6 @@ describe("run", () => {
     setPeriod(FAKE_REPO, "2022", { from: "2022-01-01", to: "2023-01-01" });
     setRepoConfig(FAKE_REPO, {
       selectedAuthors: ["dev@example.com"],
-      groupThresholdDays: 7,
-      groupMaxCommits: 20,
     });
 
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -273,32 +313,10 @@ describe("run", () => {
     );
   });
 
-  it("uses default group threshold when the prompt returns a non-positive number", async () => {
-    promptMock.mockReset();
-    queueGatheringPrompts({ days: 0 });
-
-    await run({ repo: FAKE_REPO, model: "test-model" });
-
-    expect(getRepoConfig(FAKE_REPO)?.groupThresholdDays).toBe(7);
-    expect(commitGroupMock).toHaveBeenCalledWith(expect.objectContaining({ days: 7 }));
-  });
-
-  it("uses default max commits when the prompt returns a negative number", async () => {
-    promptMock.mockReset();
-    queueGatheringPrompts({ maxCommits: -1 });
-
-    await run({ repo: FAKE_REPO, model: "test-model" });
-
-    expect(getRepoConfig(FAKE_REPO)?.groupMaxCommits).toBe(20);
-    expect(commitGroupMock).toHaveBeenCalledWith(expect.objectContaining({ maxCommits: 20 }));
-  });
-
   it("resolves period from periodMode and passes it through the pipeline", async () => {
     setPeriod(FAKE_REPO, "2022", { from: "2022-01-01", to: "2023-01-01" });
     setRepoConfig(FAKE_REPO, {
       selectedAuthors: ["dev@example.com"],
-      groupThresholdDays: 7,
-      groupMaxCommits: 20,
     });
     promptMock.mockReset();
 
@@ -355,8 +373,6 @@ describe("run", () => {
     writeProjectContext(FAKE_REPO);
     setRepoConfig(FAKE_REPO, {
       selectedAuthors: ["dev@example.com"],
-      groupThresholdDays: 5,
-      groupMaxCommits: 10,
     });
 
     await run({ repo: FAKE_REPO, model: "test-model" });

@@ -64,7 +64,7 @@ describe("commitGroup", () => {
 
   it("does nothing without exported commits", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    await commitGroup({ repo: FAKE_REPO, days: 7, maxCommits: 20, model: "test-model" });
+    await commitGroup({ repo: FAKE_REPO, strategyCli: { days: 7, maxCommits: 20 }, model: "test-model" });
     expect(log).toHaveBeenCalledWith(expect.stringContaining("No exported commits"));
   });
 
@@ -72,8 +72,7 @@ describe("commitGroup", () => {
     seedCommit(FAKE_REPO, summarizedCommit("abc1234567890abc1234567890abc1234567890"));
     await commitGroup({
       repo: FAKE_REPO,
-      days: 7,
-      maxCommits: 20,
+      strategyCli: { days: 7, maxCommits: 20 },
       model: "test-model",
     });
     const groupFile = path.join(repoGroupsDir(FAKE_REPO), "1700000000.json");
@@ -100,7 +99,7 @@ describe("commitGroup", () => {
     seedCommit(FAKE_REPO, summarizedCommit(substantive));
 
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    await commitGroup({ repo: FAKE_REPO, days: 7, maxCommits: 20, model: "test-model" });
+    await commitGroup({ repo: FAKE_REPO, strategyCli: { days: 7, maxCommits: 20 }, model: "test-model" });
 
     expect(log).toHaveBeenCalledWith(
       expect.stringContaining("2 commit(s) → 1 for grouping (1 empty summary skipped)"),
@@ -121,12 +120,11 @@ describe("commitGroup", () => {
     seedCommit(FAKE_REPO, summarizedCommit("abc1234567890abc1234567890abc1234567890"));
     await commitGroup({
       repo: FAKE_REPO,
-      days: 7,
-      maxCommits: 20,
+      strategyCli: { days: 7, maxCommits: 20 },
       model: "test-model",
     });
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    await commitGroup({ repo: FAKE_REPO, days: 7, maxCommits: 20, model: "test-model" });
+    await commitGroup({ repo: FAKE_REPO, strategyCli: { days: 7, maxCommits: 20 }, model: "test-model" });
     expect(log).toHaveBeenCalledWith(expect.stringContaining("skipped 1"));
   });
 
@@ -152,8 +150,7 @@ describe("commitGroup", () => {
 
     await commitGroup({
       repo: FAKE_REPO,
-      days: 7,
-      maxCommits: 20,
+      strategyCli: { days: 7, maxCommits: 20 },
       model: "test-model",
     });
 
@@ -180,7 +177,7 @@ describe("commitGroup", () => {
       model: sampleModel({ summary: "fifth" }),
     });
 
-    await commitGroup({ repo: FAKE_REPO, days: 7, maxCommits: 20, model: "test-model" });
+    await commitGroup({ repo: FAKE_REPO, strategyCli: { days: 7, maxCommits: 20 }, model: "test-model" });
 
     const extensionFile = path.join(repoGroupsDir(FAKE_REPO), `${1_700_000_000 + day * 4}.json`);
     expect(fs.existsSync(extensionFile)).toBe(true);
@@ -208,7 +205,7 @@ describe("commitGroup", () => {
     fs.rmSync(repoProjectPath(FAKE_REPO), { force: true });
     seedCommit(FAKE_REPO, summarizedCommit("abc1234567890abc1234567890abc1234567890"));
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    await commitGroup({ repo: FAKE_REPO, days: 7, maxCommits: 20, model: "test-model" });
+    await commitGroup({ repo: FAKE_REPO, strategyCli: { days: 7, maxCommits: 20 }, model: "test-model" });
     expect(log).toHaveBeenCalledWith(
       expect.stringContaining("No project context (run `dev-workgraph init`)"),
     );
@@ -229,8 +226,7 @@ describe("commitGroup", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     await commitGroup({
       repo: FAKE_REPO,
-      days: 7,
-      maxCommits: 20,
+      strategyCli: { days: 7, maxCommits: 20 },
       model: "test-model",
       limit: 1,
     });
@@ -241,7 +237,7 @@ describe("commitGroup", () => {
     seedCommit(FAKE_REPO, summarizedCommit("abc1234567890abc1234567890abc1234567890"));
     vi.mocked(chatJson).mockRejectedValueOnce(new Error("model down"));
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    await commitGroup({ repo: FAKE_REPO, days: 7, maxCommits: 20, model: "test-model" });
+    await commitGroup({ repo: FAKE_REPO, strategyCli: { days: 7, maxCommits: 20 }, model: "test-model" });
     const groupFile = path.join(repoGroupsDir(FAKE_REPO), "1700000000.json");
     const record = JSON.parse(fs.readFileSync(groupFile, "utf8")) as { model: unknown };
     expect(record.model).toBeNull();

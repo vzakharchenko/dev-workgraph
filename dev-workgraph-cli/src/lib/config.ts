@@ -26,10 +26,12 @@ export interface RepoConfig {
   selectedAuthors: string[];
   /** The developer's role on this project (captured by `init`). */
   role?: string;
-  /** Max days between consecutive commits before a new work-session group starts. */
+  /** Max days between consecutive commits before a new work-session group starts; day-gap only. */
   groupThresholdDays?: number;
-  /** Max commits per work-session group (0 = unlimited). */
+  /** Max commits per work-session group (0 = unlimited); day-gap strategy only. */
   groupMaxCommits?: number;
+  /** Saved commit-group strategy id (e.g. `day-gap`). */
+  commitGroupStrategy?: string;
   /** Named review windows, keyed by a human label (e.g. "2022", "2022-H1"). */
   periods?: Record<string, Period>;
 }

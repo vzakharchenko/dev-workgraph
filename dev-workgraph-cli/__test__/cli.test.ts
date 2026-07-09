@@ -192,8 +192,8 @@ describe("cli", () => {
     ]);
     expect(actionMocks.commitGroup).toHaveBeenCalledWith({
       repo: ".",
-      days: 7,
-      maxCommits: 20,
+      groupStrategy: undefined,
+      strategyCli: { days: 7, maxCommits: 20 },
       limit: 2,
       period: "2022",
     });

@@ -112,7 +112,7 @@ data/repos/<repo-id>/
     <id>.md
 ```
 
-**Review periods** (`--period <id>`) mirror this tree under `periods/<id>/`. Config (authors, grouping thresholds) lives in `config.json` outside the data dir; `export` bundles both.
+**Review periods** (`--period <id>`) mirror this tree under `periods/<id>/`. Config (authors, saved grouping strategy) lives in `config.json` outside the data dir; strategy-specific settings (e.g. day-gap thresholds) are persisted per repo by the active strategy; `export` bundles both.
 
 ## Phase 1 — Preconditions
 
@@ -140,16 +140,28 @@ Commit evidence and summaries are **separate files** (`commits/` vs `summaries/`
 
 ## Phase 3 — Work sessions (`commit-group`)
 
-Groups commits into **work sessions** by day gap (`groupThresholdDays`) and optional `groupMaxCommits`.
+Partitions summarized commits into **work sessions** (groups), then runs the same LLM classify/compose pipeline for each bucket. **How** commits are partitioned is pluggable; **what** gets written under `groups/` is fixed so `report` stays unchanged.
 
-1. **Deterministic** — union membership, aggregate churn/areas, `groups.tiers` (hi / medium / low).
+### Default: day-gap strategy
+
+Shipped strategy `day-gap` groups chronologically by gap (`groupThresholdDays`) and optional `groupMaxCommits`. CLI flags: `--days`, `--max-commits` (registered by the strategy, not the core command).
+
+### Fixed runner (not pluggable)
+
+For every partition bucket the action:
+
+1. **Deterministic** — `buildGroupRecord`: union membership, aggregate churn/areas, `groups.tiers` (hi / medium / low).
 2. **Model** (`commitModel`) — session signals, context bullets, `questionsAnalyses`, first-person `history`.
+
+The strategy only supplies **buckets** (`members` + `fileKey` for `groups/<fileKey>.json`). Downstream `report` still reads `GroupRecord` files regardless of how they were formed.
 
 ![Commit-group overview](img/commit-group-overview.png)
 
-On incremental re-run, only **uncovered** commits get **extension groups** — prior groups are not rewritten.
+On incremental re-run, the default strategy uses **extension tails** (`extensionSessions` in `grouping.ts`) so only **uncovered** commits get new extension groups — prior summarized groups are not rewritten.
 
 ![Incremental extension](img/commit-group-incremental.png)
+
+CLI: `--strategy <id>` selects the registered strategy (default: first in `COMMIT_GROUP_STRATEGIES`). `run` prompts for strategy when more than one is registered; choice is saved as `commitGroupStrategy` in repo config. Plugin architecture: [Extending commit-group strategies](#extending-commit-group-strategies) below.
 
 ## Phase 4 — Cumulative report (`report`)
 
@@ -255,10 +267,11 @@ Implementation lives in [`dev-workgraph-cli/src/`](dev-workgraph-cli/src/):
 | Commands | `src/actions/*.ts` — one file per pipeline stage |
 | Records / types | `src/lib/records.ts`, `model.ts` |
 | LLM providers | `src/lib/llm/` — Ollama, LM Studio, registry, `chatJson` |
+| Commit-group strategies | `src/lib/commit-group/` — partition plugins, registry, CLI helpers |
 | Legacy re-exports | `src/lib/ollama.ts` |
 | JSON validation | `src/lib/json-response.ts` |
 | LM Studio lifecycle | `src/lib/lmstudio-session.ts` |
-| Grouping / evidence merge | `src/lib/grouping.ts` |
+| Grouping primitives | `src/lib/grouping.ts` — `groupByGap`, `extensionSessions`, merge helpers |
 | Finish + Q&A | `src/lib/finish-questions.ts`, `finish-load.ts` |
 | Config / paths | `src/lib/config.ts` |
 | Prompts | `src/lib/prompts.ts` |
@@ -293,6 +306,50 @@ Config slots store `{ provider, baseUrl, model }` under `config.llm` — the new
 
 If you implement a provider for a widely used local stack, please open a pull request — thank you for contributing!
 
+### Extending commit-group strategies
+
+**Partition logic** is a plugin layer. The shipped `day-gap` strategy lives in `day-gap-strategy.ts`; the `commit-group` action and `report` never import it directly — only `registry.ts` wires implementations.
+
+![Commit-group strategies — plugin layout and registry](img/commit-group-strategies.png)
+
+![Commit-group — strategy vs runner responsibilities](img/commit-group-strategies-flow.png)
+
+**Registration point:** `COMMIT_GROUP_STRATEGIES` in `src/lib/commit-group/registry.ts`.
+
+```typescript
+export const COMMIT_GROUP_STRATEGIES: readonly CommitGroupStrategy[] = [dayGapStrategy];
+```
+
+**What you customize:** only how commits are split into buckets. The runner always builds `GroupRecord`, runs classify + compose LLM steps, and writes `groups/<fileKey>.json` in the format `report` expects.
+
+**What stays fixed:** `summarize` output as input, `GroupRecord` schema, `commitModel` prompts, incremental skip when `group.model` already exists, `--limit` / `--period`.
+
+**`CommitGroupStrategy` interface** (`src/lib/commit-group/types.ts`):
+
+| Method / field | Role |
+|----------------|------|
+| `id`, `displayName` | CLI `--strategy`, `run` picker, saved `commitGroupStrategy` |
+| `cliOptions` | Strategy-owned Commander flags (e.g. `--days`, `--max-commits`) |
+| `pickCliOptions(opts)` | Extract only this strategy's fields from parsed CLI options |
+| `init(ctx)` | Prompts, persisted repo settings, returns `params` for `partition` |
+| `partition(commits, init, ctx)` | Async — returns `buckets[]` + stats (`rawBucketCount`, `pendingCount`, `fullyCovered`) |
+| `formatSummary(ctx, init, partition)` | One-line human summary before LLM summarize loop |
+
+Each bucket: `{ members: CommitRecord[], fileKey: string }` where `fileKey` is the basename for `groups/<fileKey>.json` (day-gap uses `timestampEnd`; a Jira strategy might use ticket id).
+
+**Steps to add a strategy:**
+
+1. **Implement** `CommitGroupStrategy` in e.g. `src/lib/commit-group/jira-strategy.ts`. Reuse helpers from `grouping.ts` when useful (`groupByGap`, `extensionSessions`, `coveredCommitHashes`); not required.
+2. **Register** — import and append to `COMMIT_GROUP_STRATEGIES` in `registry.ts` (sole import site for concrete strategies).
+3. **CLI** — `registerCommitGroupStrategyOptions` (in `cli-options.ts`) registers every strategy's `cliOptions` on `commit-group`; inactive strategies' flags are ignored via `pickCliOptions`.
+4. **Config** — persist strategy-specific keys inside `init` (day-gap uses `groupThresholdDays` / `groupMaxCommits` on `RepoConfig`); the runner only stores `commitGroupStrategy` id.
+
+`run` calls `resolveRunGroupStrategy`: one registered strategy → use it silently; several → list picker (or reuse saved `commitGroupStrategy`). Strategy-specific prompts (e.g. day gap) run inside `init` at the `commit-group` step, not in `run`.
+
+Example alternative partition: group by Jira ticket parsed from commit messages, one bucket per ticket, `fileKey` = ticket key — same `GroupRecord` output, different session boundaries for `report` to fold.
+
+If you implement a generally useful grouping strategy, please open a pull request.
+
 ## Diagram index
 
 | Topic | Source | PNG |
@@ -305,6 +362,7 @@ If you implement a provider for a widely used local stack, please open a pull re
 | Evidence | `uml/evidence.puml` | `img/evidence-*.png` |
 | Summarize | `uml/summarize.puml` | `img/summarize-*.png` |
 | Commit-group | `uml/commit-group.puml` | `img/commit-group-*.png` |
+| Commit-group plugins | `uml/commit-group-strategies.puml` | `img/commit-group-strategies*.png` |
 | Report | `uml/report.puml` | `img/report-*.png` |
 | Prepare | `uml/prepare.puml` | `img/prepare-*.png` |
 | Final | `uml/final.puml` | `img/final-*.png` |

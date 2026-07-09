@@ -3,6 +3,11 @@
 
 import fs from "node:fs";
 import inquirer from "inquirer";
+import {
+  defaultCommitGroupStrategy,
+  getCommitGroupStrategy,
+  listCommitGroupStrategies,
+} from "../lib/commit-group/registry.js";
 import { getRepoConfig, repoProjectPath, setRepoConfig } from "../lib/config.js";
 import { currentUserEmail, getAuthors, resolveRepo } from "../lib/git.js";
 import type { LlmCommandOptions } from "../lib/llm/cli-options.js";
@@ -36,18 +41,10 @@ export interface RunOptions extends LlmCommandOptions {
   periodMode?: boolean;
 }
 
-const DEFAULT_THRESHOLD_DAYS = 7;
-const DEFAULT_MAX_COMMITS = 20;
-
 interface RunSlots {
   commit: LlmModelChoice;
   report: LlmModelChoice;
   narrative: LlmModelChoice;
-}
-
-interface RunGroupSettings {
-  days: number;
-  maxCommits: number;
 }
 
 interface RunInitContext {
@@ -170,43 +167,30 @@ async function resolveRunAuthors(repoPath: string): Promise<string[]> {
   return emails;
 }
 
-async function resolveRunGroupSettings(repoPath: string): Promise<RunGroupSettings> {
-  const cfg = getRepoConfig(repoPath);
-  let days = cfg?.groupThresholdDays;
-  if (days === undefined) {
-    const answer = await inquirer.prompt<{ days: number }>([
-      {
-        type: "number",
-        name: "days",
-        message: "Max days between commits before a new work-session group starts:",
-        default: days ?? DEFAULT_THRESHOLD_DAYS,
-      },
-    ]);
-    days = Number.isFinite(answer.days) && answer.days > 0 ? answer.days : DEFAULT_THRESHOLD_DAYS;
-    setRepoConfig(repoPath, { groupThresholdDays: days });
-  } else {
-    console.log(`Using saved group threshold: ${days} day(s)`);
+async function resolveRunGroupStrategy(repoPath: string): Promise<string> {
+  const strategies = listCommitGroupStrategies();
+  if (strategies.length === 1) return defaultCommitGroupStrategy().id;
+
+  const saved = getRepoConfig(repoPath)?.commitGroupStrategy;
+  if (saved) {
+    const known = getCommitGroupStrategy(saved);
+    console.log(`Using saved grouping strategy: ${known.displayName} (${known.id})`);
+    return known.id;
   }
 
-  let maxCommits = cfg?.groupMaxCommits;
-  if (maxCommits === undefined) {
-    const answer = await inquirer.prompt<{ maxCommits: number }>([
-      {
-        type: "number",
-        name: "maxCommits",
-        message: "Max commits per group (0 = unlimited):",
-        default: maxCommits ?? DEFAULT_MAX_COMMITS,
-      },
-    ]);
-    maxCommits =
-      Number.isFinite(answer.maxCommits) && answer.maxCommits >= 0
-        ? answer.maxCommits
-        : DEFAULT_MAX_COMMITS;
-    setRepoConfig(repoPath, { groupMaxCommits: maxCommits });
-  } else {
-    console.log(`Using saved max commits/group: ${maxCommits || "unlimited"}`);
-  }
-  return { days, maxCommits };
+  const { strategyId } = await inquirer.prompt<{ strategyId: string }>([
+    {
+      type: "list",
+      name: "strategyId",
+      message: "How should commits be grouped into work sessions?",
+      choices: strategies.map((s) => ({
+        name: `${s.displayName} (${s.id})`,
+        value: s.id,
+      })),
+    },
+  ]);
+  setRepoConfig(repoPath, { commitGroupStrategy: strategyId });
+  return strategyId;
 }
 
 /**
@@ -226,7 +210,7 @@ export async function run(options: RunOptions): Promise<void> {
 
   const initCtx = await resolveRunInitContext(repoPath, period);
   const emails = await resolveRunAuthors(repoPath);
-  const groupSettings = await resolveRunGroupSettings(repoPath);
+  const groupStrategy = await resolveRunGroupStrategy(repoPath);
 
   console.log("\n=== Running pipeline (final will ask the prepared questions at the end) ===");
 
@@ -269,8 +253,7 @@ export async function run(options: RunOptions): Promise<void> {
     commitGroup({
       repo: repoPath,
       model: slots.commit.model,
-      days: groupSettings.days,
-      maxCommits: groupSettings.maxCommits,
+      groupStrategy,
       period,
     }),
   );

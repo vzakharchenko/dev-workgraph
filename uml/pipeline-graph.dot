@@ -99,13 +99,13 @@ digraph pipeline {
   // ── commit-group: group commits by criteria → work sessions ────────
 
   subgraph cluster_groups {
-    label="commit-group (§4)\ngroupByGap · **skip empty summaries** (none/blank)\nincremental: extension groups (uncovered only)\ndeterministic (D) + commitModel (M:c) — work sessions"
+    label="commit-group (§4)\n**strategy.partition** (default: day-gap)\n· skip empty summaries (none/blank)\n· incremental: extension buckets (day-gap)\nrunner: deterministic (D) + commitModel (M:c)"
     style=rounded
     color="#1976D2"
     bgcolor="#E3F2FD"
     penwidth=1.2
 
-    v_gcrit [label="group criteria\n(H/config)\ndays gap · max size" fillcolor="#FFF8E1" width=1.35 height=0.95]
+    v_gcrit [label="group strategy\n--strategy / config\n**day-gap:** days · max size" fillcolor="#FFF8E1" width=1.45 height=0.95]
 
     v_g1 [label="group 1\nN:1" fillcolor="#BBDEFB" width=1.2 height=0.9]
     v_g2 [label="group 2\n1:1" fillcolor="#BBDEFB" width=1.2 height=0.9]
