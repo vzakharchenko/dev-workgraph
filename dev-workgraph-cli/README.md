@@ -146,7 +146,7 @@ These are the models used for the example outputs below. With **LM Studio**, pic
 | Context | `init` | narrative | Role, project story, README → `project.json` |
 | Evidence | `evidence` | — | Patches + deterministic JSON per commit |
 | Commit layer | `summarize` | commit | Per-commit summary, signals, questions |
-| Sessions | `commit-group` | commit | Group by day gap; session history |
+| Sessions | `commit-group` | commit | Pluggable partition (default: day-gap); session history |
 | Cumulative | `report` | report | Fold groups → growing narrative report |
 | Distill | `prepare` | narrative | One history + up to 4 questions for `final` |
 | Deliver | `final` | narrative | **You answer** → `RECONSTRUCTION.<project>.md` |
@@ -177,6 +177,8 @@ dev-workgraph run:period   ./repo --period 2024
 Common flags:
 
 - `--period <id>` — scope to a review window (`periods/<id>/` data subtree)
+- `--strategy <id>` — commit-group partition strategy (default: first registered, usually `day-gap`)
+- `--days <n>` / `--max-commits <n>` — day-gap strategy only (skip interactive prompts)
 - `--model <name>` — force model for this command (must be unique across reachable backends)
 - `--ollama-url <url>` — Ollama server URL (default `http://127.0.0.1:11434`)
 - `--lmstudio-url <url>` — LM Studio server URL (default `http://127.0.0.1:1234`)
@@ -202,7 +204,7 @@ finish/
   <id>.md
 ```
 
-`<repo-id>` is `<basename>-<hash8>` from the absolute repo path. Config (authors, role, models) lives in `~/.workgraph/config.json`.
+`<repo-id>` is `<basename>-<hash8>` from the absolute repo path. Config (authors, role, models, `commitGroupStrategy`, day-gap thresholds) lives in `~/.workgraph/config.json`.
 
 ### Q&A storage
 
@@ -220,6 +222,15 @@ dev-workgraph import ./bundle.workgraph.tar.gz --repo /new/path
 ```
 
 Bundles data directory + config entry. No LLM calls.
+
+## Extensibility
+
+| Plugin | Registration | Docs |
+|--------|--------------|------|
+| **LLM backends** | `LLM_PROVIDER_KINDS` in `src/lib/llm/providers.ts` | [`ARCHITECTURE.md`](../ARCHITECTURE.md) — *Extending LLM providers* |
+| **Commit-group strategies** | `COMMIT_GROUP_STRATEGIES` in `src/lib/commit-group/registry.ts` | [`ARCHITECTURE.md`](../ARCHITECTURE.md) — *Extending commit-group strategies* |
+
+Only **partition** is customizable for `commit-group`; the runner always produces the same `GroupRecord` for `report`. Default strategy: **day-gap** (`--days`, `--max-commits`). With multiple strategies registered, `run` prompts for `--strategy` (saved as `commitGroupStrategy`).
 
 ## Core principle
 

@@ -37,7 +37,24 @@ LLM backends are a **plugin layer** (`LlmProviderKind` + `LlmProvider` in `src/l
 
 After registration, `check`, model pickers, and `--<id>-url` flags work without extra CLI wiring. Documented in [`ARCHITECTURE.md`](ARCHITECTURE.md) — *Extending LLM providers*.
 
-**Contributions welcome:** if you add a provider for another popular local stack, please open a PR — thank you for contributing!
+#### Pluggable commit-group strategies
+
+**Partition logic** for `commit-group` is a **plugin layer** (`CommitGroupStrategy` in `src/lib/commit-group/`). The shipped **day-gap** strategy (chronological work sessions by day gap) is the default; custom strategies register in `COMMIT_GROUP_STRATEGIES` (`registry.ts`) — the only file that imports concrete implementations.
+
+| Surface | Behavior |
+|---------|----------|
+| **Customizable** | `init` + `partition` only — how commits split into buckets (`members[]` + `fileKey`) |
+| **Fixed runner** | `buildGroupRecord`, classify/compose LLM steps, `GroupRecord` schema — unchanged for `report` |
+| **CLI** | `--strategy <id>`; strategy-owned flags via `cliOptions` + `pickCliOptions` (day-gap: `--days`, `--max-commits`) |
+| **`run`** | Prompts for grouping strategy when more than one is registered; saves `commitGroupStrategy` in repo config |
+
+| Step | What to implement |
+|------|-------------------|
+| 1 | `CommitGroupStrategy` — `id`, `displayName`, `cliOptions`, `pickCliOptions`, `init`, `partition`, `formatSummary` |
+| 2 | Implement in e.g. `day-gap-strategy.ts` / `jira-strategy.ts` — reuse `grouping.ts` helpers optionally |
+| 3 | Append to `COMMIT_GROUP_STRATEGIES` in `registry.ts` |
+
+After registration, `registerCommitGroupStrategyOptions` exposes strategy CLI flags on `commit-group` without editing the action. Documented in [`ARCHITECTURE.md`](ARCHITECTURE.md) — *Extending commit-group strategies* (`img/commit-group-strategies.png`, `img/commit-group-strategies-flow.png`).
 
 #### Examples
 
@@ -65,6 +82,7 @@ Role shapes **which gaps to ask about** (`questionsAnalysis`, open questions), n
 
 ### Changed
 
+- **commit-group strategies:** `--days` / `--max-commits` are owned by the **day-gap** strategy (not hard-coded on the command); `--strategy <id>` selects the partition plugin. `run` no longer prompts for day-gap thresholds upfront — strategy `init` runs at the `commit-group` step.
 - **Role-aware prompts:** inline per-role emphasis maps in `prompts.ts` replaced by `role-definitions.ts`; `cvEmphasisForRole` re-exported from there for CV bullet builders.
 - **Ollama `think`:** `commitModel` and `reportModel` calls send `think: false`; `narrativeModel` (`init`, `prepare`, `final`, `deepen`) omits `think` so thinking-capable models use Ollama defaults on narrative stages.
 

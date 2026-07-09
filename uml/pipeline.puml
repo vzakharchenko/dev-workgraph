@@ -60,15 +60,16 @@ partition "Evidence (§2–3)" {
 }
 
 partition "Work sessions (§4, §7)" {
-  :(D) **commit-group** — filter + membership\nExclude empty summaries;\nchronological groupByGap;
-  :(D) **commit-group** — aggregate\nUnion deterministic fields;\npartition groups.tiers (low/medium/hi);
+  :(D) **commit-group** — filter commits\nExclude empty summaries;
+  :(D) **strategy.partition** — pluggable buckets\n(default **day-gap**: groupByGap + extension);
+  :(D) **commit-group** — aggregate per bucket\nUnion deterministic fields;\npartition groups.tiers (low/medium/hi);
   :(M:c) **commit-group** — classify\nSignals, changeTypes, context bullets, questions;
   :(M:c) **commit-group** — compose\nFirst-person session **history**;
   note right
-    **groups/**<timestampEnd>.json
+    **groups/**<fileKey>.json
     deterministic + model layers
-    **incremental:** extension groups
-    (uncovered commits only)
+    **incremental:** extension buckets
+    (uncovered commits only — day-gap)
   end note
 }
 
@@ -160,7 +161,7 @@ participant "final" as FIN
 participant "Human" as H
 
 CLI -> CHECK : preflight (abort if no LLM backend ready)
-CLI -> CLI : gather upfront inputs\n(3 models, role+story, authors, group thresholds)\nonly if not already saved
+CLI -> CLI : gather upfront inputs\n(3 models, role+story, authors,\n**group strategy** if >1 registered)
 
 alt run:period / --period <id>
   CLI -> CLI : scope all stages to periods/<id>/\ncommits filtered to [from, to)
@@ -261,8 +262,9 @@ title dev-workgraph — On-disk data layout (~/.workgraph)
 package "config.json (outside data dir)" {
   [repos.<abs-path>.role]
   [repos.<abs-path>.selectedAuthors]
-  [repos.<abs-path>.groupThresholdDays]
-  [repos.<abs-path>.groupMaxCommits]
+  [repos.<abs-path>.commitGroupStrategy]
+  [repos.<abs-path>.groupThresholdDays\n(day-gap strategy only)]
+  [repos.<abs-path>.groupMaxCommits\n(day-gap strategy only)]
   [repos.<abs-path>.periods.<id> {from, to}]
   [llm.commit / report / narrative\n{provider, baseUrl, model}]
 }

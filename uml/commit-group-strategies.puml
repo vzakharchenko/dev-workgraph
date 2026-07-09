@@ -1,0 +1,97 @@
+@startuml commit-group-strategies
+!theme plain
+skinparam shadowing false
+skinparam componentStyle rectangle
+
+title dev-workgraph — **Extending commit-group strategies**\nPluggable partition · fixed runner · same GroupRecord for report
+
+legend top left
+  |= Layer |= Customizable? |
+  | **Strategy** | **Yes** — partition only |
+  | **commit-group action** | **No** — buildGroupRecord + LLM classify/compose |
+  | **report** | **No** — reads groups/*.json |
+endlegend
+
+rectangle "src/lib/commit-group/" #E8F5E9 {
+  card "**CommitGroupStrategy**\nid · displayName\ncliOptions · pickCliOptions\ninit · partition · formatSummary" as IFACE
+
+  card "**registry.ts**\nCOMMIT_GROUP_STRATEGIES\n(sole import of concrete strategies)" as REG #C8E6C9
+
+  card "**day-gap-strategy.ts** (default)\n--days · --max-commits\ngroupByGap · extensionSessions\nfileKey = timestampEnd" as DAY #FFF8E1
+
+  card "**your-strategy.ts** (e.g. jira)\nown CLI flags\npartition by ticket\nfileKey = PROJ-123" as CUSTOM #E3F2FD
+
+  card "cli-options.ts\nregisterCommitGroupStrategyOptions" as CLI #FAFAFA
+}
+
+rectangle "src/actions/commit-group.ts (runner)" #FFF3E0 {
+  card "load commits + filter empty" as LOAD
+  card "buildGroupRecord (D)" as BUILD
+  card "classify + compose (M:c)" as LLM
+  card "groups/<fileKey>.json" as OUT
+}
+
+REG --> DAY : wires
+REG ..> CUSTOM : append here
+IFACE .. DAY : implements
+IFACE .. CUSTOM : implements
+
+CLI --> REG : registers cliOptions
+
+LOAD --> IFACE : init then partition
+IFACE --> BUILD : buckets
+BUILD --> LLM
+LLM --> OUT
+
+note bottom of REG
+  **run** resolves strategy:
+  1 registered = silent default
+  N registered = picker or saved
+  **commitGroupStrategy** in repo config
+end note
+
+note bottom of OUT
+  **GroupRecord** schema unchanged.
+  report folds groups regardless of
+  how buckets were formed.
+end note
+
+@enduml
+
+
+@startuml commit-group-strategies-flow
+!theme plain
+skinparam shadowing false
+skinparam ActivityBorderColor #888888
+
+title **commit-group** — strategy vs runner responsibilities
+
+|Strategy (plugin)|
+start
+:Read strategyCli from CLI\npickCliOptions;
+:init(ctx) — prompts, persist\n(e.g. groupThresholdDays);
+:partition(commits) to buckets;
+note right
+  Each bucket:
+  members[] + fileKey
+end note
+stop
+
+|Runner (fixed)|
+start
+:loadCommitRecords + filter empty;
+:getCommitGroupStrategy(--strategy);
+:await strategy.init + partition;
+:resolve commitModel;
+partition "foreach bucket" {
+  :buildGroupRecord(members);
+  if (group file has model?) then (yes)
+    :skip;
+  else (no)
+    :(M:c) classify + compose;
+    :write GroupRecord;
+  endif
+}
+stop
+
+@enduml

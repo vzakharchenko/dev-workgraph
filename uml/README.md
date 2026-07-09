@@ -28,6 +28,18 @@ Model stages **(M:c)**, **(M:r)**, and **(M:n)** use a **local LLM backend** —
 
 See [`REQUIREMENTS.md`](../REQUIREMENTS.md) §13 and [`dev-workgraph-cli/README.md`](../dev-workgraph-cli/README.md) for CLI flags (`--ollama-url`, `--lmstudio-url`).
 
+## Commit-group strategies in diagrams
+
+Partition logic is **pluggable** (`src/lib/commit-group/`). Diagrams distinguish:
+
+| Piece | Meaning |
+|-------|---------|
+| **Strategy** | `init` + `partition` → buckets (`members[]`, `fileKey`) |
+| **Runner** | Fixed `buildGroupRecord` + classify/compose LLM → `groups/<fileKey>.json` |
+| **day-gap** (default) | `groupByGap`, `extensionSessions`, `--days` / `--max-commits` |
+
+See [`ARCHITECTURE.md`](../ARCHITECTURE.md) § Phase 3 and **Extending commit-group strategies**. Sources: `commit-group.puml`, `commit-group-strategies.puml`.
+
 ## Files
 
 | Source | Topics |
@@ -37,7 +49,8 @@ See [`REQUIREMENTS.md`](../REQUIREMENTS.md) §13 and [`dev-workgraph-cli/README.
 | `preconditions.puml` | `check`, `authors`, `init`, project context |
 | `evidence.puml` | Deterministic evidence extraction |
 | `summarize.puml` | Per-commit model layer |
-| `commit-group.puml` | Work sessions |
+| `commit-group.puml` | Work sessions (strategy + runner) |
+| `commit-group-strategies.puml` | Pluggable partition plugins, registry |
 | `report.puml` | Cumulative report fold |
 | `prepare.puml` | Prepared narrative |
 | `final.puml` | Q&A and RECONSTRUCTION deliverable |

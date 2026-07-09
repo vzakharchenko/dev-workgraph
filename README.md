@@ -83,6 +83,8 @@ The deliverable is written with a period suffix — `RECONSTRUCTION.<project>.20
 
 **Resumable** — stop anytime before `final`; re-run `dev-workgraph run .` and completed commits, groups, and report folds are skipped. Interactive Q&A starts only after `prepare`.
 
+**Extensible** — local LLM backends (Ollama, LM Studio, …) and **commit-group partition strategies** (default: day-gap work sessions) are plugin layers. See [`ARCHITECTURE.md`](./ARCHITECTURE.md) — *Extending LLM providers* and *Extending commit-group strategies*.
+
 **Dogfooded** on **MacBook Pro M4 Pro (48 GB)**. One real repo (**~300 commits**): unattended stages took **~6 hours** before the first questions (`final`). Time depends on models, patch size, and cache from prior runs.
 
 ### Recommended models (Ollama)

@@ -130,6 +130,7 @@ Config holds only the role (and other CLI prefs); the full project context lives
     "/absolute/path/to/repo": {
       "role": "Senior Developer",
       "selectedAuthors": ["me@example.com"],
+      "commitGroupStrategy": "day-gap",
       "groupThresholdDays": 7
     }
   }
@@ -259,6 +260,7 @@ Periods are stored per repository in `~/.workgraph/config.json` under a `periods
     "/absolute/path/to/repo": {
       "role": "Senior Developer",
       "selectedAuthors": ["me@example.com"],
+      "commitGroupStrategy": "day-gap",
       "groupThresholdDays": 7,
       "periods": {
         "2022": { "from": "2022-01-01", "to": "2023-01-01" },
@@ -754,13 +756,37 @@ Older exports may still inline `model` on the evidence file. Current pipeline ke
 
 ## 4. Commit grouping (`commit-group`)
 
-After export and per-commit summarize, the system groups commits into **work sessions** — bursts of activity separated by quiet periods. Each group gets its own JSON file with a **rebuilt deterministic layer** (aggregated from member commits) and a **new model layer** produced by **two local LLM sessions** (classify, then compose) that read the member commit JSONs and their signals.
+After export and per-commit summarize, the system groups commits into **work sessions** — bursts of activity that become one `GroupRecord` each. **How** commits are partitioned into sessions is **pluggable** (`CommitGroupStrategy` in `src/lib/commit-group/`). **What** gets written under `groups/` is fixed: the action builds `GroupRecord`, runs **two local LLM sessions** (classify, then compose), and writes `groups/<fileKey>.json` so `report` can fold unchanged.
 
-**Empty commit summaries are excluded from grouping.** Commits whose canonical summary was written without an LLM (`provenance.model` is `"(none)"`, or `summary` is blank) are filtered out before `groupByGap`. They do not count toward session gaps, tier partitions, or group LLM input. Unsummarized commits (`model: null`) are still loaded and grouped (tier `low`) until summarize runs. Console reports how many empty summaries were skipped, e.g. `12 commit(s) → 10 for grouping (2 empty summaries skipped) → …`. If every exported commit is empty-skipped, `commit-group` exits without creating groups.
+**Empty commit summaries are excluded from grouping.** Commits whose canonical summary was written without an LLM (`provenance.model` is `"(none)"`, or `summary` is blank) are filtered out before any strategy runs `partition`. They do not count toward session membership, tier partitions, or group LLM input. Unsummarized commits (`model: null`) are still loaded and grouped (tier `low`) until summarize runs. Console reports how many empty summaries were skipped, e.g. `12 commit(s) → 10 for grouping (2 empty summaries skipped) → …`. If every exported commit is empty-skipped, `commit-group` exits without creating groups.
 
-### Grouping thresholds
+### Pluggable partition strategies
 
-Before grouping, the CLI asks two values, both persisted per repository in `~/.workgraph/config.json`:
+| Layer | Customizable? | Responsibility |
+|-------|---------------|----------------|
+| **Strategy** | **Yes** | `init` (prompts, persisted settings) + `partition` → `buckets[]` with `{ members: CommitRecord[], fileKey: string }` |
+| **Action runner** | **No** | `buildGroupRecord`, classify/compose LLM, `GroupRecord` schema, skip when `model` already exists |
+| **`report`** | **No** | Reads `groups/*.json` regardless of how buckets were formed |
+
+**Registration:** concrete strategies are listed only in `COMMIT_GROUP_STRATEGIES` (`src/lib/commit-group/registry.ts`). The shipped default is **`day-gap`** (`day-gap-strategy.ts`). The action and `report` never import concrete strategies.
+
+**CLI:**
+
+* **`--strategy <id>`** — select strategy (default: first registered).
+* Strategy-owned flags are registered via each strategy's `cliOptions` + `pickCliOptions` (day-gap: `--days`, `--max-commits`).
+* Runner flags: `--limit`, `--period` (unchanged).
+
+**`run`:** when more than one strategy is registered, the gathering phase prompts for strategy (or reuses saved `commitGroupStrategy` in repo config). Strategy-specific prompts (e.g. day-gap thresholds) run inside `strategy.init` at the `commit-group` step — not during `run` gathering.
+
+**Adding a strategy:** implement `CommitGroupStrategy`, append to `COMMIT_GROUP_STRATEGIES`. Optional reuse of `grouping.ts` helpers (`groupByGap`, `extensionSessions`, `coveredCommitHashes`). See [`ARCHITECTURE.md`](ARCHITECTURE.md) — *Extending commit-group strategies*.
+
+### Default strategy: day-gap
+
+Groups commits **chronologically** by quiet-period gap and optional per-group size cap.
+
+#### Grouping thresholds (day-gap)
+
+Before partitioning, the day-gap strategy asks two values (unless skipped by CLI flags), persisted per repository in `~/.workgraph/config.json`:
 
 * **`groupThresholdDays`** — max days that may pass between consecutive commits before starting a new group.
 * **`groupMaxCommits`** — max commits per group (`0` = unlimited), so very long bursts are split into bounded sessions.
@@ -771,6 +797,7 @@ Before grouping, the CLI asks two values, both persisted per repository in `~/.w
     "/absolute/path/to/repo": {
       "role": "Senior Developer",
       "selectedAuthors": ["me@example.com"],
+      "commitGroupStrategy": "day-gap",
       "groupThresholdDays": 7,
       "groupMaxCommits": 20
     }
@@ -778,33 +805,36 @@ Before grouping, the CLI asks two values, both persisted per repository in `~/.w
 }
 ```
 
-On later runs the saved values are offered as defaults; the user may change them. `--days <n>` and `--max-commits <n>` skip the prompts.
+On later runs the saved values are offered as defaults; the user may change them. Day-gap flags `--days <n>` and `--max-commits <n>` skip the prompts.
 
-### Grouping algorithm (deterministic)
+#### Day-gap partition algorithm (deterministic)
 
 1. Load all exported commit JSONs for the repository, join each with its **canonical** summary from `summaries/<ts>/<hash>.json` when present, **oldest first**. Skip split manifests until canonical summary exists.
 2. **Drop commits with empty summaries** (§3 empty / `"(none)"` layer).
 3. Walk chronologically. Commits whose author timestamps are within `groupThresholdDays` of the **previous commit in the current group** belong to the same group.
 4. Close the current group and start a new one when **either** the gap exceeds the threshold **or** the current group has reached `groupMaxCommits` commits (when that cap is > 0).
 5. A group with a single commit is valid.
+6. Set **`fileKey`** = Unix timestamp (seconds) of the **last commit** in the bucket.
 
 Each group is written to:
 
 ```
-~/.workgraph/data/repos/<repo-id>/groups/[unix-timestamp].json
+~/.workgraph/data/repos/<repo-id>/groups/<fileKey>.json
 ```
 
-`[unix-timestamp]` is the **author Unix timestamp of the last commit** in the group (seconds). Example:
+Example (`fileKey` = `1717428123`):
 
 ```
 ~/.workgraph/data/repos/keycloak-radius-plugin-920018a3/groups/1717428123.json
 ```
 
+Custom strategies may use other `fileKey` schemes (e.g. Jira ticket id) as long as the runner writes `groups/<fileKey>.json`.
+
 Grouping is **append-only**: existing group files that already have a **`model` layer** are skipped on re-run.
 
-#### Incremental re-run: extension groups (no duplicate supersets)
+#### Incremental re-run: extension groups (day-gap; no duplicate supersets)
 
-On a re-run, `commit-group` still recomputes work sessions from **all** exported commits (`groupByGap`), but before summarizing each session it **subtracts commit hashes already present** in on-disk group files that have a completed `model` layer (`coveredCommitHashes` / `extensionSessions` in code).
+On a re-run, the day-gap strategy still recomputes work sessions from **all** exported commits (`groupByGap`), but before summarizing each session it **subtracts commit hashes already present** in on-disk group files that have a completed `model` layer (`coveredCommitHashes` / `extensionSessions` in `grouping.ts`).
 
 | Situation | Behaviour |
 |-----------|-----------|
@@ -1014,14 +1044,14 @@ Processing runs in chronological order, oldest group first.
 
 For every group:
 
-1. **Determine membership** — apply the day-threshold + max-commits algorithm (§4) to exported commit JSONs.
+1. **Determine membership** — `strategy.partition` (default day-gap: §4 day-gap algorithm) yields buckets of member commits.
 2. **Write `groups.commits`** — ordered list of member commit hashes.
 3. **Aggregate the deterministic layer** — merge `changedFiles`, churn, folders, areas, and `excludedFiles` from member commits (§4).
 4. **Partition signal tiers** — compute the deterministic `groups.tiers` (`low` / `medium` / `hi`) from per-commit model signals.
 5. **Session 1 — classify** — send the group deterministic layer, the tier-annotated member commits, and the `groups.tiers` reference to the local model backend; get session signals + the three context-bullet arrays.
 6. **Session 2 — compose** — send the classification + the per-commit summaries grouped by tier; get the merged first-person `history`.
 7. **Write the model layer** — assemble session-1 fields + session-2 `history` + `provenance`.
-8. **Persist** the group JSON to `~/.workgraph/data/repos/<repo-id>/groups/[timestampEnd].json`.
+8. **Persist** the group JSON to `~/.workgraph/data/repos/<repo-id>/groups/<fileKey>.json` (day-gap: `fileKey` = last commit timestamp).
 
 The deterministic layer, `groups.commits`, and `groups.tiers` must always be produced. The model layer is best-effort: if the local model is unavailable or fails on either session, the group is still saved with `model: null`, and the report counts it as "not summarized."
 
@@ -1793,7 +1823,7 @@ dev-workgraph init         ./repo   # role, project story, README → project pr
 dev-workgraph authors      ./repo   # scan history, select your author emails          [BUILT]
 dev-workgraph evidence     ./repo   # extract commits + patches + deterministic JSON   [BUILT]
 dev-workgraph summarize    ./repo   # add per-commit model layer via local LLM         [BUILT]
-dev-workgraph commit-group ./repo   # group commits by day threshold, 2 LLM sessions   [BUILT]
+dev-workgraph commit-group ./repo   # partition (default day-gap) + 2 LLM sessions  [BUILT]
 dev-workgraph report       ./repo   # fold groups into a cumulative narrative report   [BUILT]
 dev-workgraph prepare      ./repo   # distill final report → role-aligned narrative    [BUILT]
 dev-workgraph final        ./repo   # collect Q&A → finish/*.question.json + archive → RECONSTRUCTION.<project>.md [BUILT]
@@ -1826,7 +1856,7 @@ manifest.json         # { schemaVersion, repoId, repoPath, exportedAt, config }
 
 `check` is a standalone preflight: it probes **Ollama** and **LM Studio** (when reachable), verifies each discovered server has at least one model, and otherwise prints provider-specific install help (Ollama: `brew install ollama` / install script + `ollama pull`; LM Studio: download + start local server). When the Ollama binary is installed but the server is down, it suggests `ollama serve`. It also flags any saved slot (`commit` / `report` / `narrative`) whose model is no longer available on its backend. `run` invokes the same discovery as a **preflight** and aborts before prompting if no backend is ready.
 
-`run` is an orchestrator that **gathers every upfront input first** (after the LLM preflight), then executes `init → evidence → summarize → commit-group → report → prepare` without further prompts, and finishes with **`final`** which asks the four prepared questions interactively. Upfront it asks only for what is missing: the three models (below), developer role + project story (if `project.json` is absent), author identities (if none saved), and the group-threshold days (if not saved). Each unattended stage runs with those values passed as flags. Stages skip work that is already done (append-only / resume / extension groups), so `run` is safe to re-run after new commits. On re-run, `evidence` and `summarize` process only new commits; `commit-group` writes **extension groups** for uncovered commits (§4); `report` resumes the fold chain; `prepare` runs for a new `reportId`; **`final`** enters **extension mode** when a finish with answers exists and the prepared file is new — asks up to four new questions, merges cumulative Q&A, and appends `finish` vN. On the **same** prepared, `final` reuses saved answers. `final` can also be run on its own. **`deepen`** is a separate post-`final` step (§10.5) — not invoked by `run`.
+`run` is an orchestrator that **gathers every upfront input first** (after the LLM preflight), then executes `init → evidence → summarize → commit-group → report → prepare` without further prompts, and finishes with **`final`** which asks the four prepared questions interactively. Upfront it asks only for what is missing: the three models (below), developer role + project story (if `project.json` is absent), author identities (if none saved), and **grouping strategy** (if more than one is registered and none saved). Each unattended stage runs with those values passed as flags. Stages skip work that is already done (append-only / resume / extension groups), so `run` is safe to re-run after new commits. On re-run, `evidence` and `summarize` process only new commits; `commit-group` writes **extension groups** for uncovered commits (§4, day-gap); `report` resumes the fold chain; `prepare` runs for a new `reportId`; **`final`** enters **extension mode** when a finish with answers exists and the prepared file is new — asks up to four new questions, merges cumulative Q&A, and appends `finish` vN. On the **same** prepared, `final` reuses saved answers. `final` can also be run on its own. **`deepen`** is a separate post-`final` step (§10.5) — not invoked by `run`.
 
 ### Local LLM backends (Ollama and LM Studio)
 
@@ -1855,6 +1885,10 @@ The local model is chosen and remembered **per stage group**, in `~/.workgraph/c
 
 Each command seeds its picker from its own slot, falling back through the more general slots — `narrativeModel ?? reportModel ?? model` for the narrative stages, `commitModel ?? model` for commit stages, `reportModel ?? model` for report — so an existing two-model setup keeps working until a separate narrative model is chosen. `--model` forces a single model for that command. `run` asks for all three upfront. This lets a fast model handle commit-level volume, a stronger model fold the report, and (optionally) a different model — tuned for prose/claim-safety — build project context and write the final narrative.
 
+**Pluggable backends** — Ollama and LM Studio ship in-tree; additional local servers can register via `LLM_PROVIDER_KINDS` (`src/lib/llm/providers.ts`). See [`ARCHITECTURE.md`](ARCHITECTURE.md) — *Extending LLM providers*.
+
+**Pluggable commit-group partition** — default `day-gap` ships in-tree; custom strategies register via `COMMIT_GROUP_STRATEGIES` (`src/lib/commit-group/registry.ts`). See [`ARCHITECTURE.md`](ARCHITECTURE.md) — *Extending commit-group strategies*.
+
 ### Resilience
 
 - **JSON validation:** every LLM call (`chatJson`) requests structured JSON output (Ollama via the `format` parameter; LM Studio via OpenAI-compatible chat with `response_format` and fallbacks). The response is extracted from raw text (markdown fences tolerated), parsed, and schema-validated before acceptance (`parseAndValidateModelJson` in `src/lib/json-response.ts`). **`commitModel`** and **`reportModel`** calls send `think: false` on Ollama; **`narrativeModel`** calls omit `think` so Ollama uses the model default (thinking-capable models may reason on narrative stages). All calls use **`temperature: 0.2` only** — `num_ctx` / `num_predict` are left to the model's defaults where applicable.
@@ -1881,8 +1915,8 @@ Each command seeds its picker from its own slot, falling back through the more g
 - `final` reads the latest `prepared/<reportId>.json` + `project.json`, writes question text to `finish/<finishId>.question.json` (or `.question.vN.json`), collects Q&A (four on first run; **extension mode** merges prior finish `answers` + up to four new questions), persists cumulative `answers[]` + `sourceQuestions` on the finish archive, runs three `narrativeModel` sessions (refine IMPACT — combined history in extension mode — then Role Narrative, then CV bullets over **all** Q&A), writes `RECONSTRUCTION.<project>.md` or `.vN.md` to **cwd**, and archives under `finish/<preparedId>.{md,json,question.json}` or `<preparedId>.vN.{md,json}` + `.question.vN.json` (`version` 1 or N+1).
 - **`deepen`** reads the **latest** finish (highest `version`), follows `sourcePrepared` / `sourceReport`, collects **recalled non-code context**, generates four new questions (`narrativeModel`), writes `finish/<finishId>.question.vN.json`, collects four new answers, extends `sourceQuestions` and cumulative `answers[]`, refines IMPACT + Role Narrative + CV bullets over **combined history** (prepare baseline + prior final history) and **cumulative Q&A**, writes `RECONSTRUCTION.<project>.vN.md` to cwd, and appends `finish/<preparedId>.vN.{md,json}` without overwriting prior versions. Not part of `run`.
 - **Token usage** — each LLM call logs prompt/output tokens to stderr; cumulative totals by step and model are stored in `project.json` → `tokenUsage`.
-- `init`, `evidence`, `summarize`, and `commit-group` are **append-only** (`commit-group` uses **extension groups** on incremental re-run); `report` is **resumable**; `prepare` is **idempotent per report**; `final` reuses saved answers on the same prepared or **appends vN** in extension mode; `deepen` is **append-only per version** (skips when the next version file already exists).
-- **`groupThresholdDays`** and **`groupMaxCommits`** (0 = unlimited) are persisted per repo in config; `commit-group` prompts for both on first run (`--days`, `--max-commits` skip the prompts).
+- `init`, `evidence`, `summarize`, and `commit-group` are **append-only** (`commit-group` uses **extension groups** on incremental re-run for day-gap); `report` is **resumable**; `prepare` is **idempotent per report**; `final` reuses saved answers on the same prepared or **appends vN** in extension mode; `deepen` is **append-only per version** (skips when the next version file already exists).
+- **`commitGroupStrategy`** is persisted per repo when `run` prompts for strategy; day-gap stores **`groupThresholdDays`** and **`groupMaxCommits`** (0 = unlimited) and prompts for both on first `commit-group` run (`--days`, `--max-commits` skip prompts).
 
 ⸻
 
