@@ -14,7 +14,7 @@ import { emptyDeterministic, sampleGroupModel, sampleReport, sampleReportModel }
 import { repoGroupsDir, repoProjectPath, repoReportsDir, setLlmConfig } from "../../../src/lib/config.js";
 import { MAX_HISTORY_ENTRIES } from "../../../src/lib/report-provenance.js";
 import type { GroupRecord, ReportRecord } from "../../../src/lib/records.js";
-import { chatJson } from "../../../src/lib/llm";
+import { chatJson } from "../../../src/lib/ollama.js";
 import { resolveLlmSlot } from "../../../src/lib/select.js";
 
 vi.mock("../../../src/lib/git.js", () => ({
