@@ -14,7 +14,7 @@ import {
 import { repoFinishDir, repoPreparedDir } from "../../../src/lib/config.js";
 import { combinePreparedAndPriorHistory } from "../../../src/lib/prompts.js";
 import { latestFinish } from "../../../src/lib/finish-load.js";
-import { chatJson } from "../../../src/lib/llm";
+import { chatJson } from "../../../src/lib/ollama.js";
 
 const { promptMock } = vi.hoisted(() => ({
   promptMock: vi.fn(),

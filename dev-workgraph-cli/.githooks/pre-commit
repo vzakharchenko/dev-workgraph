@@ -25,7 +25,11 @@ npm run --silent format
 echo "pre-commit › typecheck"
 npm run --silent typecheck
 
-echo "pre-commit › knip"
-npm run --silent knip
+echo "pre-commit › quality"
+npm run --silent quality
+
+echo "pre-commit › test"
+npm run --silent test:coverage
+
 
 echo "pre-commit › ok"

@@ -46,7 +46,7 @@ vi.mock("../../../src/lib/select.js", () => ({
 }));
 
 import { commitGroup } from "../../../src/actions/commit-group.js";
-import { chatJson } from "../../../src/lib/llm";
+import { chatJson } from "../../../src/lib/ollama.js";
 
 describe("commitGroup", () => {
   let restoreHome: () => void;
