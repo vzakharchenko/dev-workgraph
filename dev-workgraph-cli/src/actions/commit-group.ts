@@ -3,23 +3,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import inquirer from "inquirer";
-import {
-  getRepoConfig,
-  repoCommitsDir,
-  repoGroupsDir,
-  repoSummariesDir,
-  setRepoConfig,
-} from "../lib/config.js";
+import { type CommitGroupRunContext, getCommitGroupStrategy } from "../lib/commit-group/index.js";
+import { repoCommitsDir, repoGroupsDir, repoSummariesDir } from "../lib/config.js";
 import { resolveRepo } from "../lib/git.js";
-import {
-  aggregateDeterministic,
-  coveredCommitHashes,
-  extensionSessions,
-  groupByGap,
-  loadCommitRecords,
-  partitionTiers,
-} from "../lib/grouping.js";
+import { aggregateDeterministic, loadCommitRecords, partitionTiers } from "../lib/grouping.js";
 import type { LlmCommandOptions } from "../lib/llm/cli-options.js";
 import type { LlmProviderId } from "../lib/llm/types.js";
 import {
@@ -53,109 +40,20 @@ const asStringArray = (value: unknown): string[] =>
     ? value.filter((v): v is string => typeof v === "string" && v.length > 0)
     : [];
 
-const DEFAULT_THRESHOLD_DAYS = 7;
-const DEFAULT_MAX_COMMITS = 20;
-
-interface GroupingSummaryInput {
-  commitCount: number;
-  groupingCount: number;
-  emptySkipped: number;
-  sessionCount: number;
-  thresholdDays: number;
-  maxCommits: number;
-  fullyCovered: number;
-  pendingCount: number;
-}
-
-function formatGroupingSummary(input: GroupingSummaryInput): string {
-  const {
-    commitCount,
-    groupingCount,
-    emptySkipped,
-    sessionCount,
-    thresholdDays,
-    maxCommits,
-    fullyCovered,
-    pendingCount,
-  } = input;
-  const parts = [`\n${commitCount} commit(s)`];
-  if (emptySkipped > 0) {
-    parts.push(
-      ` → ${groupingCount} for grouping (${emptySkipped} empty summar${emptySkipped === 1 ? "y" : "ies"} skipped)`,
-    );
-  }
-  parts.push(` → ${sessionCount} session(s) at ${thresholdDays}-day threshold`);
-  if (maxCommits > 0) parts.push(`, max ${maxCommits}/group`);
-  if (fullyCovered > 0) parts.push(` · ${fullyCovered} fully covered`);
-  if (pendingCount > 0) parts.push(` · ${pendingCount} to summarize`);
-  return `${parts.join("")}.`;
-}
-
 /**
  * Options for the `commit-group` command.
  */
 export interface CommitGroupOptions extends LlmCommandOptions {
   /** Path to the repository. */
   repo: string;
-  /** Days between commits before a new group starts; skips the prompt. */
-  days?: number;
-  /** Max commits per group (0 = unlimited); skips the prompt. */
-  maxCommits?: number;
   /** Only process the first N groups that need summarizing (useful for trials). */
   limit?: number;
   /** Operate on a defined review period's data instead of the repo's all-time data. */
   period?: string;
-}
-
-/**
- * Resolves the grouping threshold in days: the flag, else an interactive prompt
- * seeded from the saved value, else the default. Persists the resolved value.
- * @param repoPath - Absolute repository path.
- * @param flagDays - Value of `--days`, if any.
- */
-async function resolveThreshold(repoPath: string, flagDays?: number): Promise<number> {
-  if (flagDays !== undefined && Number.isFinite(flagDays) && flagDays > 0) {
-    setRepoConfig(repoPath, { groupThresholdDays: flagDays });
-    return flagDays;
-  }
-  const saved = getRepoConfig(repoPath)?.groupThresholdDays ?? DEFAULT_THRESHOLD_DAYS;
-  const { days } = await inquirer.prompt<{ days: number }>([
-    {
-      type: "number",
-      name: "days",
-      message: "Max days between commits before a new work-session group starts:",
-      default: saved,
-    },
-  ]);
-  const value = Number.isFinite(days) && days > 0 ? days : saved;
-  setRepoConfig(repoPath, { groupThresholdDays: value });
-  return value;
-}
-
-/**
- * Resolves the max commits per group: the flag, else an interactive prompt
- * seeded from the saved value, else the default. Persists the resolved value.
- * 0 means unlimited.
- * @param repoPath - Absolute repository path.
- * @param flagMax - Value of `--max-commits`, if any.
- */
-async function resolveMaxCommits(repoPath: string, flagMax?: number): Promise<number> {
-  if (flagMax !== undefined && Number.isFinite(flagMax) && flagMax >= 0) {
-    setRepoConfig(repoPath, { groupMaxCommits: flagMax });
-    return flagMax;
-  }
-  const saved = getRepoConfig(repoPath)?.groupMaxCommits ?? DEFAULT_MAX_COMMITS;
-  const { maxCommits } = await inquirer.prompt<{ maxCommits: number }>([
-    {
-      type: "number",
-      name: "maxCommits",
-      message: "Max commits per group (0 = unlimited):",
-      default: saved,
-    },
-  ]);
-  const value = Number.isFinite(maxCommits) && maxCommits >= 0 ? maxCommits : saved;
-  setRepoConfig(repoPath, { groupMaxCommits: value });
-  return value;
+  /** Grouping strategy id (default: first registered). */
+  groupStrategy?: string;
+  /** Strategy-specific CLI flags parsed by {@link pickCommitGroupStrategyOptions}. */
+  strategyCli?: Record<string, unknown>;
 }
 
 /**
@@ -270,7 +168,7 @@ async function summarizeGroupSession(
 
 /**
  * Groups a repository's commits into work sessions and summarizes each session
- * with a local Ollama model.
+ * with a local LLM.
  * @param options - Resolved command options.
  */
 export async function commitGroup(options: CommitGroupOptions): Promise<void> {
@@ -293,8 +191,28 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
     return;
   }
 
-  const thresholdDays = await resolveThreshold(repoPath, options.days);
-  const maxCommits = await resolveMaxCommits(repoPath, options.maxCommits);
+  const groupsDir = repoGroupsDir(repoPath, options.period);
+  fs.mkdirSync(groupsDir, { recursive: true });
+
+  const runCtx: CommitGroupRunContext = {
+    repoPath,
+    period: options.period,
+    groupsDir,
+    commits,
+    allCommitCount: allCommits.length,
+    emptySkipped,
+    options: {
+      limit: options.limit,
+      period: options.period,
+      strategyCli: options.strategyCli ?? {},
+    },
+  };
+
+  const strategy = getCommitGroupStrategy(options.groupStrategy);
+
+  const init = await strategy.init(runCtx);
+  const partition = await strategy.partition(commits, init, runCtx);
+
   const { providerId, baseUrl, model } = await resolveLlmSlot("commit", {
     ollama: options.ollama,
     lmstudio: options.lmstudio,
@@ -302,25 +220,7 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
     message: "Which model should summarize work sessions?",
   });
 
-  const groupsDir = repoGroupsDir(repoPath, options.period);
-  fs.mkdirSync(groupsDir, { recursive: true });
-
-  const rawSessions = groupByGap(commits, thresholdDays, maxCommits);
-  const covered = coveredCommitHashes(groupsDir);
-  const sessions = extensionSessions(rawSessions, covered);
-  const fullyCovered = rawSessions.length - sessions.length;
-  console.log(
-    formatGroupingSummary({
-      commitCount: allCommits.length,
-      groupingCount: commits.length,
-      emptySkipped,
-      sessionCount: rawSessions.length,
-      thresholdDays,
-      maxCommits,
-      fullyCovered,
-      pendingCount: sessions.length,
-    }),
-  );
+  console.log(strategy.formatSummary(runCtx, init, partition));
   console.log(`Using model "${model}" at ${baseUrl}\n`);
 
   const projectBlock = projectContextBlock(loadProjectContext(repoPath, options.period));
@@ -342,14 +242,16 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
     tracker,
   };
 
+  const covered = new Set<string>();
   let summarized = 0;
   let skipped = 0;
   let failed = 0;
 
   try {
-    for (const [i, members] of sessions.entries()) {
+    for (const [i, bucket] of partition.buckets.entries()) {
+      const { members, fileKey } = bucket;
       const record = buildGroupRecord(members);
-      const file = path.join(groupsDir, `${record.timestampEnd}.json`);
+      const file = path.join(groupsDir, `${fileKey}.json`);
 
       const skip = groupSkipReason(file, options.limit, summarized, failed);
       if (skip === "already-done" || skip === "limit") {
@@ -357,7 +259,7 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
         continue;
       }
 
-      const label = `[${i + 1}/${sessions.length}] group@${record.timestampEnd} (${record.commitCount} commits)`;
+      const label = `[${i + 1}/${partition.buckets.length}] group@${record.timestampEnd} (${record.commitCount} commits)`;
       process.stdout.write(`${label} ... `);
 
       try {
@@ -377,7 +279,7 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
   }
 
   console.log(
-    `\n✅ Groups: ${rawSessions.length} · summarized ${summarized} · skipped ${skipped + fullyCovered} · failed ${failed}.`,
+    `\n✅ Groups: ${partition.stats.rawBucketCount} · summarized ${summarized} · skipped ${skipped + partition.stats.fullyCovered} · failed ${failed}.`,
   );
   console.log(`Written to ${groupsDir}`);
 }
