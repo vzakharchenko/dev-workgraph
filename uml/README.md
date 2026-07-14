@@ -52,6 +52,7 @@ See [`ARCHITECTURE.md`](../ARCHITECTURE.md) § Phase 3 and **Extending commit-gr
 | `commit-group.puml` | Work sessions (strategy + runner) |
 | `commit-group-strategies.puml` | Pluggable partition plugins, registry |
 | `report.puml` | Cumulative report fold |
-| `question-provenance.puml` | Question lineage (`threadId`, `derivedFromThreadIds`) + question cards |
+| `question-provenance.puml` | Question lineage (`threadId`, `derivedFromThreadIds`) + question cards + signal reason provenance |
 | `prepare.puml` | Prepared narrative |
 | `final.puml` | Q&A and RECONSTRUCTION deliverable |
+| `migrate.puml` | Schema upgrades (`pipeline-provenance`, `finish-questions-analyses`) |

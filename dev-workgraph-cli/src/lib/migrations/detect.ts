@@ -64,6 +64,18 @@ function bucketDataRoot(bucketDir: string, standardName: string): string {
   return path.basename(bucketDir) === standardName ? path.dirname(bucketDir) : bucketDir;
 }
 
+/** Default bucket dir when hint is absent: parent dir if file sits in standard bucket. */
+function defaultBucketDir(
+  filePath: string,
+  dataRoot: string,
+  bucketName: string,
+  hint?: string,
+): string {
+  if (hint) return hint;
+  if (path.basename(path.dirname(filePath)) === bucketName) return path.dirname(filePath);
+  return path.join(dataRoot, bucketName);
+}
+
 /** Resolves data root from explicit hints or artifact path. */
 function resolveDataRoot(filePath: string, hints: Partial<MigrationContext> = {}): string | null {
   if (hints.dataRoot) return hints.dataRoot;
@@ -76,6 +88,30 @@ function resolveDataRoot(filePath: string, hints: Partial<MigrationContext> = {}
   return null;
 }
 
+function buildMigrationContext(
+  dataRoot: string,
+  filePath: string,
+  hints: Partial<MigrationContext>,
+): MigrationContext {
+  const groupsDir = defaultBucketDir(filePath, dataRoot, "groups", hints.groupsDir);
+  const reportsDir = hints.reportsDir ?? path.join(dataRoot, "reports");
+  const preparedDir = hints.preparedDir ?? path.join(dataRoot, "prepared");
+  const finishDir = defaultBucketDir(filePath, dataRoot, "finish", hints.finishDir);
+
+  return {
+    repoPath: hints.repoPath ?? "",
+    period: hints.period,
+    dataRoot,
+    groupsDir,
+    reportsDir,
+    preparedDir,
+    finishDir,
+    summariesDir: hints.summariesDir ?? path.join(dataRoot, "summaries"),
+    dryRun: hints.dryRun ?? false,
+    backup: hints.backup ?? false,
+  };
+}
+
 /** Builds a full migration context from path hints (used by lazy loaders). */
 export function completeMigrationContext(
   filePath: string,
@@ -83,30 +119,5 @@ export function completeMigrationContext(
 ): MigrationContext | null {
   const dataRoot = resolveDataRoot(filePath, hints);
   if (!dataRoot) return null;
-
-  const groupsDir =
-    hints.groupsDir ??
-    (path.basename(path.dirname(filePath)) === "groups"
-      ? path.dirname(filePath)
-      : path.join(dataRoot, "groups"));
-  const reportsDir = hints.reportsDir ?? path.join(dataRoot, "reports");
-  const preparedDir = hints.preparedDir ?? path.join(dataRoot, "prepared");
-  const finishDir =
-    hints.finishDir ??
-    (path.basename(path.dirname(filePath)) === "finish"
-      ? path.dirname(filePath)
-      : path.join(dataRoot, "finish"));
-
-  return {
-    repoPath: hints.repoPath ?? "",
-    period: hints.period,
-    dataRoot,
-    groupsDir: hints.groupsDir ?? groupsDir,
-    reportsDir: hints.reportsDir ?? reportsDir,
-    preparedDir: hints.preparedDir ?? preparedDir,
-    finishDir: hints.finishDir ?? finishDir,
-    summariesDir: hints.summariesDir ?? path.join(dataRoot, "summaries"),
-    dryRun: hints.dryRun ?? false,
-    backup: hints.backup ?? false,
-  };
+  return buildMigrationContext(dataRoot, filePath, hints);
 }

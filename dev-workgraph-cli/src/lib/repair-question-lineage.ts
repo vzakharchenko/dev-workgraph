@@ -6,12 +6,18 @@ import path from "node:path";
 import { readRecordJson, writeMigratedRecord } from "./migrations/io.js";
 import { FINISH_QUESTIONS_ANALYSES_VERSION } from "./migrations/steps/v1000006-finish-questions-analyses.js";
 import type { MigrationArtifactKind, MigrationContext } from "./migrations/types.js";
+import type { QuestionAnalyses } from "./model.js";
 import {
   finishQuestionProvenance,
   needsQuestionLineageRepair,
   repairPreparedQuestionLineage,
 } from "./question-provenance.js";
-import type { FinishQuestionsRecord, PreparedRecord, ReportRecord } from "./records.js";
+import type {
+  FinishQuestion,
+  FinishQuestionsRecord,
+  PreparedRecord,
+  ReportRecord,
+} from "./records.js";
 import {
   normalizePreparedSignalReasons,
   reportModelToSignalReasonArrays,
@@ -138,22 +144,7 @@ function repairFinishQuestionsFromPreparedArtifact(
   const threads = prepared.model.questionsAnalyses ?? [];
   if (threads.length === 0) return repairFinishQuestionsArtifact(filePath, ctx);
 
-  const questions = record.questions.map((q, i) => {
-    const thread = threads[q.threadIndex ?? i];
-    if (!thread) return q;
-    return {
-      ...q,
-      threadIndex: q.threadIndex ?? i,
-      derivedFromThreadIds: thread.derivedFromThreadIds ?? q.derivedFromThreadIds,
-      sourceGroupIds: thread.sourceGroupIds ?? q.sourceGroupIds,
-      sourceCommits: thread.sourceCommits ?? q.sourceCommits,
-      sourceGroupId: thread.sourceGroupId ?? q.sourceGroupId,
-      lineageKind: thread.lineageKind,
-      derivedFromSignalReasonIndex: thread.derivedFromSignalReasonIndex,
-      evidenceExcerpt: thread.evidenceExcerpt ?? q.evidenceExcerpt,
-      whyAsked: thread.whyAsked ?? q.whyAsked,
-    };
-  });
+  const questions = record.questions.map((q, i) => mergeFinishQuestionFromThread(q, i, threads));
 
   const next: FinishQuestionsRecord = {
     ...record,
@@ -163,6 +154,17 @@ function repairFinishQuestionsFromPreparedArtifact(
   if (JSON.stringify(next) === JSON.stringify(record)) return false;
   writeMigratedRecord(filePath, next, ctx.dryRun);
   return !ctx.dryRun;
+}
+
+function mergeFinishQuestionFromThread(
+  q: FinishQuestion,
+  index: number,
+  threads: QuestionAnalyses[],
+): FinishQuestion {
+  const threadIndex = q.threadIndex ?? index;
+  const thread = threads[threadIndex];
+  if (!thread) return q;
+  return { ...q, ...finishQuestionProvenance(thread, threadIndex) };
 }
 
 /** Repairs prepared or finish-questions artifacts with empty question lineage. */

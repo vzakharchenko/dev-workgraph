@@ -182,7 +182,8 @@ partition "Per bucket from strategy.partition (oldest first)" {
   else (no)
     partition "**Session 1 — classify (M:c)**" {
       :Input: aggregated deterministic,\ntier-annotated members (summary + signals\n+ per-commit questions as context),\ngroups.tiers reference;
-      :Output: session **signals** + signalReasons,\n**questions[]**, changeTypes, confidence,\nhiContext / mediumContext / lowContext;
+      :Output: session **signals** + signalReasons (provenance),\n**questions[]**, changeTypes, confidence,\nhiContext / mediumContext / lowContext;
+      :**attachGroupQuestionProvenance (D)**;
       :enforceSignalReasons;
     }
 
@@ -285,11 +286,14 @@ class "GroupRecord" as GR {
 class "Session 1 — classify" as C1 #FFF3E0 {
   **Rebuilt session signals**
   technicalSignal / architectureSignal / securitySignal
-  signalReasons (patch-grounded, session scope)
+  signalReasons (provenance objects, session scope)
   --
   **questions[]** — session-level
   synthesized from member gaps
   (not simple concat of commit questions)
+  --
+  **attachGroupQuestionProvenance (D)**
+  threadId, sourceGroupIds, sourceCommits
   --
   changeTypes[], confidence
   hiContext[] / mediumContext[] / lowContext[]

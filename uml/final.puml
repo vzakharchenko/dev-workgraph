@@ -13,7 +13,8 @@ legend top left
 endlegend
 
 rectangle "**Preconditions**" #FFF8E1 {
-  card "**prepare** -> prepared/<id>.json\n(up to 4 questions + history)" as PREP
+  card "**prepare** -> prepared/<id>.json\n(history + signalReasons)" as PREP
+  card "**prepare** -> finish/<id>.question.json\n(questionsAnalyses + cards)" as FQ #FCE4EC
   card "**finish/** latest (optional)\nprior Q&A for extension" as PFIN #FCE4EC
   card "**init** -> project.json" as INIT
 }
@@ -37,6 +38,7 @@ rectangle "**Deliverables**" #E8F5E9 {
 }
 
 PREP --> S1
+FQ --> S1
 PFIN --> S1 : extension only
 INIT --> S2A
 INIT --> S2B
@@ -54,7 +56,7 @@ X .. S1 : only via prepared
 E .. S1
 
 note bottom of S1
-  **Interactive** in `run` — questions exist only after prepare.
+  **Interactive** in `run` — questions from finish question file.
   `--answers-file` for non-interactive.
   **Question text** -> `*.question.json` / `*.question.vN.json`.
   **Answers** -> finish `answers[]` (`questionId` refs).
@@ -81,7 +83,7 @@ title **final** — Full command flow
 
 start
 
-:Require **project.json** + latest **prepared/<reportId>.json**;
+:Require **project.json** + latest **prepared/<reportId>.json**\n+ **finish/<reportId>.question.json**;
 
 if (No prepared?) then (yes)
   #Pink:Run **prepare** first;
@@ -99,6 +101,7 @@ if (Prior finish with answers\nAND new prepared file?) then (yes — **extension
   }
 else (first run / same prepared)
   partition "**Step 1 — Collect answers (H, no LLM)**" {
+    :**resolveRoundQuestionAnalyses**\nfrom finish question file\n(legacy: prepared fallback);
     if (--answers-file?) then (yes)
       :Load answers from JSON file;
     else if (saved answers on finish\nfor this round?) then (yes)
@@ -163,7 +166,8 @@ skinparam shadowing false
 title **final** — inputs and provenance chain (file names only)
 
 rectangle "**Read by final**" #FFF8E1 {
-  card "prepared/<reportId>.json\n(questionsAnalyses only — no answers)" as P
+  card "prepared/<reportId>.json\n(history + signalReasons)" as P
+  card "finish/<reportId>.question.json\n(questionsAnalyses + cards)" as FQ #FCE4EC
   card "project.json" as PJ
   card "finish/ latest\n(extension mode)" as PF #FCE4EC
   card "finish/*.question.json\n+ .question.vN.json" as QF #FCE4EC
@@ -171,10 +175,14 @@ rectangle "**Read by final**" #FFF8E1 {
 
 rectangle "**From prepared**" #FFF3E0 {
   component "model.history -> refine in 2a" as H
-  component "model.questions x4 -> ask human" as Q
   component "model.signalReasons x4 -> Role Narrative" as R
   component "model.technologies -> markdown" as T
   component "sourceReport (traceability)" as SR
+}
+
+rectangle "**From finish question file**" #FCE4EC {
+  component "questionsAnalyses x4 -> ask human" as Q
+  component "evidenceExcerpt / whyAsked cards" as QC
 }
 
 rectangle "**From project.json**" as PJIN #FFF8E1 {
@@ -191,8 +199,9 @@ rectangle "**Not loaded**" #ECEFF1 {
 
 PF --> Q : prior answers\n(extension only)
 QF --> Q : question text\nby questionId
+FQ --> Q
+FQ --> QC
 P --> H
-P --> Q
 P --> R
 P --> T
 PJ --> ROLE
@@ -408,6 +417,7 @@ skinparam shadowing false
 title Sequence — **final**
 
 actor "Developer" as DEV
+database "finish/<reportId>.question.json" as QPREP
 database "prepared/<id>.json" as PREP
 database "project.json" as PJ
 participant "**final**" as FIN
@@ -420,6 +430,7 @@ DEV -> FIN : final ./repo [--answers-file]
 
 FIN -> PJ : loadProjectContext (required)
 FIN -> PREP : latestPrepared()
+FIN -> QPREP : resolveRoundQuestionAnalyses\n(finish question file)
 
 FIN -> ARCH : latestFinish() (if any)
 
@@ -528,18 +539,21 @@ title **Q&A artifact model** (§7, §11) — not stored in prepared/
 
 left to right direction
 
-package "**prepared/** (no answers)" #FFF3E0 {
+package "**prepared/** (no answers, no analyses)" #FFF3E0 {
   class "PreparedRecord" as PR {
-    model.questionsAnalyses
     model.history
+    model.signalReasons
+    no questionsAnalyses (≥1.0.6)
     no answers field
   }
 }
 
 package "**finish/** question files" #FCE4EC {
   class "FinishQuestionsRecord" as FQ1 {
-    <<v1>>
+    <<v1 — written at prepare>>
+    questionsAnalyses[]
     questions: id + question
+    evidenceExcerpt, whyAsked
   }
   class "FinishQuestionsRecord" as FQ2 {
     <<v2>>
@@ -556,16 +570,15 @@ package "**finish/** archive" #E1F5FE {
   }
 }
 
-PR ..> FQ1 : final writes\nquestion text
+PR ..> FQ1 : **prepare** writes\nquestionsAnalyses + cards
 PR ..> FQ2 : deepen / extension\nwrites new round
 
 FQ1 <-- FR : v1 -> <id>.question.json
 FQ2 <-- FR : v2 -> <id>.question.vN.json
 
 note bottom of FR
-  **prepare** reads prior Q&A by resolving
-  answers[] against question files for all
-  labels in sourceQuestions (latest finish).
+  **prepare** writes v1 question file (schema ≥1.0.6).
+  **final** reads via resolveRoundQuestionAnalyses.
   Re-running final reuses saved answers;
   prepared record stays clean.
 end note

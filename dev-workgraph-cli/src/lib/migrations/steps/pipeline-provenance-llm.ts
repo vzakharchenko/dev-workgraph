@@ -148,51 +148,50 @@ async function backfillThreadsWithLlm(
   return resolved;
 }
 
-/** LLM backfill for one prepared or finish-questions artifact (pipeline provenance step). */
-export async function backfillPipelineProvenanceArtifact(
+async function backfillPreparedArtifact(
   filePath: string,
-  kind: Extract<MigrationArtifactKind, "prepared" | "finish-questions">,
   ctx: MigrationContext,
   tracker: TokenUsageTracker,
 ): Promise<boolean> {
-  if (!ctx.llmSlots?.narrative || ctx.dryRun) return false;
-
   const rel = relArtifactPath(filePath, ctx.dataRoot);
-  logLlmBackfillFile(rel);
-
-  if (kind === "prepared") {
-    const prepared = readRecordJson(filePath) as unknown as PreparedRecord;
-    const threads = prepared.model.questionsAnalyses ?? [];
-    if (threads.length === 0) {
-      logLlmBackfillSkip("no questionsAnalyses on prepared");
-      return false;
-    }
-    if (!needsPipelineProvenanceLlmBackfill(threads)) {
-      logLlmBackfillSkip("lineage refs already present");
-      return false;
-    }
-
-    const report = loadReport(path.join(ctx.reportsDir, prepared.sourceReport));
-    if (!report) {
-      logLlmBackfillSkip(`report not found: ${prepared.sourceReport}`);
-      return false;
-    }
-
-    const repairedThreads = await backfillThreadsWithLlm(threads, prepared, report, ctx, tracker);
-    if (JSON.stringify(repairedThreads) === JSON.stringify(threads)) {
-      logLlmBackfillSkip("LLM returned no new lineage");
-      return false;
-    }
-
-    const next: PreparedRecord = {
-      ...prepared,
-      model: { ...prepared.model, questionsAnalyses: repairedThreads },
-    };
-    writeMigratedRecord(filePath, next as unknown as Record<string, unknown>, ctx.dryRun);
-    console.log(`  wrote ${rel}`);
-    return true;
+  const prepared = readRecordJson(filePath) as unknown as PreparedRecord;
+  const threads = prepared.model.questionsAnalyses ?? [];
+  if (threads.length === 0) {
+    logLlmBackfillSkip("no questionsAnalyses on prepared");
+    return false;
+  }
+  if (!needsPipelineProvenanceLlmBackfill(threads)) {
+    logLlmBackfillSkip("lineage refs already present");
+    return false;
   }
 
+  const report = loadReport(path.join(ctx.reportsDir, prepared.sourceReport));
+  if (!report) {
+    logLlmBackfillSkip(`report not found: ${prepared.sourceReport}`);
+    return false;
+  }
+
+  const repairedThreads = await backfillThreadsWithLlm(threads, prepared, report, ctx, tracker);
+  if (JSON.stringify(repairedThreads) === JSON.stringify(threads)) {
+    logLlmBackfillSkip("LLM returned no new lineage");
+    return false;
+  }
+
+  const next: PreparedRecord = {
+    ...prepared,
+    model: { ...prepared.model, questionsAnalyses: repairedThreads },
+  };
+  writeMigratedRecord(filePath, next as unknown as Record<string, unknown>, ctx.dryRun);
+  console.log(`  wrote ${rel}`);
+  return true;
+}
+
+async function backfillFinishQuestionsArtifact(
+  filePath: string,
+  ctx: MigrationContext,
+  tracker: TokenUsageTracker,
+): Promise<boolean> {
+  const rel = relArtifactPath(filePath, ctx.dataRoot);
   const record = readRecordJson(filePath) as unknown as FinishQuestionsRecord;
   const threads = record.questionsAnalyses ?? [];
   if (threads.length === 0) {
@@ -238,6 +237,20 @@ export async function backfillPipelineProvenanceArtifact(
   writeMigratedRecord(filePath, next as unknown as Record<string, unknown>, ctx.dryRun);
   console.log(`  wrote ${rel}`);
   return true;
+}
+
+/** LLM backfill for one prepared or finish-questions artifact (pipeline provenance step). */
+export async function backfillPipelineProvenanceArtifact(
+  filePath: string,
+  kind: Extract<MigrationArtifactKind, "prepared" | "finish-questions">,
+  ctx: MigrationContext,
+  tracker: TokenUsageTracker,
+): Promise<boolean> {
+  if (!ctx.llmSlots?.narrative || ctx.dryRun) return false;
+
+  logLlmBackfillFile(relArtifactPath(filePath, ctx.dataRoot));
+  if (kind === "prepared") return backfillPreparedArtifact(filePath, ctx, tracker);
+  return backfillFinishQuestionsArtifact(filePath, ctx, tracker);
 }
 
 function preparedFileNameFromFinishSource(sourceFinal: string): string {

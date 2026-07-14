@@ -5,27 +5,48 @@ All notable changes to **dev-workgraph** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.5] - NEXT RELEASE
+## [1.0.6] - NEXT RELEASE
 
 ### Added
 
+#### Signal reason provenance
+
+From **group** level onward, each non-empty `signalReasons` entry carries CLI-attached provenance: `{ text, sourceGroupIds, sourceCommits? }`. **Report** folds reasons into per-dimension arrays with overlap merge (≥ `0.32`) and unions `sourceGroupIds` / `sourceCommits`. **Prepared** collapses report arrays to four provenance slots. Commit summaries keep plain-string reasons.
+
 #### Question provenance and question cards
 
-Open threads carry **CLI-attached lineage** through the pipeline (`threadId`, `derivedFromThreadIds`, `sourceGroupIds`, `sourceCommits`) — attached after LLM steps at `commit-group`, `report` fold, `prepare`/`deepen`, and copied to `finish/*.question.json`. **`evidenceExcerpt`** (deterministic) and **`whyAsked`** (deterministic from `missingPiece`; neutral missing-context explanation, not role coaching) are shown in prepare preview and before interactive Q&A in `final` / `deepen`.
+Open threads carry **CLI-attached lineage** through the pipeline (`threadId`, `derivedFromThreadIds`, `sourceGroupIds`, `sourceCommits`) — attached after LLM steps at `commit-group`, `report` fold, `prepare`/`deepen`, and copied to `finish/*.question.json`. At **prepare/deepen** the LLM may emit **`derivedFromThreadIds`**, **`derivedFromReportSignalRefs`** (`{ dimension, index }` into the report signal catalog), and **`derivedFromPreparedSignalSlots`** (`0..3`); code resolves **`lineageKind`** (`report-thread` | `signal-reason`) via `resolvePrepareQuestionProvenanceFromLlm`.
 
-Documented in [`REQUIREMENTS.md`](REQUIREMENTS.md) §7; diagrams in [`uml/question-provenance.puml`](uml/question-provenance.puml).
+**`evidenceExcerpt`** (deterministic) and **`whyAsked`** (deterministic from `missingPiece`; neutral missing-context explanation, not role coaching) are shown in prepare preview and before interactive Q&A in `final` / `deepen`.
+
+Documented in [`REQUIREMENTS.md`](REQUIREMENTS.md) §7 and §1.5 (schema changelog); diagrams in [`uml/question-provenance.puml`](uml/question-provenance.puml).
+
+#### Question storage on finish files (schema `1000006`)
+
+Canonical **`questionsAnalyses[]`** (+ cards) live on **`finish/<preparedId>.question.json`** (written at `prepare`; `final` / `deepen` read via `resolveRoundQuestionAnalyses`). **Prepared** keeps `history`, signals, and four collapsed **`signalReasons`** slots — not `questionsAnalyses` on new writes.
+
+#### `migrate` command and lazy migration
+
+**`dev-workgraph migrate [repo]`** runs on-disk pipeline migrations (structural rewrites + optional LLM lineage backfill). Artifacts below the current `schemaVersion` are also migrated lazily on load.
+
+| Step | `schemaVersion` | What it does |
+|------|-----------------|--------------|
+| `pipeline-provenance` | `1000005` | Signal reason + question provenance on groups/reports/prepared/finish; optional **LLM backfill** for prepared/finish threads missing lineage refs |
+| `finish-questions-analyses` | `1000006` | Moves legacy `prepared.model.questionsAnalyses` onto `finish/*.question.json` and strips them from prepared |
 
 #### Neutral whyAsked (question cards)
 
 **`whyAsked`** is always built in code from `missingPiece` (`buildWhyAsked`) — LLM career framing is no longer used. Role-aware wording stays in **`question`** topic choice only.
 
-#### Neutral question style (prepare / deepen)
-
-**`QUESTION_STYLE_RULES`** in prompts: questions are role-calibrated by **topic**, not performance-review tone. Post-LLM **`normalizeQuestionText`** strips «As a Staff Developer…» and similar openers. **`dryObservationLine`** keeps evidence bullets factual.
-
 #### Scannable evidence bullets (question cards)
 
 **`evidenceExcerpt`** is built per thread from **`observation[]`** (ranked by relevance to the question) + **`sourceCommits`**, then optionally compressed by **`polishEvidenceExcerptsWithLlm`** (prepare step 5 / deepen). No group `hiContext` merge dump.
+
+### Changed
+
+- **`report` fold** — `signalReasons` arrays fold deterministically (`foldGroupIntoReportReasons`) before/alongside the LLM merge; question merge provenance via `attachReportMergeProvenance`.
+- **`prepare`** — reframed questions written to `finish/<reportId>.question.json` at prepare time (`createFinishQuestions`); prepared record no longer stores analyses.
+- **`final` / `deepen`** — load question cards from finish question files; legacy fallback to `prepared.model.questionsAnalyses` until migrated.
 
 ## [1.0.3] - 2026-07-09
 

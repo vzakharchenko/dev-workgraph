@@ -54,32 +54,48 @@ function needsQuestionProvenanceRepair(threads: QuestionAnalyses[]): boolean {
   return threads.some((thread) => !thread.threadId || (thread.sourceGroupIds?.length ?? 0) === 0);
 }
 
+function readSummaryRecord(
+  dataRoot: string,
+  relSummary: string | null,
+): CommitSummaryRecord | null {
+  if (!relSummary) return null;
+  const summaryPath = path.join(dataRoot, relSummary);
+  if (!fs.existsSync(summaryPath)) return null;
+  return readRecordJson(summaryPath) as unknown as CommitSummaryRecord;
+}
+
+function memberFromGroupEntry(
+  group: GroupRecord,
+  block: NonNullable<GroupRecord["groups"]>,
+  index: number,
+  dataRoot: string,
+): CommitRecord | null {
+  const commitHash = block.commits[index];
+  if (!commitHash) return null;
+  const relSummary = block.sourceSummaries?.[index] ?? null;
+  const summary = readSummaryRecord(dataRoot, relSummary);
+  const sourceEvidence =
+    block.sourceEvidence?.[index] ?? String(summary?.timestamp ?? group.timestampEnd);
+  return {
+    commitHash,
+    timestamp: summary?.timestamp ?? group.timestampEnd,
+    title: summary?.model?.summary?.slice(0, 120) ?? commitHash.slice(0, 8),
+    author: "",
+    deterministic: EMPTY_DETERMINISTIC,
+    model: summary?.model ?? null,
+    sourceEvidence,
+    sourceSummary: relSummary,
+  };
+}
+
 function loadGroupMembersFromSummaries(group: GroupRecord, ctx: MigrationContext): CommitRecord[] {
   const block = group.groups;
   if (!block?.commits) return [];
 
   const members: CommitRecord[] = [];
   for (let i = 0; i < block.commits.length; i += 1) {
-    const commitHash = block.commits[i];
-    if (!commitHash) continue;
-    const relSummary = block.sourceSummaries?.[i] ?? null;
-    const summaryPath = relSummary ? path.join(ctx.dataRoot, relSummary) : null;
-    let summary: CommitSummaryRecord | null = null;
-    if (summaryPath && fs.existsSync(summaryPath)) {
-      summary = readRecordJson(summaryPath) as unknown as CommitSummaryRecord;
-    }
-    const sourceEvidence =
-      block.sourceEvidence?.[i] ?? String(summary?.timestamp ?? group.timestampEnd);
-    members.push({
-      commitHash,
-      timestamp: summary?.timestamp ?? group.timestampEnd,
-      title: summary?.model?.summary?.slice(0, 120) ?? commitHash.slice(0, 8),
-      author: "",
-      deterministic: EMPTY_DETERMINISTIC,
-      model: summary?.model ?? null,
-      sourceEvidence,
-      sourceSummary: relSummary,
-    });
+    const member = memberFromGroupEntry(group, block, i, ctx.dataRoot);
+    if (member) members.push(member);
   }
   return members;
 }

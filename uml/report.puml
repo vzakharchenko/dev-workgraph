@@ -249,7 +249,7 @@ partition "[1/4] Routine gate (M:r — cheap)" {
 
 partition "[2/4] Model merge (M:r)" {
   :**Signals (D):** tech/arch/sec = max(prev, group);
-  :**signalReasons (M:r):** merge both arrays,\ncollapse near-duplicates;
+  :**signalReasons (M:r):** merge provenance arrays,\ncollapse near-duplicates → 4 slots;
   :**questions (M:r):** recompute for combined work;\ndedupe; keep most valuable for role;
   :**attachReportMergeProvenance (D):**\nnew threadId @ checkpoint;\nderivedFromThreadIds, sourceGroupIds union;
   :**hiContext / mediumContext / lowContext (M:r):**\nmerge bullets, collapse duplicates,\nre-rank **downward only**, cap <= 12/tier;
@@ -318,7 +318,7 @@ end note
 
 class "ReportModelLayer (M:r)" as MOD {
   signals = max across folded groups (D levels)
-  signalReasons — **arrays** (merged, deduped)
+  signalReasons — **provenance arrays** (merged, deduped)
   questions — recombined for combined work
   hiContext / mediumContext / lowContext — capped
   changeTypes, confidence, technologies
@@ -460,7 +460,7 @@ rectangle "**Deterministic (D) — code**" as DET #E8F5E9 {
 }
 
 rectangle "**[2/4] Model merge (M:r)**" as MMOD #FFF3E0 {
-  card "**signalReasons** arrays:\nmerge prev + group reasons,\ncollapse near-duplicates" as SR
+  card "**signalReasons** provenance arrays:\nmerge prev + group reasons,\ncollapse near-duplicates → 4 slots" as SR
   card "**questions:**\nrecompute for COMBINED work;\ndrop duplicates;\nkeep most valuable for role" as Q
   card "**attachReportMergeProvenance (D):**\nthreadId @ checkpoint;\nderivedFromThreadIds;\nsourceGroupIds union" as QP
   card "**hiContext / mediumContext / lowContext:**\nmerge bullets from both sides;\ncollapse duplicates;\nre-rank importance **downward only**;\ncap <= 12 per tier (role-first)" as CTX
@@ -570,14 +570,14 @@ title **[2/4] Model merge** — signals, questions, context tiers
 left to right direction
 
 package "From prev report" #FFF8E1 {
-  component "signalReasons arrays" as PR
+  component "signalReasons provenance arrays" as PR
   component "questions" as PQ
   component "hi / medium / lowContext" as PC
   component "signal levels (D max later)" as PS
 }
 
 package "From next group G_k" #E3F2FD {
-  component "signalReasons (strings)" as GR
+  component "signalReasons (provenance objects)" as GR
   component "questions" as GQ
   component "hi / medium / lowContext" as GC
   component "signal levels" as GS
@@ -585,7 +585,7 @@ package "From next group G_k" #E3F2FD {
 
 package "Merge result (M:r + D)" #FFF3E0 {
   component "**Levels (D):**\nmax(prev, group)\nper dimension" as OUTS
-  component "**Reasons (M:r):**\narray = merge + dedupe" as OUTR
+  component "**Reasons (M:r):**\n4 slots = merge + dedupe\n(provenance objects)" as OUTR
   component "**Questions (M:r):**\nrecompute, dedupe,\nrole-valuable picks" as OUTQ
   component "**attachReportMergeProvenance (D):**\nthreadId, derivedFromThreadIds,\nsourceGroupIds union" as OUTQP
   component "**Context tiers (M:r):**\nmerge bullets,\ndemote-only rank,\ncap 12/tier" as OUTC
