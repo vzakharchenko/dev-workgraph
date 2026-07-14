@@ -4,8 +4,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { repoFinishDir, repoPreparedDir, repoReportsDir } from "../lib/config.js";
-import { latestFinish } from "../lib/finish-load.js";
-import { resolveFinishQa } from "../lib/finish-questions.js";
+import {
+  finishJsonFileName,
+  finishQuestionsJsonFileName,
+  latestFinish,
+} from "../lib/finish-load.js";
+import {
+  createFinishQuestions,
+  resolveFinishQa,
+  writeFinishQuestions,
+} from "../lib/finish-questions.js";
 import { resolveRepo } from "../lib/git.js";
 import type { LlmCommandOptions } from "../lib/llm/cli-options.js";
 import {
@@ -32,9 +40,20 @@ import {
   projectContextBlock,
   withProjectContext,
 } from "../lib/prompts.js";
+import {
+  enrichQuestionCards,
+  polishEvidenceExcerptsWithLlm,
+  printQuestionCards,
+} from "../lib/question-cards.js";
+import { resolvePrepareQuestionProvenanceFromLlm } from "../lib/question-provenance.js";
 import { writeRecordJson } from "../lib/record-io.js";
 import type { PreparedModelLayer, PreparedRecord, ReportRecord } from "../lib/records.js";
 import { resolveLlmSlot } from "../lib/select.js";
+import {
+  reportModelToSignalReasonArrays,
+  signalReasonArrayTexts,
+  textsToPreparedSignalReasons,
+} from "../lib/signal-reason-provenance.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
@@ -117,7 +136,7 @@ export async function prepare(options: PrepareOptions): Promise<void> {
     const rawHistory = report.history.map((h) => h.text).join("\n");
 
     // Step 2 — compose one unified history.
-    process.stdout.write("   [1/4] compose unified history ... ");
+    process.stdout.write("   [1/5] compose unified history ... ");
     const composed = (await chatJson({
       provider: providerId,
       baseUrl,
@@ -141,7 +160,7 @@ export async function prepare(options: PrepareOptions): Promise<void> {
     // Step 3 — clean & collapse the accumulated technology list (dedupe + class hierarchy).
     let technologies = mergeTechnologies(m.technologies);
     if (technologies.length > 0) {
-      process.stdout.write(`   [2/4] clean technologies (${technologies.length}) ... `);
+      process.stdout.write(`   [2/5] clean technologies (${technologies.length}) ... `);
       const cleaned = (await chatJson({
         provider: providerId,
         baseUrl,
@@ -155,11 +174,11 @@ export async function prepare(options: PrepareOptions): Promise<void> {
       if (result.length > 0) technologies = result;
       console.log(`ok (${technologies.length})`);
     } else {
-      console.log("   [2/4] clean technologies ... skipped (none)");
+      console.log("   [2/5] clean technologies ... skipped (none)");
     }
 
     // Step 4 — collapse signal reasons into four.
-    process.stdout.write("   [3/4] collapse signal reasons → 4 ... ");
+    process.stdout.write("   [3/5] collapse signal reasons → 4 ... ");
     const collapsed = (await chatJson({
       provider: providerId,
       baseUrl,
@@ -169,11 +188,15 @@ export async function prepare(options: PrepareOptions): Promise<void> {
       schema: prepareReasonsJsonSchema(),
       tracker,
     })) as { signalReasons?: unknown };
-    const signalReasons = asStringArray(collapsed.signalReasons).slice(0, 4);
-    console.log(`ok (${signalReasons.length})`);
+    const collapsedTexts = asStringArray(collapsed.signalReasons).slice(0, 4);
+    const signalReasonsProvenance = textsToPreparedSignalReasons(
+      collapsedTexts.length > 0 ? collapsedTexts : ["", "", "", ""],
+    );
+    const signalReasonTexts = signalReasonArrayTexts(signalReasonsProvenance);
+    console.log(`ok (${signalReasonTexts.length})`);
 
     // Step 5 — reframe role-aware questionsAnalyses + confidence.
-    process.stdout.write("   [4/4] reframe open questions → 4 ... ");
+    process.stdout.write("   [4/5] reframe open questions → 4 ... ");
     const priorFinish = latestFinish(repoFinishDir(repoPath, options.period));
     const priorQa = priorFinish
       ? resolveFinishQa(
@@ -187,13 +210,59 @@ export async function prepare(options: PrepareOptions): Promise<void> {
       baseUrl,
       model,
       system: withProjectContext(projectBlock, PREPARE_QUESTIONS_SYSTEM),
-      user: buildPrepareQuestionsPrompt(history, signalReasons, m.questionsAnalyses, priorQa),
+      user: buildPrepareQuestionsPrompt(
+        history,
+        signalReasonTexts,
+        m.questionsAnalyses,
+        m.signalReasons,
+        priorQa,
+      ),
       schema: prepareQuestionsJsonSchema(),
       tracker,
     })) as { questionsAnalyses?: unknown; confidence?: string };
-    const questionsAnalyses = cleanQuestionAnalyses(reframed.questionsAnalyses).slice(0, 4);
+    let questionsAnalyses = enrichQuestionCards(
+      resolvePrepareQuestionProvenanceFromLlm(
+        cleanQuestionAnalyses(reframed.questionsAnalyses).slice(0, 4),
+        m.questionsAnalyses,
+        reportModelToSignalReasonArrays(m.signalReasons),
+      ),
+    );
+    console.log(`ok (${flattenQuestions(questionsAnalyses).length})`);
+
+    process.stdout.write("   [5/5] polish question evidence ... ");
+    try {
+      questionsAnalyses = await polishEvidenceExcerptsWithLlm({
+        threads: questionsAnalyses,
+        provider: providerId,
+        baseUrl,
+        model,
+        projectBlock,
+        tracker,
+      });
+      console.log("ok");
+    } catch (err) {
+      console.log(`skipped (${err instanceof Error ? err.message : "llm failed"})`);
+    }
+
     const questions = flattenQuestions(questionsAnalyses);
-    console.log(`ok (${questions.length})`);
+
+    const finishDir = repoFinishDir(repoPath, options.period);
+    const questionsPath = path.join(finishDir, finishQuestionsJsonFileName(report.reportId, 1));
+    fs.mkdirSync(finishDir, { recursive: true });
+    if (!fs.existsSync(questionsPath)) {
+      writeFinishQuestions(
+        questionsPath,
+        createFinishQuestions(
+          questions,
+          {
+            sourceFinal: finishJsonFileName(report.reportId, 1),
+            sourceReport: latest.file,
+          },
+          Date.now(),
+          questionsAnalyses,
+        ),
+      );
+    }
 
     const model_: PreparedModelLayer = {
       changeTypes: m.changeTypes,
@@ -201,8 +270,7 @@ export async function prepare(options: PrepareOptions): Promise<void> {
       technicalSignal: m.technicalSignal,
       architectureSignal: m.architectureSignal,
       securitySignal: m.securitySignal,
-      signalReasons,
-      questionsAnalyses,
+      signalReasons: signalReasonsProvenance,
       confidence: (reframed.confidence as Signal) ?? m.confidence,
       history,
       provenance: { model, generatedAt, sourceReport: latest.file },
@@ -226,13 +294,12 @@ export async function prepare(options: PrepareOptions): Promise<void> {
     if (questions.length === 0) {
       console.log("(none)");
     } else {
-      questions.forEach((q, i) => {
-        console.log(`${i + 1}. ${q}`);
-      });
+      printQuestionCards(questionsAnalyses);
     }
     console.log("──────────────────────────────────────────────────────────");
 
     console.log(`\n✅ Prepared narrative: ${preparedFile}`);
+    console.log(`   Questions: ${questionsPath}`);
   } finally {
     tracker.endStep();
   }

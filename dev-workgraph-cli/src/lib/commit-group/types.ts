@@ -10,6 +10,12 @@ interface CommitGroupCliOption {
   parse?: (value: string) => unknown;
 }
 
+/** Options for {@link CommitGroupStrategy.gatherRunInputs}. */
+export interface GatherRunInputsOptions {
+  /** Use persisted repo settings without prompting (run gathering phase). */
+  skipPromptIfSaved?: boolean;
+}
+
 /** Runner-level flags (not strategy-specific). */
 interface CommitGroupStrategyOptions {
   limit?: number;
@@ -62,6 +68,15 @@ export interface CommitGroupStrategy {
   readonly displayName: string;
   readonly cliOptions: readonly CommitGroupCliOption[];
   pickCliOptions(opts: Record<string, unknown>): Record<string, unknown>;
+  /**
+   * Strategy-specific setup prompts and persistence.
+   * Used by `run` gathering and by `init` (via the same helper).
+   */
+  gatherRunInputs(
+    repoPath: string,
+    cli?: Record<string, unknown>,
+    opts?: GatherRunInputsOptions,
+  ): Promise<Record<string, unknown>>;
   init(ctx: CommitGroupRunContext): Promise<CommitGroupInitResult>;
   partition(
     commits: CommitRecord[],

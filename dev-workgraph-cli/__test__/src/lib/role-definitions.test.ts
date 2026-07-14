@@ -89,7 +89,7 @@ describe("roleDefinitionPromptBlock", () => {
     const block = roleDefinitionPromptBlock("Staff Developer");
     expect(block).toContain("ROLE DEFINITION (Staff Software Developer):");
     expect(block).toContain("product line");
-    expect(block).toContain("Open questions should probe:");
+    expect(block).toContain("Prefer question topics about:");
     expect(block).toContain("Narrative/CV emphasis:");
     expect(block).toContain("Do NOT claim unless confirmed in human answers:");
   });

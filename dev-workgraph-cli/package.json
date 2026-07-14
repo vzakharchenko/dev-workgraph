@@ -1,6 +1,6 @@
 {
   "name": "dev-workgraph",
-  "version": "1.0.4",
+  "version": "1.0.6",
   "description": "Turn a Git repository into a career story you can defend — reconstruct your work from commits and your own answers into role-aware impact, CV bullets, and interview prep. Local-only via Ollama.",
   "license": "Apache-2.0",
   "author": "Vasyl Zakharchenko",
@@ -48,15 +48,16 @@
     "lint:fix": "biome check --write src",
     "format": "biome format --write src",
     "format:check": "biome format src",
-    "verify": "npm run lint && npm run typecheck && npm run knip",
+    "verify": "npm run lint && npm run deadcode",
+    "deadcode": "npm run typecheck && npm run knip",
     "prepublishOnly": "npm run verify && npm test && npm run build",
     "start": "node dist/cli.js",
     "test": "tsx scripts/generate-version.ts && vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "knip": "knip",
-    "quality": "npm run lint:fix && npm run format && npm run knip && npm run test:coverage",
-    "reconstruct": "npm run build && node dist/cli.js run .",
+    "quality": "npm run build && npm run lint:fix && npm run format && npm run deadcode && npm run test:coverage",
+    "reconstruct": "npm run build && node dist/cli.js migrate . && node dist/cli.js run .",
     "reconstruct:deepen": "npm run build && node dist/cli.js deepen ."
   },
   "dependencies": {

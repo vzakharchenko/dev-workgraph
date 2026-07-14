@@ -10,6 +10,10 @@ import {
   parseFinishFileName,
   parseFinishQuestionVersionLabel,
 } from "./finish-load.js";
+import { ensureArtifactMigrated } from "./migrations/index.js";
+import type { QuestionAnalyses } from "./model.js";
+import { formatQuestionCardLines } from "./question-cards.js";
+import { finishQuestionProvenance } from "./question-provenance.js";
 import { writeRecordJson } from "./record-io.js";
 import type {
   FinishAnswer,
@@ -54,14 +58,18 @@ export function createFinishQuestions(
   questionTexts: string[],
   meta: { sourceFinal: string; sourceReport: string },
   baseIdMs = Date.now(),
+  sourceAnalyses?: QuestionAnalyses[],
 ): FinishQuestionsRecord {
+  const analyses = sourceAnalyses ?? [];
   return {
     sourceFinal: meta.sourceFinal,
     sourceReport: meta.sourceReport,
     questions: questionTexts.map((question, i) => ({
       id: String(baseIdMs + i),
       question,
+      ...finishQuestionProvenance(analyses[i], i),
     })),
+    questionsAnalyses: analyses.length > 0 ? analyses : undefined,
   };
 }
 
@@ -70,7 +78,103 @@ export function writeFinishQuestions(filePath: string, record: FinishQuestionsRe
 }
 
 export function loadFinishQuestions(filePath: string): FinishQuestionsRecord {
+  ensureArtifactMigrated(filePath, { finishDir: path.dirname(filePath) });
   return JSON.parse(fs.readFileSync(filePath, "utf8")) as FinishQuestionsRecord;
+}
+
+/** Builds a display card from a stored finish question when full analyses are absent. */
+function questionCardFromFinishQuestion(q: FinishQuestion): QuestionAnalyses | undefined {
+  if (!q.evidenceExcerpt && !q.whyAsked && q.sourceGroupId === undefined) return undefined;
+  return {
+    observation: [],
+    missingPiece: [],
+    question: [q.question],
+    threadIndex: q.threadIndex,
+    derivedFromThreadIds: q.derivedFromThreadIds,
+    sourceGroupIds: q.sourceGroupIds,
+    sourceCommits: q.sourceCommits,
+    sourceGroupId: q.sourceGroupId,
+    lineageKind: q.lineageKind,
+    derivedFromSignalReasonIndex: q.derivedFromSignalReasonIndex,
+    evidenceExcerpt: q.evidenceExcerpt,
+    whyAsked: q.whyAsked,
+  };
+}
+
+/** Returns full question cards for a finish question file (analyses or legacy fallback). */
+export function questionAnalysesForRecord(record: FinishQuestionsRecord): QuestionAnalyses[] {
+  if (record.questionsAnalyses?.length) return record.questionsAnalyses;
+  return record.questions
+    .map(
+      (q, i) =>
+        questionCardFromFinishQuestion(q) ?? {
+          observation: [],
+          missingPiece: [],
+          question: [q.question],
+          threadIndex: q.threadIndex ?? i,
+        },
+    )
+    .filter((thread) => thread.question.length > 0);
+}
+
+/** Loads question cards for one finish round (`v1` = version 1). */
+function loadFinishRoundAnalyses(
+  finishDir: string,
+  baseFinishId: number,
+  version: number,
+): QuestionAnalyses[] {
+  const file = path.join(finishDir, finishQuestionsJsonFileName(baseFinishId, version));
+  if (!fs.existsSync(file)) return [];
+  return questionAnalysesForRecord(loadFinishQuestions(file));
+}
+
+/** Loads all question cards from finish question files up to the archive version. */
+export function loadAllFinishQuestionAnalyses(
+  finishDir: string,
+  finishRecord: FinishRecord,
+  finishFile: string,
+): QuestionAnalyses[] {
+  const { baseFinishId, version } = parseFinishFileName(finishFile);
+  const labels = normalizeSourceQuestions(finishRecord.sourceQuestions)[baseFinishId];
+  const analyses: QuestionAnalyses[] = [];
+  if (labels?.length) {
+    for (const label of labels) {
+      const roundVersion = parseFinishQuestionVersionLabel(label);
+      analyses.push(...loadFinishRoundAnalyses(finishDir, baseFinishId, roundVersion));
+    }
+    return analyses;
+  }
+  for (let roundVersion = 1; roundVersion <= version; roundVersion += 1) {
+    analyses.push(...loadFinishRoundAnalyses(finishDir, baseFinishId, roundVersion));
+  }
+  return analyses;
+}
+
+/** Loads question cards for a round, falling back to legacy prepared analyses. */
+export function resolveRoundQuestionAnalyses(
+  finishDir: string,
+  baseFinishId: number,
+  version: number,
+  legacyPreparedAnalyses?: QuestionAnalyses[],
+): QuestionAnalyses[] {
+  const fromFinish = loadFinishRoundAnalyses(finishDir, baseFinishId, version);
+  if (fromFinish.length > 0) return fromFinish;
+  return legacyPreparedAnalyses?.slice(0, 4) ?? [];
+}
+
+/** Loads answers from JSON (array or `{ answers: [...] }`) aligned with `questions`. */
+export function readFinishAnswersFile(
+  filePath: string,
+  questions: FinishQuestion[],
+): FinishAnswer[] {
+  const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+  const arr = Array.isArray(parsed) ? parsed : ((parsed as { answers?: unknown }).answers ?? []);
+  return (arr as Array<{ questionId?: string; question?: string; answer?: string }>).map(
+    (entry, i) => ({
+      questionId: entry.questionId ?? questions[i]?.id ?? questions[0]?.id ?? String(Date.now()),
+      answer: entry.answer ?? "",
+    }),
+  );
 }
 
 /** Loads question files for versions 1…`upToVersion` into one id → text map. */
@@ -187,34 +291,33 @@ export function questionsNotYetAnswered(questions: string[], prior: ResolvedQa[]
 export async function collectFinishAnswers(
   questions: FinishQuestion[],
   prompt: typeof inquirer.prompt,
+  cardContext?: QuestionAnalyses[],
+  questionsRecord?: FinishQuestionsRecord,
 ): Promise<FinishAnswer[]> {
+  const analyses =
+    cardContext ?? (questionsRecord ? questionAnalysesForRecord(questionsRecord) : undefined) ?? [];
   const answers: FinishAnswer[] = [];
   for (const [i, q] of questions.entries()) {
+    const card = analyses[i] ?? questionCardFromFinishQuestion(q);
+    if (card) {
+      console.log("");
+      for (const line of formatQuestionCardLines(card, i, questions.length)) {
+        console.log(line);
+      }
+      console.log("");
+    }
     const { answer } = await prompt<{ answer: string }>([
       {
         type: "editor",
         name: "answer",
-        message: `(${i + 1}/${questions.length}) ${q.question}`,
+        message: card
+          ? `(${i + 1}/${questions.length}) Your answer`
+          : `(${i + 1}/${questions.length}) ${q.question}`,
       },
     ]);
     answers.push({ questionId: q.id, answer: (answer ?? "").trim() });
   }
   return answers;
-}
-
-/** Loads answers from JSON (array or `{ answers: [...] }`) aligned with `questions`. */
-export function readFinishAnswersFile(
-  filePath: string,
-  questions: FinishQuestion[],
-): FinishAnswer[] {
-  const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-  const arr = Array.isArray(parsed) ? parsed : ((parsed as { answers?: unknown }).answers ?? []);
-  return (arr as Array<{ questionId?: string; question?: string; answer?: string }>).map(
-    (entry, i) => ({
-      questionId: entry.questionId ?? questions[i]?.id ?? questions[0]?.id ?? String(Date.now()),
-      answer: entry.answer ?? "",
-    }),
-  );
 }
 
 /** True when every question in the file already has a non-empty answer on the finish record. */

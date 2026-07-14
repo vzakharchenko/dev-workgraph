@@ -5,7 +5,27 @@ All notable changes to **dev-workgraph** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.4] - NEXT RELEASE
+## [1.0.5] - NEXT RELEASE
+
+### Added
+
+#### Question provenance and question cards
+
+Open threads carry **CLI-attached lineage** through the pipeline (`threadId`, `derivedFromThreadIds`, `sourceGroupIds`, `sourceCommits`) — attached after LLM steps at `commit-group`, `report` fold, `prepare`/`deepen`, and copied to `finish/*.question.json`. **`evidenceExcerpt`** (deterministic) and **`whyAsked`** (deterministic from `missingPiece`; neutral missing-context explanation, not role coaching) are shown in prepare preview and before interactive Q&A in `final` / `deepen`.
+
+Documented in [`REQUIREMENTS.md`](REQUIREMENTS.md) §7; diagrams in [`uml/question-provenance.puml`](uml/question-provenance.puml).
+
+#### Neutral whyAsked (question cards)
+
+**`whyAsked`** is always built in code from `missingPiece` (`buildWhyAsked`) — LLM career framing is no longer used. Role-aware wording stays in **`question`** topic choice only.
+
+#### Neutral question style (prepare / deepen)
+
+**`QUESTION_STYLE_RULES`** in prompts: questions are role-calibrated by **topic**, not performance-review tone. Post-LLM **`normalizeQuestionText`** strips «As a Staff Developer…» and similar openers. **`dryObservationLine`** keeps evidence bullets factual.
+
+#### Scannable evidence bullets (question cards)
+
+**`evidenceExcerpt`** is built per thread from **`observation[]`** (ranked by relevance to the question) + **`sourceCommits`**, then optionally compressed by **`polishEvidenceExcerptsWithLlm`** (prepare step 5 / deepen). No group `hiContext` merge dump.
 
 ## [1.0.3] - 2026-07-09
 
@@ -45,14 +65,14 @@ After registration, `check`, model pickers, and `--<id>-url` flags work without 
 
 | Surface | Behavior |
 |---------|----------|
-| **Customizable** | `init` + `partition` only — how commits split into buckets (`members[]` + `fileKey`) |
+| **Customizable** | `gatherRunInputs` + `init` + `partition` — how commits split into buckets (`members[]` + `fileKey`) |
 | **Fixed runner** | `buildGroupRecord`, classify/compose LLM steps, `GroupRecord` schema — unchanged for `report` |
 | **CLI** | `--strategy <id>`; strategy-owned flags via `cliOptions` + `pickCliOptions` (day-gap: `--days`, `--max-commits`) |
-| **`run`** | Prompts for grouping strategy when more than one is registered; saves `commitGroupStrategy` in repo config |
+| **`run`** | Prompts for grouping strategy when more than one is registered; saves `commitGroupStrategy`; calls `gatherRunInputs` for strategy-specific settings (reuses saved values without prompting) |
 
 | Step | What to implement |
 |------|-------------------|
-| 1 | `CommitGroupStrategy` — `id`, `displayName`, `cliOptions`, `pickCliOptions`, `init`, `partition`, `formatSummary` |
+| 1 | `CommitGroupStrategy` — `id`, `displayName`, `cliOptions`, `pickCliOptions`, `gatherRunInputs`, `init`, `partition`, `formatSummary` |
 | 2 | Implement in e.g. `day-gap-strategy.ts` / `jira-strategy.ts` — reuse `grouping.ts` helpers optionally |
 | 3 | Append to `COMMIT_GROUP_STRATEGIES` in `registry.ts` |
 
@@ -84,7 +104,7 @@ Role shapes **which gaps to ask about** (`questionsAnalysis`, open questions), n
 
 ### Changed
 
-- **commit-group strategies:** `--days` / `--max-commits` are owned by the **day-gap** strategy (not hard-coded on the command); `--strategy <id>` selects the partition plugin. `run` no longer prompts for day-gap thresholds upfront — strategy `init` runs at the `commit-group` step.
+- **commit-group strategies:** `--days` / `--max-commits` are owned by the **day-gap** strategy (not hard-coded on the command); `--strategy <id>` selects the partition plugin. `run` gathers strategy-specific inputs via `gatherRunInputs` at the start (reuses saved repo settings); `init` delegates to the same helper at the `commit-group` step.
 - **Role-aware prompts:** inline per-role emphasis maps in `prompts.ts` replaced by `role-definitions.ts`; `cvEmphasisForRole` re-exported from there for CV bullet builders.
 - **Ollama `think`:** `commitModel` and `reportModel` calls send `think: false`; `narrativeModel` (`init`, `prepare`, `final`, `deepen`) omits `think` so thinking-capable models use Ollama defaults on narrative stages.
 

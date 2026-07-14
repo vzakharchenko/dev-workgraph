@@ -175,7 +175,7 @@ Incremental **fold** over groups (oldest first): `report_k = merge(report_{k-1},
 
 ![Report overview](img/report-overview.png)
 
-Provenance: `sourceGroups[]` lists contributing group files; `history[i]` ↔ `deterministic.historySource[i]`.
+Provenance: `sourceGroups[]` lists contributing group files; `history[i]` ↔ `deterministic.historySource[i]`. Question threads carry separate **lineage** fields (`threadId`, `derivedFromThreadIds`, `sourceGroupIds`) attached after each merge — see §7 in REQUIREMENTS and `question-provenance.puml`.
 
 ## Phase 5 — Prepared narrative (`prepare`)
 
@@ -187,8 +187,13 @@ Four `narrativeModel` sessions + deterministic copies:
 2. Clean **technologies** (max 5).
 3. Collapse **signalReasons** → 4 strings.
 4. Reframe **questionsAnalyses** → up to 4 threads (skips threads already answered in latest finish).
+5. **(D)** `attachPrepareQuestionProvenance` + `enrichQuestionCards` — lineage fields + `evidenceExcerpt` / neutral `whyAsked` from `missingPiece` (§7 in REQUIREMENTS).
 
 ![Prepare overview](img/prepare-overview.png)
+
+![Question provenance lineage](img/question-provenance-lineage.png)
+
+![Question cards](img/question-cards.png)
 
 ![Prepare → final handoff](img/prepare-to-final.png)
 
@@ -210,7 +215,7 @@ Three cooperating pieces on the **finish** chain:
 
 | Piece | Location | Content |
 |-------|----------|---------|
-| Question text | `finish/<id>.question.json`, `.question.vN.json` | `{ id, question }[]` — id = Unix-ms |
+| Question text | `finish/<id>.question.json`, `.question.vN.json` | `{ id, question, …provenance/cards }[]` — id = Unix-ms |
 | Answers | `finish/<id>.json` | Cumulative `{ questionId, answer }[]` |
 | Rounds | `sourceQuestions` on finish record | `{ "<finishId>": ["v1", "v2", …] }` |
 
@@ -331,7 +336,8 @@ export const COMMIT_GROUP_STRATEGIES: readonly CommitGroupStrategy[] = [dayGapSt
 | `id`, `displayName` | CLI `--strategy`, `run` picker, saved `commitGroupStrategy` |
 | `cliOptions` | Strategy-owned Commander flags (e.g. `--days`, `--max-commits`) |
 | `pickCliOptions(opts)` | Extract only this strategy's fields from parsed CLI options |
-| `init(ctx)` | Prompts, persisted repo settings, returns `params` for `partition` |
+| `gatherRunInputs(repoPath, cli?, opts?)` | Strategy-specific setup prompts and persistence; used by `run` gathering and by `init` |
+| `init(ctx)` | Maps gathered `strategyCli` → `params` for `partition` (delegates to `gatherRunInputs`) |
 | `partition(commits, init, ctx)` | Async — returns `buckets[]` + stats (`rawBucketCount`, `pendingCount`, `fullyCovered`) |
 | `formatSummary(ctx, init, partition)` | One-line human summary before LLM summarize loop |
 
@@ -342,9 +348,9 @@ Each bucket: `{ members: CommitRecord[], fileKey: string }` where `fileKey` is t
 1. **Implement** `CommitGroupStrategy` in e.g. `src/lib/commit-group/jira-strategy.ts`. Reuse helpers from `grouping.ts` when useful (`groupByGap`, `extensionSessions`, `coveredCommitHashes`); not required.
 2. **Register** — import and append to `COMMIT_GROUP_STRATEGIES` in `registry.ts` (sole import site for concrete strategies).
 3. **CLI** — `registerCommitGroupStrategyOptions` (in `cli-options.ts`) registers every strategy's `cliOptions` on `commit-group`; inactive strategies' flags are ignored via `pickCliOptions`.
-4. **Config** — persist strategy-specific keys inside `init` (day-gap uses `groupThresholdDays` / `groupMaxCommits` on `RepoConfig`); the runner only stores `commitGroupStrategy` id.
+4. **Config** — persist strategy-specific keys inside `gatherRunInputs` / `init` (day-gap uses `groupThresholdDays` / `groupMaxCommits` on `RepoConfig`); the runner only stores `commitGroupStrategy` id.
 
-`run` calls `resolveRunGroupStrategy`: one registered strategy → use it silently; several → list picker (or reuse saved `commitGroupStrategy`). Strategy-specific prompts (e.g. day gap) run inside `init` at the `commit-group` step, not in `run`.
+`run` calls `resolveRunGroupStrategy`: one registered strategy → use it silently; several → list picker (or reuse saved `commitGroupStrategy`). Then `strategy.gatherRunInputs(repoPath, {}, { skipPromptIfSaved: true })` collects strategy-specific settings before the pipeline; results are passed as `strategyCli` to `commit-group`, where `init` reuses the same helper.
 
 Example alternative partition: group by Jira ticket parsed from commit messages, one bucket per ticket, `fileKey` = ticket key — same `GroupRecord` output, different session boundaries for `report` to fold.
 
@@ -366,6 +372,7 @@ If you implement a generally useful grouping strategy, please open a pull reques
 | Report | `uml/report.puml` | `img/report-*.png` |
 | Prepare | `uml/prepare.puml` | `img/prepare-*.png` |
 | Final | `uml/final.puml` | `img/final-*.png` |
+| Question provenance | `uml/question-provenance.puml` | `img/question-provenance-*.png` |
 | Deepen / run | `uml/pipeline.puml` | `img/dev-workgraph-deepen.png`, `dev-workgraph-run-orchestrator.png` |
 
 Regenerate all PNGs (see [`uml/README.md`](uml/README.md) for diagram legend):

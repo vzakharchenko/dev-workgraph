@@ -12,6 +12,7 @@ import { type ExportOptions, exportRepo } from "./actions/export.js";
 import { type FinalOptions, final } from "./actions/final.js";
 import { type ImportOptions, importRepo } from "./actions/import.js";
 import { type InitOptions, init } from "./actions/init.js";
+import { type MigrateOptions, migrate } from "./actions/migrate.js";
 import { type PrepareOptions, prepare } from "./actions/prepare.js";
 import { type ReportOptions, report } from "./actions/report.js";
 import { type RunOptions, run } from "./actions/run.js";
@@ -425,6 +426,47 @@ function registerRun(name: string, periodMode: boolean): void {
 }
 registerRun("run", false);
 registerRun("run:period", true);
+
+// ✅ Command: migrate on-disk pipeline artifacts to the current schema version
+registerLlmProviderOptions(
+  program
+    .command("migrate")
+    .description(
+      "Migrate pipeline JSON artifacts (groups, reports, prepared, finish) to the current schema.",
+    )
+    .argument("[repo]", "Path to the Git repository", ".")
+    .option("--period <name>", "Review period subdirectory")
+    .option("--dry-run", "Show what would change without writing files")
+    .option("--backup", "Write .bak.<version> copies before overwriting")
+    .option("--skip-llm", "Structural migration only (no LLM lineage backfill)")
+    .option("--model <name>", "LLM model for lineage backfill (default: saved narrative slot)")
+    .action(
+      async (
+        repo: string,
+        opts: {
+          period?: string;
+          dryRun?: boolean;
+          backup?: boolean;
+          skipLlm?: boolean;
+          model?: string;
+        },
+      ) => {
+        const options: MigrateOptions = {
+          repo,
+          period: opts.period,
+          dryRun: opts.dryRun,
+          backup: opts.backup,
+          skipLlm: opts.skipLlm,
+          ...pickLlmCommandOptions(opts),
+        };
+        try {
+          await migrate(options);
+        } catch (err) {
+          reportActionError(err);
+        }
+      },
+    ),
+);
 
 // ✅ Command: bundle a repo's workgraph data + config entry into a .tar.gz
 program

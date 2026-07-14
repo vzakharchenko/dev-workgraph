@@ -2,11 +2,23 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ModelLayer, QuestionAnalyses, Signal } from "./model.js";
+import type { SignalReasonProvenance } from "./signal-reason-provenance.js";
 
 /** One question stored in a finish question file; `id` is the creation Unix-ms timestamp. */
 export interface FinishQuestion {
   id: string;
   question: string;
+  /** 0..3 position in the prepared/deepen round. */
+  threadIndex?: number;
+  /** Report/group thread ids this question was derived from. */
+  derivedFromThreadIds?: string[];
+  sourceGroupIds?: number[];
+  sourceCommits?: string[];
+  sourceGroupId?: number;
+  evidenceExcerpt?: string;
+  whyAsked?: string;
+  lineageKind?: "report-thread" | "signal-reason";
+  derivedFromSignalReasonIndex?: number;
 }
 
 /** Questions paired with a finish archive (`<id>.question.json` or `<id>.question.vN.json`). */
@@ -18,6 +30,8 @@ export interface FinishQuestionsRecord {
   /** Report JSON the questions were grounded in. */
   sourceReport: string;
   questions: FinishQuestion[];
+  /** Full question cards for this round (schema ≥ 1.0.6). */
+  questionsAnalyses?: QuestionAnalyses[];
 }
 
 /** Answer on a finish archive — references {@link FinishQuestion.id}. */
@@ -39,7 +53,8 @@ export interface ProjectProfile {
 
 /**
  * The model layer of a prepared narrative: a single distilled history, signals
- * copied from the report, four collapsed reasons, and role-aware questionsAnalyses.
+ * copied from the report, and four collapsed reasons. Question cards live on
+ * `finish/<id>.question.json` (schema ≥ 1.0.6).
  */
 export interface PreparedModelLayer {
   changeTypes: string[];
@@ -48,8 +63,12 @@ export interface PreparedModelLayer {
   technicalSignal: Signal;
   architectureSignal: Signal;
   securitySignal: Signal;
-  signalReasons: string[];
-  questionsAnalyses: QuestionAnalyses[];
+  signalReasons: SignalReasonProvenance[] | string[];
+  /**
+   * @deprecated Question cards are stored on finish `*.question.json` (schema ≥ 1.0.6).
+   * Legacy prepared files may still carry this field; readers fall back when needed.
+   */
+  questionsAnalyses?: QuestionAnalyses[];
   confidence: Signal;
   history: string;
   provenance: {
@@ -150,7 +169,7 @@ export interface ProjectTokenUsage {
   lifetime: TokenTotals & { byModel: Record<string, TokenTotals> };
   steps: Partial<
     Record<
-      "init" | "summarize" | "commit-group" | "report" | "prepare" | "final" | "deepen",
+      "init" | "summarize" | "commit-group" | "report" | "prepare" | "final" | "deepen" | "migrate",
       StepTokenUsage
     >
   >;
@@ -298,7 +317,13 @@ interface GroupsBlock {
  * `summary`, plus three tiers of **context bullets** (not commit hashes):
  * `hiContext` captures the substantial work, `lowContext` the routine background.
  */
-interface GroupModelLayer extends Omit<ModelLayer, "summary" | "questionsAnalysis"> {
+interface GroupModelLayer
+  extends Omit<ModelLayer, "summary" | "questionsAnalysis" | "signalReasons"> {
+  signalReasons: {
+    technical: SignalReasonProvenance | string;
+    architecture: SignalReasonProvenance | string;
+    security: SignalReasonProvenance | string;
+  };
   history: string;
   hiContext: string[];
   mediumContext: string[];
@@ -353,9 +378,9 @@ export interface ReportModelLayer {
   architectureSignal: Signal;
   securitySignal: Signal;
   signalReasons: {
-    technical: string[];
-    architecture: string[];
-    security: string[];
+    technical: Array<SignalReasonProvenance | string>;
+    architecture: Array<SignalReasonProvenance | string>;
+    security: Array<SignalReasonProvenance | string>;
   };
   /** Aggregated reasoned questions: rebuilt from the folded groups' analyses. */
   questionsAnalyses: QuestionAnalyses[];

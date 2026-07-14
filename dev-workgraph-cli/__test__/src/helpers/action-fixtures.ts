@@ -281,8 +281,15 @@ export function seedReport(
 }
 
 export function seedPrepared(repoPath: string, reportFile: string, period?: string): string {
+  const preparedId = 1_700_000_000;
+  const questionAnalyses = [
+    { observation: ["o1"], missingPiece: ["m1"], question: ["Was it production?"] },
+    { observation: ["o2"], missingPiece: ["m2"], question: ["Who designed it?"] },
+    { observation: ["o3"], missingPiece: ["m3"], question: ["Any security impact?"] },
+    { observation: ["o4"], missingPiece: ["m4"], question: ["Customer driven?"] },
+  ];
   const record: PreparedRecord = {
-    preparedId: 1_700_000_000,
+    preparedId,
     sourceReport: reportFile,
     groupCount: 1,
     model: {
@@ -292,12 +299,6 @@ export function seedPrepared(repoPath: string, reportFile: string, period?: stri
       architectureSignal: "low",
       securitySignal: "low",
       signalReasons: ["Reason one", "Reason two", "Reason three", "Reason four"],
-      questionsAnalyses: [
-        { observation: ["o1"], missingPiece: ["m1"], question: ["Was it production?"] },
-        { observation: ["o2"], missingPiece: ["m2"], question: ["Who designed it?"] },
-        { observation: ["o3"], missingPiece: ["m3"], question: ["Any security impact?"] },
-        { observation: ["o4"], missingPiece: ["m4"], question: ["Customer driven?"] },
-      ],
       confidence: "medium",
       history: "I implemented the feature.",
       provenance: {
@@ -311,6 +312,21 @@ export function seedPrepared(repoPath: string, reportFile: string, period?: stri
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${record.preparedId}.json`);
   fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
+
+  const finishDir = repoFinishDir(repoPath, period);
+  fs.mkdirSync(finishDir, { recursive: true });
+  writeFinishQuestions(
+    path.join(finishDir, finishQuestionsJsonFileName(preparedId, 1)),
+    createFinishQuestions(
+      questionAnalyses.map((thread) => thread.question[0]!),
+      {
+        sourceFinal: finishJsonFileName(preparedId, 1),
+        sourceReport: reportFile,
+      },
+      1_700_000_000_000,
+      questionAnalyses,
+    ),
+  );
   return file;
 }
 
@@ -491,6 +507,28 @@ export function chatJsonFromSchema(schema: Record<string, unknown>): unknown {
       "array"
   ) {
     return { signalReasons: ["r1", "r2", "r3", "r4"] };
+  }
+  if (required.includes("evidenceExcerpts")) {
+    const props = (schema.properties as Record<string, Record<string, unknown>> | undefined)
+      ?.evidenceExcerpts;
+    const count = typeof props?.maxItems === "number" ? props.maxItems : 4;
+    return {
+      evidenceExcerpts: Array.from(
+        { length: count },
+        (_, i) => `- Scoped evidence ${i + 1}.\nRelated commits: abc12345`,
+      ),
+    };
+  }
+  if (required.includes("lineage")) {
+    return {
+      lineage: [
+        {
+          derivedFromThreadIds: ["1700000100000000"],
+          derivedFromReportSignalRefs: [{ dimension: "technical", index: 0 }],
+          derivedFromPreparedSignalSlots: [0],
+        },
+      ],
+    };
   }
   if (required.includes("questionsAnalyses") && required.includes("confidence")) {
     return {

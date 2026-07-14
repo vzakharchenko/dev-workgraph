@@ -18,6 +18,7 @@ import type { ResolvedQa } from "../lib/finish-questions.js";
 import {
   collectFinishAnswers,
   createFinishQuestions,
+  loadAllFinishQuestionAnalyses,
   normalizeFinishAnswers,
   readFinishAnswersFile,
   resolveAnswersToQa,
@@ -32,6 +33,7 @@ import {
   flattenQuestions,
   groupHistoryJsonSchema,
   prepareQuestionsJsonSchema,
+  type QuestionAnalyses,
   roleNarrativeJsonSchema,
 } from "../lib/model.js";
 import { chatJson } from "../lib/ollama.js";
@@ -49,9 +51,15 @@ import {
   ROLE_NARRATIVE_SYSTEM,
   withProjectContext,
 } from "../lib/prompts.js";
+import { enrichQuestionCards, polishEvidenceExcerptsWithLlm } from "../lib/question-cards.js";
+import { resolvePrepareQuestionProvenanceFromLlm } from "../lib/question-provenance.js";
 import { writeRecordJson } from "../lib/record-io.js";
-import type { FinishAnswer, FinishRecord, ProjectContext } from "../lib/records.js";
+import type { FinishAnswer, FinishQuestion, FinishRecord, ProjectContext } from "../lib/records.js";
 import { resolveLlmSlot } from "../lib/select.js";
+import {
+  reportModelToSignalReasonArrays,
+  signalReasonArrayTexts,
+} from "../lib/signal-reason-provenance.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
@@ -97,9 +105,11 @@ function readDeepenAnswersFile(
 
 /** Collects answers to the four new deepen questions interactively (multi-line editor). */
 async function collectDeepenAnswers(
-  questions: { id: string; question: string }[],
+  questions: FinishQuestion[],
+  cardContext: QuestionAnalyses[],
+  questionsRecord: ReturnType<typeof createFinishQuestions>,
 ): Promise<{ questionId: string; answer: string }[]> {
-  return collectFinishAnswers(questions, inquirer.prompt);
+  return collectFinishAnswers(questions, inquirer.prompt, cardContext, questionsRecord);
 }
 
 /**
@@ -304,6 +314,8 @@ export async function deepen(options: DeepenOptions): Promise<void> {
   let allQa: QA[] = [...priorQa];
   let allAnswers = [...priorAnswers];
 
+  const priorRoundAnalyses = loadAllFinishQuestionAnalyses(finishDir, prior, priorFinish.file);
+
   try {
     process.stdout.write("Generating four new follow-up questions ... ");
     const followUp = (await chatJson({
@@ -314,19 +326,36 @@ export async function deepen(options: DeepenOptions): Promise<void> {
       user: buildDeepenQuestionsPrompt(
         preparedHistory,
         priorHistory,
-        prepared.record.model.signalReasons,
-        flattenQuestions(report.record.model.questionsAnalyses),
-        flattenQuestions(prepared.record.model.questionsAnalyses),
+        signalReasonArrayTexts(prepared.record.model.signalReasons),
+        report.record.model.questionsAnalyses,
+        report.record.model.signalReasons,
+        flattenQuestions(priorRoundAnalyses),
         priorQa,
         recalledContext,
       ),
       schema: prepareQuestionsJsonSchema(),
       tracker,
     })) as { questionsAnalyses?: unknown };
-    const newQuestions = flattenQuestions(cleanQuestionAnalyses(followUp.questionsAnalyses)).slice(
-      0,
-      4,
+    let followUpAnalyses = enrichQuestionCards(
+      resolvePrepareQuestionProvenanceFromLlm(
+        cleanQuestionAnalyses(followUp.questionsAnalyses).slice(0, 4),
+        [...report.record.model.questionsAnalyses, ...priorRoundAnalyses],
+        reportModelToSignalReasonArrays(report.record.model.signalReasons),
+      ),
     );
+    try {
+      followUpAnalyses = await polishEvidenceExcerptsWithLlm({
+        threads: followUpAnalyses,
+        provider: providerId,
+        baseUrl,
+        model,
+        projectBlock,
+        tracker,
+      });
+    } catch {
+      // keep deterministic evidence excerpts
+    }
+    const newQuestions = flattenQuestions(followUpAnalyses).slice(0, 4);
     if (newQuestions.length < 4) {
       console.error("\n✖ Model returned fewer than four new questions.");
       process.exitCode = 1;
@@ -343,10 +372,15 @@ export async function deepen(options: DeepenOptions): Promise<void> {
       nextArchive.version,
     );
     const questionsPath = path.join(finishDir, questionsJsonFile);
-    const questionsRecord = createFinishQuestions(newQuestions, {
-      sourceFinal: nextArchive.jsonFile,
-      sourceReport: prepared.record.sourceReport,
-    });
+    const questionsRecord = createFinishQuestions(
+      newQuestions,
+      {
+        sourceFinal: nextArchive.jsonFile,
+        sourceReport: prepared.record.sourceReport,
+      },
+      Date.now(),
+      followUpAnalyses,
+    );
     fs.mkdirSync(finishDir, { recursive: true });
     writeFinishQuestions(questionsPath, questionsRecord);
 
@@ -355,7 +389,11 @@ export async function deepen(options: DeepenOptions): Promise<void> {
       newAnswers = readDeepenAnswersFile(options.answersFile, questionsRecord.questions);
     } else {
       console.log("\nAnswer the four new questions:");
-      newAnswers = await collectDeepenAnswers(questionsRecord.questions);
+      newAnswers = await collectDeepenAnswers(
+        questionsRecord.questions,
+        followUpAnalyses,
+        questionsRecord,
+      );
     }
 
     allAnswers = [...priorAnswers, ...newAnswers];
@@ -387,7 +425,7 @@ export async function deepen(options: DeepenOptions): Promise<void> {
       system: withProjectContext(projectBlock, ROLE_NARRATIVE_SYSTEM),
       user: buildRoleNarrativePrompt(
         impactHistory,
-        prepared.record.model.signalReasons,
+        signalReasonArrayTexts(prepared.record.model.signalReasons),
         allQa,
         recalledContext,
       ),
@@ -406,7 +444,7 @@ export async function deepen(options: DeepenOptions): Promise<void> {
       user: buildCvBulletsPrompt(
         project.role,
         impactHistory,
-        prepared.record.model.signalReasons,
+        signalReasonArrayTexts(prepared.record.model.signalReasons),
         allQa,
         narrative,
       ),

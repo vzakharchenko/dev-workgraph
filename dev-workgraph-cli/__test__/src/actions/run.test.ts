@@ -29,6 +29,7 @@ const {
   withProviderStepMock,
   discoverLlmBackendsMock,
   listCommitGroupStrategiesMock,
+  gatherRunInputsMock,
 } = vi.hoisted(() => ({
   promptMock: vi.fn(),
   initMock: vi.fn(async () => {}),
@@ -55,11 +56,13 @@ const {
       displayName: "Work sessions by day gap",
       cliOptions: [],
       pickCliOptions: () => ({}),
+      gatherRunInputs: vi.fn(),
       init: vi.fn(),
       partition: vi.fn(),
       formatSummary: () => "",
     },
   ]),
+  gatherRunInputsMock: vi.fn(async () => ({ days: 7, maxCommits: 20 })),
 }));
 
 vi.mock("inquirer", () => ({
@@ -90,6 +93,16 @@ vi.mock("../../../src/lib/commit-group/registry.js", async (importOriginal) => {
   return {
     ...actual,
     listCommitGroupStrategies: (...args: unknown[]) => listCommitGroupStrategiesMock(...args),
+    getCommitGroupStrategy: (id?: string) => {
+      const strategies = listCommitGroupStrategiesMock();
+      const strategy =
+        id === undefined ? strategies[0] : strategies.find((s) => s.id === id);
+      if (!strategy) return actual.getCommitGroupStrategy(id);
+      return {
+        ...strategy,
+        gatherRunInputs: strategy.gatherRunInputs ?? gatherRunInputsMock,
+      };
+    },
   };
 });
 
@@ -144,12 +157,15 @@ describe("run", () => {
     ({ restore: restoreHome } = setupWorkgraphHome());
     promptMock.mockReset();
     listCommitGroupStrategiesMock.mockReset();
+    gatherRunInputsMock.mockReset();
+    gatherRunInputsMock.mockResolvedValue({ days: 7, maxCommits: 20 });
     listCommitGroupStrategiesMock.mockReturnValue([
       {
         id: "day-gap",
         displayName: "Work sessions by day gap",
         cliOptions: [],
         pickCliOptions: () => ({}),
+        gatherRunInputs: gatherRunInputsMock,
         init: vi.fn(),
         partition: vi.fn(),
         formatSummary: () => "",
@@ -224,7 +240,26 @@ describe("run", () => {
     expect(promptMock).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith("Using saved authors: saved@example.com");
     expect(commitGroupMock).toHaveBeenCalledWith(
-      expect.objectContaining({ groupStrategy: "day-gap" }),
+      expect.objectContaining({
+        groupStrategy: "day-gap",
+        strategyCli: { days: 7, maxCommits: 20 },
+      }),
+    );
+    expect(gatherRunInputsMock).toHaveBeenCalledWith(
+      expect.any(String),
+      {},
+      { skipPromptIfSaved: true },
+    );
+  });
+
+  it("gathers strategy inputs during run before the pipeline", async () => {
+    await run({ repo: FAKE_REPO, model: "test-model" });
+
+    expect(gatherRunInputsMock).toHaveBeenCalledOnce();
+    expect(gatherRunInputsMock).toHaveBeenCalledWith(
+      expect.any(String),
+      {},
+      { skipPromptIfSaved: true },
     );
   });
 
@@ -235,6 +270,7 @@ describe("run", () => {
         displayName: "Work sessions by day gap",
         cliOptions: [],
         pickCliOptions: () => ({}),
+        gatherRunInputs: gatherRunInputsMock,
         init: vi.fn(),
         partition: vi.fn(),
         formatSummary: () => "",
@@ -244,6 +280,7 @@ describe("run", () => {
         displayName: "Jira tickets",
         cliOptions: [],
         pickCliOptions: () => ({}),
+        gatherRunInputs: vi.fn(async () => ({})),
         init: vi.fn(),
         partition: vi.fn(),
         formatSummary: () => "",
@@ -257,7 +294,7 @@ describe("run", () => {
     expect(promptMock).toHaveBeenCalledTimes(4);
     expect(getRepoConfig(FAKE_REPO)?.commitGroupStrategy).toBe("jira");
     expect(commitGroupMock).toHaveBeenCalledWith(
-      expect.objectContaining({ groupStrategy: "jira" }),
+      expect.objectContaining({ groupStrategy: "jira", strategyCli: {} }),
     );
   });
 

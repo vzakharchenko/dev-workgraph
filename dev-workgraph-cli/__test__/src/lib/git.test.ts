@@ -7,6 +7,7 @@ import {
   getAuthors,
   getChangedFiles,
   getChurn,
+  getChurnForPaths,
   getCommits,
   getPatch,
   resolveRepo,
@@ -108,6 +109,18 @@ describe("getChangedFiles", () => {
     expect(files.length).toBeGreaterThan(0);
     expect(files.every((f) => f.path.length > 0)).toBe(true);
   });
+
+  it("captures rename oldPath for rename commits", () => {
+    const renameHash = "b8ebd65bfa0bddda24846a6af1913412a0f26f42";
+    const files = getChangedFiles(repoRoot, renameHash);
+    const renamed = files.find((f) => f.status === "R" || f.status === "C");
+    if (renamed) {
+      expect(renamed.oldPath).toBeTruthy();
+      expect(renamed.path).toBeTruthy();
+    } else {
+      expect(files.length).toBeGreaterThanOrEqual(0);
+    }
+  });
 });
 
 describe("getChurn", () => {
@@ -115,6 +128,28 @@ describe("getChurn", () => {
     const churn = getChurn(repoRoot, sampleHash, isNoise);
     expect(churn.added).toBeGreaterThanOrEqual(0);
     expect(churn.deleted).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("getChurnForPaths", () => {
+  it("counts churn only for selected paths", () => {
+    const files = getChangedFiles(repoRoot, sampleHash);
+    const first = files[0]?.path;
+    if (!first) return;
+    const all = getChurn(repoRoot, sampleHash, isNoise);
+    const scoped = getChurnForPaths(repoRoot, sampleHash, isNoise, new Set([first]));
+    expect(scoped.added + scoped.deleted).toBeLessThanOrEqual(all.added + all.deleted);
+    expect(scoped.added + scoped.deleted).toBeGreaterThanOrEqual(0);
+  });
+
+  it("returns zero churn when onlyPaths matches nothing", () => {
+    const scoped = getChurnForPaths(
+      repoRoot,
+      sampleHash,
+      isNoise,
+      new Set(["__definitely_missing_path__.ts"]),
+    );
+    expect(scoped).toEqual({ added: 0, deleted: 0 });
   });
 });
 

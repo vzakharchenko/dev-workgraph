@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isCanonicalCommitSummaryFile, isCommitEvidenceManifestFile } from "./evidence-files.js";
+import { ensureArtifactMigrated } from "./migrations/index.js";
 import type { ModelLayer } from "./model.js";
 import type {
   CommitEvidenceRecord,
@@ -184,7 +185,9 @@ export function loadGroupRecords(groupsDir: string): { file: string; record: Gro
   const out: { file: string; record: GroupRecord }[] = [];
   for (const f of fs.readdirSync(groupsDir)) {
     if (!f.endsWith(".json")) continue;
-    const record = JSON.parse(fs.readFileSync(path.join(groupsDir, f), "utf8")) as GroupRecord;
+    const filePath = path.join(groupsDir, f);
+    ensureArtifactMigrated(filePath, { groupsDir });
+    const record = JSON.parse(fs.readFileSync(filePath, "utf8")) as GroupRecord;
     out.push({ file: f, record });
   }
   return out.sort((a, b) => a.record.timestampEnd - b.record.timestampEnd);

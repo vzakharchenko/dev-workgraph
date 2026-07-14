@@ -70,7 +70,37 @@ describe("dayGapStrategy", () => {
     expect(maxOpt?.parse?.("0")).toBe(0);
   });
 
-  it("init uses CLI flags without prompting", async () => {
+  it("gatherRunInputs uses CLI flags without prompting", async () => {
+    const cli = await dayGapStrategy.gatherRunInputs(repoPath, { days: 9, maxCommits: 15 });
+    expect(promptMock).not.toHaveBeenCalled();
+    expect(cli).toEqual({ days: 9, maxCommits: 15 });
+    expect(getRepoConfig(repoPath)?.groupThresholdDays).toBe(9);
+    expect(getRepoConfig(repoPath)?.groupMaxCommits).toBe(15);
+  });
+
+  it("gatherRunInputs with skipPromptIfSaved uses persisted values without prompting", async () => {
+    setRepoConfig(repoPath, { groupThresholdDays: 6, groupMaxCommits: 8 });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const cli = await dayGapStrategy.gatherRunInputs(repoPath, {}, { skipPromptIfSaved: true });
+
+    expect(promptMock).not.toHaveBeenCalled();
+    expect(cli).toEqual({ days: 6, maxCommits: 8 });
+    expect(log).toHaveBeenCalledWith("Using saved group threshold: 6 day(s)");
+    expect(log).toHaveBeenCalledWith("Using saved max commits/group: 8");
+    log.mockRestore();
+  });
+
+  it("gatherRunInputs prompts when skipPromptIfSaved is false even with saved config", async () => {
+    setRepoConfig(repoPath, { groupThresholdDays: 6, groupMaxCommits: 8 });
+    promptMock.mockResolvedValueOnce({ days: 6 }).mockResolvedValueOnce({ maxCommits: 8 });
+
+    await dayGapStrategy.gatherRunInputs(repoPath);
+
+    expect(promptMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("init delegates to gatherRunInputs", async () => {
     const ctx = runCtx(repoPath, { strategyCli: { days: 9, maxCommits: 15 } });
     const init = await dayGapStrategy.init(ctx);
     expect(promptMock).not.toHaveBeenCalled();

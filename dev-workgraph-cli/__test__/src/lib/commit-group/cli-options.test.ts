@@ -25,6 +25,7 @@ const { plainStrategy, dayGapStub } = vi.hoisted(() => {
       return out;
     },
     init: async () => ({ label: "day-gap", params: {} }),
+    gatherRunInputs: async () => ({}),
     partition: async () => ({
       buckets: [],
       stats: { rawBucketCount: 0, pendingCount: 0, fullyCovered: 0 },
@@ -37,6 +38,7 @@ const { plainStrategy, dayGapStub } = vi.hoisted(() => {
     cliOptions: [{ flags: "--plain <x>", description: "A flag without a custom parser" }],
     pickCliOptions: () => ({}),
     init: async () => ({ label: "plain", params: {} }),
+    gatherRunInputs: async () => ({}),
     partition: async () => ({
       buckets: [],
       stats: { rawBucketCount: 0, pendingCount: 0, fullyCovered: 0 },

@@ -114,9 +114,14 @@ partition "**[3/4] Collapse reasons (M:n)**" {
   :Output: **exactly 4** flat signalReasons strings;\nmerge near-dups, drop upkeep noise;
 }
 
-partition "**[4/4] Reframe questions (M:n)**" {
+partition "**[4/5] Reframe questions (M:n)**" {
   :Input: composed history + 4 reasons\n+ report.questionsAnalyses\n+ **prior finish Q&A**\n(latestFinish -> sourceQuestions\n+ question files)\n+ project context;
-  :Output: **up to 4** new role-aware questions\n(do not repeat prior Q&A);\nre-assess **confidence**;
+  :Output: **up to 4** new role-aware questions;\nre-assess **confidence**;
+}
+
+partition "**[5/5] Evidence cards (M:n + D)**" {
+  :**enrichQuestionCards (D):**\nevidence from observation[] + commits;\nwhyAsked from missingPiece;
+  :**polishEvidenceExcerptsWithLlm (M:n):**\n3–4 bullets per card (batched);
 }
 
 partition "**Copy from report (D)**" {
@@ -125,7 +130,7 @@ partition "**Copy from report (D)**" {
 
 :Write prepared/<reportId>.json;
 
-:Console preview: unified history,\ntechnologies, numbered questions;
+:Console preview: unified history,\ntechnologies, numbered questions\n+ Evidence / Why asked cards;
 
 #LightGreen:Ready for **final**;
 
@@ -231,10 +236,15 @@ rectangle "**[3/4] signalReasons (M:n)**" as S3 #FFF3E0 {
 }
 
 rectangle "**[4/4] questions (M:n)**" as S4 #FFF3E0 {
-  card "Report questionsAnalyses\n+ prior finish Q&A\n(resolve question files)\n-> **up to 4** new"
+  card "Report questionsAnalyses\n+ prior finish Q&A\n-> **up to 4** new"
   card "Role-aware; skip story/README\n+ already-answered threads"
   card "Target what Git cannot know"
   card "**confidence** re-assessed"
+}
+
+rectangle "**[4b] Provenance + cards (D)**" as S4B #E8F5E9 {
+  card "attachPrepareQuestionProvenance"
+  card "enrichQuestionCards\n→ evidenceExcerpt\n→ whyAsked from missingPiece"
 }
 
 rectangle "**Copy (D)**" as SC #E8F5E9 {
@@ -253,11 +263,12 @@ S0 --> S1
 REP --> S2
 S1 --> S3
 S3 --> S4
+S4 --> S4B
 REP --> SC
 S1 --> OUT
 S2 --> OUT
 S3 --> OUT
-S4 --> OUT
+S4B --> OUT
 SC --> OUT
 
 @enduml
@@ -282,6 +293,8 @@ class "PreparedModelLayer (M:n + D copy)" as MOD #FFF3E0 {
   **technologies** — max 5 cleaned (step 2)
   **signalReasons** — exactly 4 strings (step 3)
   **questionsAnalyses** — up to 4 threads (step 4)
+  **threadIndex**, provenance fields
+  **evidenceExcerpt**, **whyAsked**
   **confidence** — re-assessed (step 4)
   --
   **changeTypes** — copied from report (D)
@@ -385,6 +398,9 @@ LLM --> PRE : signalReasons[4]
 
 PRE -> LLM : [4/4] reframe questions + confidence\n(+ prior finish Q&A if any)
 LLM --> PRE : questionsAnalyses, confidence
+
+PRE -> PRE : attachPrepareQuestionProvenance (D)
+PRE -> PRE : enrichQuestionCards (D)
 
 PRE -> PRE : copy changeTypes + signals from report (D)
 

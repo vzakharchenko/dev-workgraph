@@ -104,7 +104,7 @@ else (first run / same prepared)
     else if (saved answers on finish\nfor this round?) then (yes)
       :Reuse answers from finish archive\n+ existing question file;
     else (no)
-      :Interactive editor:\nup to 4 questions\n(multi-line allowed);
+      :Interactive editor:\nup to 4 questions\n(Source / Evidence /\nWhy asked / Question)\n(multi-line allowed);
     endif
     :Write **<id>.question.json**\n{ id, question } x up to 4;
     :Persist **answers[]** (`questionId` refs)\n+ **sourceQuestions: { id: ["v1"] }**\non finish/<id>.json;
@@ -225,8 +225,9 @@ rectangle "**System asked (prepare)**" #FFF3E0 {
 }
 
 rectangle "**Human confirms (final)**" #FCE4EC {
+  card "Question cards:\nEvidence + Why asked" as QC
   card "Answer each question\n(editor, multi-line)" as A
-  card "Write question file:\n<id>.question[.vN].json" as QF
+  card "Write question file:\n<id>.question[.vN].json\n(+ provenance / cards)" as QF
   card "Persist on finish archive:\nanswers[] + sourceQuestions" as P
 }
 
@@ -235,7 +236,8 @@ rectangle "**System refines with answers (M:n)**" as REF #E1F5FE {
   card "2b: 4 Role Narrative bullets\nsame confirmed scope"
 }
 
-Q --> A : interactive\n(or --answers-file)
+Q --> QC
+QC --> A : interactive\n(or --answers-file)
 A --> QF
 QF --> P
 P --> REF
@@ -371,7 +373,7 @@ class "FinishRecord" as FR #E1F5FE {
 class "FinishQuestionsRecord" as FQR #FCE4EC {
   sourceFinal — paired finish json file
   sourceReport — traceability
-  questions — id + question\nid = Unix-ms timestamp
+  questions — id + question\n+ threadIndex, provenance\n+ evidenceExcerpt, whyAsked
 }
 
 class "On disk" as DISK {

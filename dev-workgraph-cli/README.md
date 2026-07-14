@@ -238,9 +238,12 @@ Only **partition** is customizable for `commit-group`; the runner always produce
 Git patches     = evidence (trustworthy)
 Model summaries = interpretation (may be wrong; must cite reasons)
 Questions       = what Git cannot know
+Question cards  = evidenceExcerpt + whyAsked (from missingPiece — neutral, not role coaching)
 Your answers    = confirmed context (not proof unless you stated it)
 RECONSTRUCTION  = personal artifact for review / interview prep — not auto-scored
 ```
+
+Question **lineage** (`threadId`, `derivedFromThreadIds`, `sourceGroupIds`) is stored in JSON for traceability — see [`REQUIREMENTS.md`](../REQUIREMENTS.md) §7 and [`uml/question-provenance.puml`](../uml/question-provenance.puml).
 
 ## Development
 

@@ -9,13 +9,14 @@ import {
 import { repoCommitsDir, setPeriod, setRepoConfig } from "../../../src/lib/config.js";
 import { MAX_PATCH_CHARS } from "../../../src/lib/patch-split.js";
 
-const { getPatch } = vi.hoisted(() => ({
+const { getPatch, getCommits } = vi.hoisted(() => ({
   getPatch: vi.fn(() => "commit patch"),
+  getCommits: vi.fn(() => [sampleGitCommit]),
 }));
 
 vi.mock("../../../src/lib/git.js", () => ({
   resolveRepo: vi.fn((repo: string) => path.resolve(repo === "." ? FAKE_REPO : repo)),
-  getCommits: vi.fn(() => [sampleGitCommit]),
+  getCommits,
   getPatch,
   getChangedFiles: vi.fn(() => [{ status: "M", path: "src/a.ts" }]),
   getChurnForPaths: vi.fn(() => ({ added: 5, deleted: 1 })),
@@ -30,7 +31,9 @@ describe("evidence", () => {
     ({ restore: restoreHome } = setupWorkgraphHome());
     process.exitCode = undefined;
     getPatch.mockReset();
+    getCommits.mockReset();
     getPatch.mockReturnValue("commit patch");
+    getCommits.mockReturnValue([sampleGitCommit]);
   });
 
   afterEach(() => {
@@ -141,5 +144,14 @@ describe("evidence", () => {
         path.join(repoCommitsDir(FAKE_REPO, "2022"), String(sampleGitCommit.timestamp)),
       ),
     ).toBe(true);
+  });
+
+  it("logs when no commits match the selected period", async () => {
+    setRepoConfig(FAKE_REPO, { selectedAuthors: ["dev@example.com"] });
+    setPeriod(FAKE_REPO, "2022", { from: "2022-01-01", to: "2023-01-01" });
+    getCommits.mockReturnValueOnce([]);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await evidence({ repo: FAKE_REPO, period: "2022" });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("2022"));
   });
 });
