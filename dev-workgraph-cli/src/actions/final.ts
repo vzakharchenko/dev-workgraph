@@ -413,7 +413,7 @@ function prepareFinalPreparedState(
     finishDir,
     archive.baseFinishId,
     archive.version,
-    prepared.model.questionsAnalyses,
+    prepared,
   );
   const preparedQuestions = flattenQuestions(roundAnalyses);
   const priorQa = resolvePriorQa(isExtension, priorFinish, finishDir, archive);
@@ -532,7 +532,6 @@ function buildFinishRecord(input: {
     sourceQuestions,
     ...(isExtension && priorFinish ? { sourcePreviousFinish: priorFinish.file } : {}),
     version: archive.version,
-    round: archive.version,
     project: path.basename(repoPath),
     role: project.role,
     technologies: prepared.model.technologies,

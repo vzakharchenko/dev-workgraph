@@ -165,8 +165,8 @@ function isValidPolishedExcerpt(value: string): boolean {
   if (bulletCount < 1 || bulletCount > MAX_EVIDENCE_BULLETS) return false;
   const nonBullets = lines.filter((l) => !l.startsWith("- "));
   if (nonBullets.length > 1) return false;
-  if (nonBullets.length === 1 && !nonBullets[0]?.startsWith("Related commits:")) return false;
-  return true;
+  return !(nonBullets.length === 1 && !nonBullets[0]?.startsWith("Related commits:"));
+
 }
 
 /**
@@ -247,13 +247,11 @@ export function formatQuestionCardLines(
     }
   }
   if (thread.whyAsked) {
-    lines.push("Why asked:");
-    lines.push(thread.whyAsked);
+    lines.push(...["Why asked:", thread.whyAsked]);
   }
   const question = primaryQuestionText(thread);
   if (question) {
-    lines.push("Question:");
-    lines.push(question);
+    lines.push(...["Question:", question]);
   }
   return lines;
 }

@@ -90,11 +90,20 @@ async function resolveMaxCommits(
 
 async function gatherDayGapInputs(
   repoPath: string,
-  cli: Record<string, unknown> = {},
+  cli?: Record<string, unknown>,
   opts?: ResolveDayGapOpts,
 ): Promise<{ days: number; maxCommits: number }> {
-  const thresholdDays = await resolveThreshold(repoPath, cli.days as number | undefined, opts);
-  const maxCommits = await resolveMaxCommits(repoPath, cli.maxCommits as number | undefined, opts);
+  const resolvedCli = cli ?? {};
+  const thresholdDays = await resolveThreshold(
+    repoPath,
+    resolvedCli.days as number | undefined,
+    opts,
+  );
+  const maxCommits = await resolveMaxCommits(
+    repoPath,
+    resolvedCli.maxCommits as number | undefined,
+    opts,
+  );
   return { days: thresholdDays, maxCommits };
 }
 
@@ -146,7 +155,7 @@ export const dayGapStrategy: CommitGroupStrategy = {
     return out;
   },
 
-  gatherRunInputs(repoPath, cli = {}, opts) {
+  gatherRunInputs(repoPath, cli, opts) {
     return gatherDayGapInputs(repoPath, cli, opts);
   },
 

@@ -611,6 +611,25 @@ const ROUTINE_MAINTENANCE_RULE = [
 
 const bulletList = (items: string[]): string => items.map((b) => `- ${b}`).join("\n") || "(none)";
 
+function analysesGroupIdTrace(entry: QuestionAnalyses): string | null {
+  if (entry.sourceGroupIds?.length) {
+    return `groupIds=${entry.sourceGroupIds.join(", ")}`;
+  }
+  if (entry.sourceGroupId !== undefined) return `groupId=${entry.sourceGroupId}`;
+  return null;
+}
+
+function analysesThreadHeader(index: number, trace: string): string {
+  if (!trace) return `  thread ${index + 1}:`;
+  return `  thread ${index + 1} (${trace}):`;
+}
+
+function signalReasonLine(dim: string, index: number, trace: string, text: string): string {
+  const label = `${dim}[${index}]`;
+  const suffix = trace ? ` (${trace})` : "";
+  return `  ${label}${suffix}: ${text.trim() || "(empty)"}`;
+}
+
 /** Renders aggregated questionsAnalyses (group/report) for a merge prompt. */
 const analysesBlock = (entries: QuestionAnalyses[]): string =>
   entries
@@ -618,11 +637,7 @@ const analysesBlock = (entries: QuestionAnalyses[]): string =>
       const trace = [
         e.threadId ? `id=${e.threadId}` : null,
         e.groupThreadIndex !== undefined ? `groupThread=${e.groupThreadIndex}` : null,
-        e.sourceGroupIds?.length
-          ? `groupIds=${e.sourceGroupIds.join(", ")}`
-          : e.sourceGroupId !== undefined
-            ? `groupId=${e.sourceGroupId}`
-            : null,
+        analysesGroupIdTrace(e),
         e.sourceCommits?.length
           ? `commits=${e.sourceCommits.map((h) => h.slice(0, 8)).join(", ")}`
           : null,
@@ -639,7 +654,7 @@ const analysesBlock = (entries: QuestionAnalyses[]): string =>
         ? e.question.map((q, j) => `       ${j + 1}. ${q}`).join("\n")
         : "       (none)";
       return [
-        `  thread ${i + 1}${trace ? ` (${trace})` : ""}:`,
+        analysesThreadHeader(i, trace),
         "     observations:",
         observations,
         "     missing pieces:",
@@ -670,7 +685,7 @@ const signalReasonCatalogBlock = (signalReasons: {
       ]
         .filter(Boolean)
         .join(" · ");
-      lines.push(`  ${dim}[${i}]${trace ? ` (${trace})` : ""}: ${prov.text.trim() || "(empty)"}`);
+      lines.push(signalReasonLine(dim, i, trace, prov.text));
     }
   }
   return lines.join("\n") || "(none)";
@@ -1393,30 +1408,35 @@ export const DEEPEN_QUESTIONS_SYSTEM = [
 ].join("\n");
 
 /**
- * Builds the `deepen` follow-up-questions user prompt.
- * @param preparedHistory - Unified history from the prepared record.
- * @param priorFinalHistory - Refined history from the latest finish archive.
- * @param preparedSignalSlots - Four collapsed signal reasons from the prepared record (slots 0..3).
- * @param reportAnalyses - Report-level questionsAnalyses with thread ids.
- * @param reportSignalReasons - Report signal-reason catalog.
- * @param priorQuestions - Prepared questions from the initial round (must not be repeated).
- * @param priorQa - All Q&A pairs from prior finish rounds.
- * @param recalledContext - Non-code context recalled this deepen round.
+ * Input for {@link buildDeepenQuestionsPrompt}.
  */
-export function buildDeepenQuestionsPrompt(
-  preparedHistory: string,
-  priorFinalHistory: string,
-  preparedSignalSlots: string[],
-  reportAnalyses: QuestionAnalyses[],
+export interface DeepenQuestionsPromptInput {
+  preparedHistory: string;
+  priorFinalHistory: string;
+  preparedSignalSlots: string[];
+  reportAnalyses: QuestionAnalyses[];
   reportSignalReasons: {
     technical: unknown[];
     architecture: unknown[];
     security: unknown[];
-  },
-  priorQuestions: string[],
-  priorQa: { question: string; answer: string }[],
-  recalledContext: string,
-): string {
+  };
+  priorQuestions: string[];
+  priorQa: { question: string; answer: string }[];
+  recalledContext: string;
+}
+
+/** Builds the `deepen` follow-up-questions user prompt. */
+export function buildDeepenQuestionsPrompt(input: DeepenQuestionsPromptInput): string {
+  const {
+    preparedHistory,
+    priorFinalHistory,
+    preparedSignalSlots,
+    reportAnalyses,
+    reportSignalReasons,
+    priorQuestions,
+    priorQa,
+    recalledContext,
+  } = input;
   return [
     "Newly recalled context (non-code — use to shape questions, not as proven fact):",
     recalledContext.trim() || "(none provided)",

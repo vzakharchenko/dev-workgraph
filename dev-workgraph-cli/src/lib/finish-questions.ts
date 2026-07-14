@@ -10,6 +10,7 @@ import {
   parseFinishFileName,
   parseFinishQuestionVersionLabel,
 } from "./finish-load.js";
+import { legacyPreparedQuestionAnalyses } from "./legacy-prepared.js";
 import { ensureArtifactMigrated } from "./migrations/index.js";
 import type { QuestionAnalyses } from "./model.js";
 import { formatQuestionCardLines } from "./question-cards.js";
@@ -21,6 +22,7 @@ import type {
   FinishQuestionsRecord,
   FinishRecord,
   FinishSourceQuestions,
+  PreparedRecord,
 } from "./records.js";
 
 /** Plain Q&A shape for LLM prompts and markdown assembly. */
@@ -155,11 +157,12 @@ export function resolveRoundQuestionAnalyses(
   finishDir: string,
   baseFinishId: number,
   version: number,
-  legacyPreparedAnalyses?: QuestionAnalyses[],
+  prepared?: PreparedRecord,
 ): QuestionAnalyses[] {
   const fromFinish = loadFinishRoundAnalyses(finishDir, baseFinishId, version);
   if (fromFinish.length > 0) return fromFinish;
-  return legacyPreparedAnalyses?.slice(0, 4) ?? [];
+  if (!prepared) return [];
+  return legacyPreparedQuestionAnalyses(prepared).slice(0, 4);
 }
 
 /** Loads answers from JSON (array or `{ answers: [...] }`) aligned with `questions`. */

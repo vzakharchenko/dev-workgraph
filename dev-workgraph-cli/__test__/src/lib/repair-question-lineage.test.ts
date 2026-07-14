@@ -5,13 +5,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { legacyPreparedQuestionAnalyses } from "../../../src/lib/legacy-prepared.js";
 import {
   repairFinishQuestionsRecordLineage,
   repairPreparedRecordQuestionLineage,
   repairQuestionLineageArtifact,
 } from "../../../src/lib/repair-question-lineage.js";
 import type { MigrationContext } from "../../../src/lib/migrations/types.js";
-import { emptyDeterministic, sampleReport } from "../../helpers.js";
+import { sampleReport } from "../../helpers.js";
 
 describe("repair-question-lineage", () => {
   let tmpDir: string;
@@ -117,9 +118,10 @@ describe("repair-question-lineage", () => {
     };
 
     const repaired = repairPreparedRecordQuestionLineage(prepared, migrationCtx);
-    expect(repaired.model.questionsAnalyses[0]?.lineageKind).toBe("signal-reason");
-    expect(repaired.model.questionsAnalyses[0]?.sourceGroupIds).toContain(reportId);
-    expect(repaired.model.questionsAnalyses[0]?.sourceCommits).toContain("abc");
+    const repairedAnalyses = legacyPreparedQuestionAnalyses(repaired);
+    expect(repairedAnalyses[0]?.lineageKind).toBe("signal-reason");
+    expect(repairedAnalyses[0]?.sourceGroupIds).toContain(reportId);
+    expect(repairedAnalyses[0]?.sourceCommits).toContain("abc");
     expect(repaired.model.signalReasons).toHaveLength(4);
   });
 

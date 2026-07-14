@@ -3,6 +3,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import {
+  legacyPreparedQuestionAnalyses,
+  withLegacyPreparedQuestionAnalyses,
+} from "./legacy-prepared.js";
 import { readRecordJson, writeMigratedRecord } from "./migrations/io.js";
 import { FINISH_QUESTIONS_ANALYSES_VERSION } from "./migrations/steps/v1000006-finish-questions-analyses.js";
 import type { MigrationArtifactKind, MigrationContext } from "./migrations/types.js";
@@ -77,7 +81,7 @@ export function repairPreparedRecordQuestionLineage(
   prepared: PreparedRecord,
   ctx: MigrationContext,
 ): PreparedRecord {
-  const threads = prepared.model.questionsAnalyses ?? [];
+  const threads = legacyPreparedQuestionAnalyses(prepared);
   if (!needsQuestionLineageRepair(threads)) return prepared;
 
   const report = loadReportForPrepared(prepared, ctx);
@@ -90,14 +94,14 @@ export function repairPreparedRecordQuestionLineage(
     reportSignalReasons,
   );
 
-  return {
-    ...prepared,
-    model: {
-      ...prepared.model,
-      signalReasons: normalizePreparedSignalReasons(prepared.model.signalReasons),
-      questionsAnalyses: repairedThreads,
-    },
+  const repaired = withLegacyPreparedQuestionAnalyses(prepared, repairedThreads);
+  const model = {
+    ...(repaired.model as unknown as Record<string, unknown>),
+    signalReasons: normalizePreparedSignalReasons(
+      prepared.model.signalReasons,
+    ) as PreparedRecord["model"]["signalReasons"],
   };
+  return { ...repaired, model: model as unknown as PreparedRecord["model"] };
 }
 
 /** Repairs finish question file on disk when lineage is empty; returns true if written. */
@@ -115,8 +119,9 @@ function repairFinishQuestionsArtifact(filePath: string, ctx: MigrationContext):
 function repairPreparedArtifact(filePath: string, ctx: MigrationContext): boolean {
   const prepared = readRecordJson(filePath) as unknown as PreparedRecord;
   if ((prepared.schemaVersion ?? 0) >= FINISH_QUESTIONS_ANALYSES_VERSION) return false;
-  if (!prepared.model.questionsAnalyses?.length) return false;
-  if (!needsQuestionLineageRepair(prepared.model.questionsAnalyses)) return false;
+  const legacyThreads = legacyPreparedQuestionAnalyses(prepared);
+  if (legacyThreads.length === 0) return false;
+  if (!needsQuestionLineageRepair(legacyThreads)) return false;
   const repaired = repairPreparedRecordQuestionLineage(prepared, ctx);
   if (JSON.stringify(repaired) === JSON.stringify(prepared)) return false;
   writeMigratedRecord(filePath, repaired, ctx.dryRun);
@@ -141,7 +146,7 @@ function repairFinishQuestionsFromPreparedArtifact(
 
   repairPreparedArtifact(preparedPath, ctx);
   const prepared = readRecordJson(preparedPath) as unknown as PreparedRecord;
-  const threads = prepared.model.questionsAnalyses ?? [];
+  const threads = legacyPreparedQuestionAnalyses(prepared);
   if (threads.length === 0) return repairFinishQuestionsArtifact(filePath, ctx);
 
   const questions = record.questions.map((q, i) => mergeFinishQuestionFromThread(q, i, threads));

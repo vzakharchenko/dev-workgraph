@@ -3,6 +3,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { legacyPreparedQuestionAnalyses } from "../../legacy-prepared.js";
 import type { QuestionAnalyses } from "../../model.js";
 import {
   attachGroupQuestionProvenance,
@@ -289,8 +290,8 @@ export function migratePreparedRecord(
     },
   };
 
-  const threads = prepared.model.questionsAnalyses;
-  if (threads?.length && needsQuestionProvenanceRepair(threads)) {
+  const threads = legacyPreparedQuestionAnalyses(prepared);
+  if (threads.length && needsQuestionProvenanceRepair(threads)) {
     prepared = repairPreparedRecordQuestionLineage(prepared, ctx);
   }
 
@@ -321,7 +322,9 @@ export function migrateFinishQuestionsRecord(
     }
   }
 
-  const preparedThreads = prepared?.model.questionsAnalyses ?? record.questionsAnalyses ?? [];
+  const preparedThreads = prepared
+    ? legacyPreparedQuestionAnalyses(prepared)
+    : (record.questionsAnalyses ?? []);
   const questions: FinishQuestion[] = record.questions.map((q: FinishQuestion, i: number) => {
     const threadIndex = q.threadIndex ?? i;
     const thread = preparedThreads[threadIndex];

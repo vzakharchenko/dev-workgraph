@@ -16,6 +16,7 @@ import {
 } from "../lib/finish-questions.js";
 import { resolveRepo } from "../lib/git.js";
 import type { LlmCommandOptions } from "../lib/llm/cli-options.js";
+import type { LlmProviderId } from "../lib/llm/types.js";
 import {
   cleanQuestionAnalyses,
   flattenQuestions,
@@ -24,6 +25,7 @@ import {
   prepareQuestionsJsonSchema,
   prepareReasonsJsonSchema,
   prepareTechnologiesJsonSchema,
+  type QuestionAnalyses,
   type Signal,
 } from "../lib/model.js";
 import { chatJson } from "../lib/ollama.js";
@@ -84,6 +86,106 @@ function latestReport(reportsDir: string): { file: string; record: ReportRecord 
     file,
     record: JSON.parse(fs.readFileSync(path.join(reportsDir, file), "utf8")) as ReportRecord,
   };
+}
+
+interface PrepareQuestionsRoundInput {
+  providerId: LlmProviderId;
+  baseUrl: string;
+  model: string;
+  projectBlock: string;
+  history: string;
+  signalReasonTexts: string[];
+  reportModel: ReportRecord["model"];
+  priorQa: ReturnType<typeof resolveFinishQa>;
+  tracker: TokenUsageTracker;
+  repoPath: string;
+  period?: string;
+  reportId: number;
+  sourceReportFile: string;
+}
+
+async function buildPrepareQuestionsRound(input: PrepareQuestionsRoundInput): Promise<{
+  questionsAnalyses: QuestionAnalyses[];
+  questions: string[];
+  confidence?: string;
+  questionsPath: string;
+}> {
+  const {
+    providerId,
+    baseUrl,
+    model,
+    projectBlock,
+    history,
+    signalReasonTexts,
+    reportModel,
+    priorQa,
+    tracker,
+    repoPath,
+    period,
+    reportId,
+    sourceReportFile,
+  } = input;
+
+  process.stdout.write("   [4/5] reframe open questions → 4 ... ");
+  const reframed = (await chatJson({
+    provider: providerId,
+    baseUrl,
+    model,
+    system: withProjectContext(projectBlock, PREPARE_QUESTIONS_SYSTEM),
+    user: buildPrepareQuestionsPrompt(
+      history,
+      signalReasonTexts,
+      reportModel.questionsAnalyses,
+      reportModel.signalReasons,
+      priorQa,
+    ),
+    schema: prepareQuestionsJsonSchema(),
+    tracker,
+  })) as { questionsAnalyses?: unknown; confidence?: string };
+  let questionsAnalyses = enrichQuestionCards(
+    resolvePrepareQuestionProvenanceFromLlm(
+      cleanQuestionAnalyses(reframed.questionsAnalyses).slice(0, 4),
+      reportModel.questionsAnalyses,
+      reportModelToSignalReasonArrays(reportModel.signalReasons),
+    ),
+  );
+  console.log(`ok (${flattenQuestions(questionsAnalyses).length})`);
+
+  process.stdout.write("   [5/5] polish question evidence ... ");
+  try {
+    questionsAnalyses = await polishEvidenceExcerptsWithLlm({
+      threads: questionsAnalyses,
+      provider: providerId,
+      baseUrl,
+      model,
+      projectBlock,
+      tracker,
+    });
+    console.log("ok");
+  } catch (err) {
+    console.log(`skipped (${err instanceof Error ? err.message : "llm failed"})`);
+  }
+
+  const questions = flattenQuestions(questionsAnalyses);
+  const finishDir = repoFinishDir(repoPath, period);
+  const questionsPath = path.join(finishDir, finishQuestionsJsonFileName(reportId, 1));
+  fs.mkdirSync(finishDir, { recursive: true });
+  if (!fs.existsSync(questionsPath)) {
+    writeFinishQuestions(
+      questionsPath,
+      createFinishQuestions(
+        questions,
+        {
+          sourceFinal: finishJsonFileName(reportId, 1),
+          sourceReport: sourceReportFile,
+        },
+        Date.now(),
+        questionsAnalyses,
+      ),
+    );
+  }
+
+  return { questionsAnalyses, questions, confidence: reframed.confidence, questionsPath };
 }
 
 /**
@@ -195,8 +297,6 @@ export async function prepare(options: PrepareOptions): Promise<void> {
     const signalReasonTexts = signalReasonArrayTexts(signalReasonsProvenance);
     console.log(`ok (${signalReasonTexts.length})`);
 
-    // Step 5 — reframe role-aware questionsAnalyses + confidence.
-    process.stdout.write("   [4/5] reframe open questions → 4 ... ");
     const priorFinish = latestFinish(repoFinishDir(repoPath, options.period));
     const priorQa = priorFinish
       ? resolveFinishQa(
@@ -205,64 +305,22 @@ export async function prepare(options: PrepareOptions): Promise<void> {
           priorFinish.file,
         )
       : [];
-    const reframed = (await chatJson({
-      provider: providerId,
-      baseUrl,
-      model,
-      system: withProjectContext(projectBlock, PREPARE_QUESTIONS_SYSTEM),
-      user: buildPrepareQuestionsPrompt(
-        history,
-        signalReasonTexts,
-        m.questionsAnalyses,
-        m.signalReasons,
-        priorQa,
-      ),
-      schema: prepareQuestionsJsonSchema(),
-      tracker,
-    })) as { questionsAnalyses?: unknown; confidence?: string };
-    let questionsAnalyses = enrichQuestionCards(
-      resolvePrepareQuestionProvenanceFromLlm(
-        cleanQuestionAnalyses(reframed.questionsAnalyses).slice(0, 4),
-        m.questionsAnalyses,
-        reportModelToSignalReasonArrays(m.signalReasons),
-      ),
-    );
-    console.log(`ok (${flattenQuestions(questionsAnalyses).length})`);
-
-    process.stdout.write("   [5/5] polish question evidence ... ");
-    try {
-      questionsAnalyses = await polishEvidenceExcerptsWithLlm({
-        threads: questionsAnalyses,
-        provider: providerId,
+    const { questionsAnalyses, questions, confidence, questionsPath } =
+      await buildPrepareQuestionsRound({
+        providerId,
         baseUrl,
         model,
         projectBlock,
+        history,
+        signalReasonTexts,
+        reportModel: m,
+        priorQa,
         tracker,
+        repoPath,
+        period: options.period,
+        reportId: report.reportId,
+        sourceReportFile: latest.file,
       });
-      console.log("ok");
-    } catch (err) {
-      console.log(`skipped (${err instanceof Error ? err.message : "llm failed"})`);
-    }
-
-    const questions = flattenQuestions(questionsAnalyses);
-
-    const finishDir = repoFinishDir(repoPath, options.period);
-    const questionsPath = path.join(finishDir, finishQuestionsJsonFileName(report.reportId, 1));
-    fs.mkdirSync(finishDir, { recursive: true });
-    if (!fs.existsSync(questionsPath)) {
-      writeFinishQuestions(
-        questionsPath,
-        createFinishQuestions(
-          questions,
-          {
-            sourceFinal: finishJsonFileName(report.reportId, 1),
-            sourceReport: latest.file,
-          },
-          Date.now(),
-          questionsAnalyses,
-        ),
-      );
-    }
 
     const model_: PreparedModelLayer = {
       changeTypes: m.changeTypes,
@@ -271,7 +329,7 @@ export async function prepare(options: PrepareOptions): Promise<void> {
       architectureSignal: m.architectureSignal,
       securitySignal: m.securitySignal,
       signalReasons: signalReasonsProvenance,
-      confidence: (reframed.confidence as Signal) ?? m.confidence,
+      confidence: (confidence as Signal) ?? m.confidence,
       history,
       provenance: { model, generatedAt, sourceReport: latest.file },
     };

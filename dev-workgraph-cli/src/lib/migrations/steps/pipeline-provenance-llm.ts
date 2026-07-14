@@ -3,6 +3,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import {
+  legacyPreparedQuestionAnalyses,
+  withLegacyPreparedQuestionAnalyses,
+} from "../../legacy-prepared.js";
 import type { QuestionAnalyses } from "../../model.js";
 import { migrateLineageJsonSchema } from "../../model.js";
 import { chatJson } from "../../ollama.js";
@@ -155,7 +159,7 @@ async function backfillPreparedArtifact(
 ): Promise<boolean> {
   const rel = relArtifactPath(filePath, ctx.dataRoot);
   const prepared = readRecordJson(filePath) as unknown as PreparedRecord;
-  const threads = prepared.model.questionsAnalyses ?? [];
+  const threads = legacyPreparedQuestionAnalyses(prepared);
   if (threads.length === 0) {
     logLlmBackfillSkip("no questionsAnalyses on prepared");
     return false;
@@ -177,10 +181,7 @@ async function backfillPreparedArtifact(
     return false;
   }
 
-  const next: PreparedRecord = {
-    ...prepared,
-    model: { ...prepared.model, questionsAnalyses: repairedThreads },
-  };
+  const next = withLegacyPreparedQuestionAnalyses(prepared, repairedThreads);
   writeMigratedRecord(filePath, next as unknown as Record<string, unknown>, ctx.dryRun);
   console.log(`  wrote ${rel}`);
   return true;

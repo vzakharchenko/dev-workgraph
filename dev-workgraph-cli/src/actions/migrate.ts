@@ -27,9 +27,8 @@ export async function migrate(options: MigrateOptions): Promise<void> {
     backup: options.backup,
   });
 
-  console.log(
-    `Migrating pipeline artifacts for ${repoPath}${options.period ? ` (${options.period})` : ""}…`,
-  );
+  const periodSuffix = options.period ? ` (${options.period})` : "";
+  console.log(`Migrating pipeline artifacts for ${repoPath}${periodSuffix}…`);
   if (options.dryRun) console.log("(dry run — no files will be written)");
   if (options.skipLlm) console.log("(skip LLM — structural migration only)");
 

@@ -64,11 +64,6 @@ export interface PreparedModelLayer {
   architectureSignal: Signal;
   securitySignal: Signal;
   signalReasons: SignalReasonProvenance[] | string[];
-  /**
-   * @deprecated Question cards are stored on finish `*.question.json` (schema ≥ 1.0.6).
-   * Legacy prepared files may still carry this field; readers fall back when needed.
-   */
-  questionsAnalyses?: QuestionAnalyses[];
   confidence: Signal;
   history: string;
   provenance: {
@@ -89,13 +84,6 @@ export interface PreparedRecord {
   sourceReport: string;
   groupCount: number;
   model: PreparedModelLayer;
-  /**
-   * @deprecated Answers live on the finish archive + `<finish>.question.json`.
-   * Legacy prepared files may still carry this field; readers ignore it.
-   */
-  answers?: { question: string; answer: string }[];
-  /** @deprecated Use finish archive timestamps instead. */
-  answeredAt?: string;
 }
 
 /**
@@ -132,8 +120,6 @@ export interface FinishRecord {
    * `1` = initial `final` (`<preparedId>.json`); `2+` = `<preparedId>.vN.json` from `deepen`.
    */
   version: number;
-  /** @deprecated Use `version`. Kept when reading legacy archives. */
-  round?: number;
   /**
    * Non-code context the developer recalled during this `deepen` round — team decisions,
    * constraints, handoffs, pivots, meetings, why something mattered; not visible in Git.

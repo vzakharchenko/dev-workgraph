@@ -5,6 +5,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { finishJsonFileName, finishQuestionsJsonFileName } from "../../finish-load.js";
 import { createFinishQuestions, questionAnalysesForRecord } from "../../finish-questions.js";
+import {
+  legacyPreparedQuestionAnalyses,
+  stripLegacyPreparedQuestionAnalyses,
+} from "../../legacy-prepared.js";
 import { flattenQuestions } from "../../model.js";
 import { finishQuestionProvenance } from "../../question-provenance.js";
 import type { FinishQuestionsRecord, PreparedRecord } from "../../records.js";
@@ -22,7 +26,7 @@ function movePreparedAnalysesToFinishQuestions(
   prepared: PreparedRecord,
   ctx: MigrationContext,
 ): void {
-  const analyses = prepared.model.questionsAnalyses;
+  const analyses = legacyPreparedQuestionAnalyses(prepared);
   if (!analyses?.length) return;
 
   const questionsPath = path.join(
@@ -62,8 +66,7 @@ function movePreparedAnalysesToFinishQuestions(
 }
 
 function stripPreparedAnalyses(prepared: PreparedRecord): PreparedRecord {
-  const { questionsAnalyses: _removed, ...model } = prepared.model;
-  return { ...prepared, model };
+  return stripLegacyPreparedQuestionAnalyses(prepared);
 }
 
 function migratePreparedRecord(record: PreparedRecord, ctx: MigrationContext): PreparedRecord {

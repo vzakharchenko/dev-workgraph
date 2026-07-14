@@ -43,7 +43,7 @@ export function listJsonFiles(dir: string): string[] {
     .readdirSync(dir)
     .filter((f) => f.endsWith(".json"))
     .map((f) => path.join(dir, f))
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
 }
 
 export function listFinishQuestionFiles(finishDir: string): string[] {

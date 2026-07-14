@@ -189,10 +189,9 @@ export function attachGroupQuestionProvenance(
       groupThreadIndex,
       sourceGroupId: groupId,
       sourceGroupIds,
-      sourceCommits:
-        parallel.sourceCommits.filter(Boolean).length > 0
-          ? parallel.sourceCommits
-          : fallbackCommits,
+      sourceCommits: parallel.sourceCommits.some(Boolean)
+        ? parallel.sourceCommits
+        : fallbackCommits,
       sourceSummaries: parallel.sourceSummaries,
     };
   });
