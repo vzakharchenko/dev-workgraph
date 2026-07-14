@@ -11,6 +11,8 @@
 
 [![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=vzakharchenko_dev-workgraph&metric=ncloc)](https://sonarcloud.io/summary/new_code?id=vzakharchenko_dev-workgraph)
 
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/051417cf0fa44ea3a302ea8d652a9812)](https://app.codacy.com/gh/vzakharchenko/dev-workgraph/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
+
 
 [![REUSE status](https://api.reuse.software/badge/github.com/vzakharchenko/dev-workgraph)](https://api.reuse.software/info/github.com/vzakharchenko/dev-workgraph)
 
