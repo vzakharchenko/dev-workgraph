@@ -136,6 +136,11 @@ function repoRoot(repoPath: string, period?: string): string {
   return period ? path.join(base, "periods", period) : base;
 }
 
+/** Root of a repository's on-disk workgraph data (optionally period-scoped). */
+export function repoDataRoot(repoPath: string, period?: string): string {
+  return repoRoot(repoPath, period);
+}
+
 /**
  * Absolute path to a repository's exported-commits directory
  * (`~/.workgraph/data/repos/<repo-id>[/periods/<period>]/commits`). Data is

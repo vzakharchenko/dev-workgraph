@@ -21,9 +21,11 @@ import {
   createFinishQuestions,
   loadFinishQuestions,
   normalizeFinishAnswers,
+  questionAnalysesForRecord,
   questionsNotYetAnswered,
   readFinishAnswersFile,
   resolveAnswersToQa,
+  resolveRoundQuestionAnalyses,
   writeFinishQuestions,
 } from "../lib/finish-questions.js";
 import { resolveRepo } from "../lib/git.js";
@@ -33,6 +35,7 @@ import {
   cvBulletsJsonSchema,
   flattenQuestions,
   groupHistoryJsonSchema,
+  type QuestionAnalyses,
   roleNarrativeJsonSchema,
 } from "../lib/model.js";
 import { chatJson } from "../lib/ollama.js";
@@ -56,6 +59,7 @@ import type {
   PreparedRecord,
 } from "../lib/records.js";
 import { resolveLlmSlot } from "../lib/select.js";
+import { signalReasonArrayTexts } from "../lib/signal-reason-provenance.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
@@ -132,14 +136,25 @@ function ensureQuestionsRecord(
   prepared: PreparedRecord,
   isExtension: boolean,
   questionsToAsk: string[],
-  preparedQuestions: string[],
+  roundAnalyses: QuestionAnalyses[],
 ): FinishQuestionsRecord {
-  if (fs.existsSync(questionsPath)) return loadFinishQuestions(questionsPath);
-  const texts = isExtension ? questionsToAsk : preparedQuestions;
-  const questionsRecord = createFinishQuestions(texts, {
-    sourceFinal: archive.jsonFile,
-    sourceReport: prepared.sourceReport,
-  });
+  if (fs.existsSync(questionsPath)) {
+    const existing = loadFinishQuestions(questionsPath);
+    if (existing.questionsAnalyses?.length || !isExtension) return existing;
+  }
+  const texts = isExtension ? questionsToAsk : flattenQuestions(roundAnalyses).slice(0, 4);
+  const analysesForRound = isExtension
+    ? roundAnalyses.filter((thread) => thread.question.some((q) => questionsToAsk.includes(q)))
+    : roundAnalyses.slice(0, 4);
+  const questionsRecord = createFinishQuestions(
+    texts,
+    {
+      sourceFinal: archive.jsonFile,
+      sourceReport: prepared.sourceReport,
+    },
+    Date.now(),
+    analysesForRound,
+  );
   fs.mkdirSync(finishDir, { recursive: true });
   writeFinishQuestions(questionsPath, questionsRecord);
   return questionsRecord;
@@ -182,7 +197,12 @@ async function collectRoundAnswers(
     return [];
   }
   console.log("\nAnswer the questions:");
-  return collectFinishAnswers(questionsRecord.questions, inquirer.prompt);
+  return collectFinishAnswers(
+    questionsRecord.questions,
+    inquirer.prompt,
+    questionAnalysesForRecord(questionsRecord),
+    questionsRecord,
+  );
 }
 
 interface FinalNarratives {
@@ -238,7 +258,11 @@ async function generateFinalNarratives(input: FinalNarrativeInput): Promise<Fina
     baseUrl,
     model,
     system: withProjectContext(projectBlock, ROLE_NARRATIVE_SYSTEM),
-    user: buildRoleNarrativePrompt(impactHistory, prepared.model.signalReasons, qa),
+    user: buildRoleNarrativePrompt(
+      impactHistory,
+      signalReasonArrayTexts(prepared.model.signalReasons),
+      qa,
+    ),
     schema: roleNarrativeJsonSchema(),
     tracker,
   })) as { narrative?: unknown };
@@ -254,7 +278,7 @@ async function generateFinalNarratives(input: FinalNarrativeInput): Promise<Fina
     user: buildCvBulletsPrompt(
       project.role,
       impactHistory,
-      prepared.model.signalReasons,
+      signalReasonArrayTexts(prepared.model.signalReasons),
       qa,
       narrative,
     ),
@@ -311,6 +335,7 @@ interface FinalPreparedState {
   questionsPath: string;
   finishJsonPath: string;
   preparedQuestions: string[];
+  preparedAnalyses: QuestionAnalyses[];
   questionsToAsk: string[];
   priorQa: { question: string; answer: string }[];
 }
@@ -384,7 +409,13 @@ function prepareFinalPreparedState(
   const isExtension = isFinalExtension(latest.file, priorFinish);
   const archive =
     isExtension && priorFinish ? resolveFinishArchive(priorFinish) : initialFinishArchive(prepared);
-  const preparedQuestions = flattenQuestions(prepared.model.questionsAnalyses).slice(0, 4);
+  const roundAnalyses = resolveRoundQuestionAnalyses(
+    finishDir,
+    archive.baseFinishId,
+    archive.version,
+    prepared,
+  );
+  const preparedQuestions = flattenQuestions(roundAnalyses);
   const priorQa = resolvePriorQa(isExtension, priorFinish, finishDir, archive);
   const questionsToAsk = isExtension
     ? questionsNotYetAnswered(preparedQuestions, priorQa)
@@ -400,6 +431,7 @@ function prepareFinalPreparedState(
     ),
     finishJsonPath: path.join(finishDir, archive.jsonFile),
     preparedQuestions,
+    preparedAnalyses: roundAnalyses,
     questionsToAsk,
     priorQa,
   };
@@ -500,7 +532,6 @@ function buildFinishRecord(input: {
     sourceQuestions,
     ...(isExtension && priorFinish ? { sourcePreviousFinish: priorFinish.file } : {}),
     version: archive.version,
-    round: archive.version,
     project: path.basename(repoPath),
     role: project.role,
     technologies: prepared.model.technologies,
@@ -556,7 +587,7 @@ export async function final(options: FinalOptions): Promise<void> {
     prepared,
     state.isExtension,
     state.questionsToAsk,
-    state.preparedQuestions,
+    state.preparedAnalyses,
   );
 
   const roundAnswers = await resolveFinalRoundAnswers(options, state, questionsRecord);

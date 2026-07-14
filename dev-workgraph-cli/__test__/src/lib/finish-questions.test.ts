@@ -16,15 +16,25 @@ import {
 import type { FinishRecord } from "../../../src/lib/records.js";
 
 describe("finish-questions", () => {
-  it("creates questions with unique timestamp ids", () => {
-    const record = createFinishQuestions(["Q1", "Q2"], {
-      sourceFinal: "1700000000.json",
-      sourceReport: "1700000000.json",
-    }, 1_700_000_000_000);
+  it("creates questions with unique timestamp ids and analyses", () => {
+    const analyses = [
+      { observation: ["o1"], missingPiece: ["m1"], question: ["Q1"] },
+      { observation: ["o2"], missingPiece: ["m2"], question: ["Q2"] },
+    ];
+    const record = createFinishQuestions(
+      ["Q1", "Q2"],
+      {
+        sourceFinal: "1700000000.json",
+        sourceReport: "1700000000.json",
+      },
+      1_700_000_000_000,
+      analyses,
+    );
     expect(record.questions).toEqual([
-      { id: "1700000000000", question: "Q1" },
-      { id: "1700000000001", question: "Q2" },
+      expect.objectContaining({ id: "1700000000000", question: "Q1", threadIndex: 0 }),
+      expect.objectContaining({ id: "1700000000001", question: "Q2", threadIndex: 1 }),
     ]);
+    expect(record.questionsAnalyses).toEqual(analyses);
   });
 
   it("names question files like finish archives", () => {

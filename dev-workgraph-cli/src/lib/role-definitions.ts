@@ -463,7 +463,8 @@ export function roleDefinitionPromptBlock(role: string): string {
     `ROLE DEFINITION (${d.matrixLevel}):`,
     d.levelSummary,
     `Impact sphere: ${d.shortSummary}`,
-    `Open questions should probe: ${d.questionEmphasis}`,
+    `Prefer question topics about: ${d.questionEmphasis}`,
+    "Do not address the developer by role title in questions or use performance-review tone.",
     `Narrative/CV emphasis: ${d.cvEmphasis}`,
     `Do NOT claim unless confirmed in human answers: ${d.doNotClaim}`,
   ].join("\n");

@@ -212,8 +212,9 @@ Unknown role strings (legacy or typo) fall back to generic seniority-safe emphas
 
 | Calibrated by role | Not calibrated by role |
 |--------------------|-------------------------|
-| `questionsAnalysis` at commit level; `questionsAnalyses` at group/report/prepare/deepen | `summary` text — must describe **what the patch changed**, not importance |
+| `questionsAnalysis` at commit level; `questionsAnalyses` at group/report | `summary` text — must describe **what the patch changed**, not importance |
 | Question ranking and reframing in report merge / prepare | Signal **levels** (`technical` / `architecture` / `security`) — grounded in the patch only |
+| `signalReasons` provenance (`sourceGroupIds`, `sourceCommits`) from group onward | Commit-level plain-string `signalReasons` (no provenance object) |
 | `final` / `deepen` role narrative and CV bullets (when human answers exist) | Inventing production usage, ownership, or customer impact |
 
 The system must **never** use role to inflate impact or imply promotion-worthy achievements. Role shapes *which gaps to ask about* and *how to phrase confirmed work*, not *how impressive the diff sounds*.
@@ -324,12 +325,12 @@ Every **pipeline JSON artifact** the CLI writes carries a numeric **`schemaVersi
 schemaVersion = major × 1_000_000 + minor × 1_000 + patch
 ```
 
-Examples: `1.0.0` → `1000000`, `1.2.3` → `1002003`.
+Examples: `1.0.0` → `1000000`, `1.0.5` → `1000005`, `1.0.6` → `1000006`, `1.2.3` → `1002003`.
 
 At **`npm run build`** (and before `test` / `typecheck` / `dev`), `scripts/generate-version.ts` reads `package.json` and writes `src/lib/version.ts`:
 
 ```ts
-export const VERSION = 1000000;
+export const VERSION = 1000006;
 ```
 
 Every write path uses `writeRecordJson()` → `stampSchemaVersion()`, which sets `schemaVersion: VERSION` on the object immediately before `JSON.stringify`.
@@ -358,7 +359,15 @@ Re-writing an existing file (e.g. re-running `final` on the same finish version)
 
 * **Readers** treat a missing `schemaVersion` as a **legacy** file written before this field existed; the current CLI continues to load it.
 * **Writers** always stamp the current encoded semver on new output.
-* A future CLI may refuse to read records with `schemaVersion` below a minimum, or run explicit migrations; the field exists for that path.
+* **`dev-workgraph migrate [repo]`** runs explicit on-disk migrations (structural rewrites + optional LLM backfill). Lazy migration also runs when an artifact is loaded and its `schemaVersion` is below the current CLI.
+* Readers accept legacy shapes (plain-string `signalReasons`, `questionsAnalyses` on `prepared/`) and normalize in memory where needed.
+
+### Schema changelog (signals & questions)
+
+| CLI semver | `schemaVersion` | What changed |
+|------------|-----------------|--------------|
+| **1.0.5** | `1000005` | **Signal reason provenance** — group `signalReasons` and report `signalReasons[]` become `{ text, sourceGroupIds, sourceCommits? }` objects (commit summaries stay plain strings). **Question provenance** — CLI-attached lineage on `questionsAnalyses` (`threadId`, `sourceGroupIds`, `sourceCommits`, …). **Prepare/deepen lineage refs** — LLM may emit `derivedFromThreadIds`, `derivedFromReportSignalRefs`, `derivedFromPreparedSignalSlots`; code resolves `lineageKind` (`report-thread` \| `signal-reason`). Migration step `pipeline-provenance` + optional LLM backfill for prepared threads missing refs. |
+| **1.0.6** | `1000006` | **Question storage split** — canonical `questionsAnalyses` (+ cards) move from `prepared/<id>.json` to `finish/<id>.question.json` (written at `prepare`; `final` / `deepen` read from there). Prepared keeps `signalReasons` (four provenance slots), `history`, signals — **not** `questionsAnalyses`. Migration step `finish-questions-analyses` copies legacy prepared analyses onto the finish question file and strips them from prepared. |
 
 ⸻
 
@@ -764,7 +773,7 @@ After export and per-commit summarize, the system groups commits into **work ses
 
 | Layer | Customizable? | Responsibility |
 |-------|---------------|----------------|
-| **Strategy** | **Yes** | `init` (prompts, persisted settings) + `partition` → `buckets[]` with `{ members: CommitRecord[], fileKey: string }` |
+| **Strategy** | **Yes** | `gatherRunInputs` (prompts during `run` gathering + standalone `commit-group`) + `init` (maps gathered CLI → params) + `partition` → `buckets[]` with `{ members: CommitRecord[], fileKey: string }` |
 | **Action runner** | **No** | `buildGroupRecord`, classify/compose LLM, `GroupRecord` schema, skip when `model` already exists |
 | **`report`** | **No** | Reads `groups/*.json` regardless of how buckets were formed |
 
@@ -776,7 +785,7 @@ After export and per-commit summarize, the system groups commits into **work ses
 * Strategy-owned flags are registered via each strategy's `cliOptions` + `pickCliOptions` (day-gap: `--days`, `--max-commits`).
 * Runner flags: `--limit`, `--period` (unchanged).
 
-**`run`:** when more than one strategy is registered, the gathering phase prompts for strategy (or reuses saved `commitGroupStrategy` in repo config). Strategy-specific prompts (e.g. day-gap thresholds) run inside `strategy.init` at the `commit-group` step — not during `run` gathering.
+**`run`:** when more than one strategy is registered, the gathering phase prompts for strategy (or reuses saved `commitGroupStrategy` in repo config). Strategy-specific setup (e.g. day-gap thresholds) runs via **`strategy.gatherRunInputs`** during `run` gathering — saved repo values are reused without prompting (`skipPromptIfSaved`); otherwise the strategy prompts and persists. The gathered `strategyCli` is passed to `commit-group`; **`init`** delegates to the same `gatherRunInputs` helper (no second prompt when values were already gathered or passed via CLI flags).
 
 **Adding a strategy:** implement `CommitGroupStrategy`, append to `COMMIT_GROUP_STRATEGIES`. Optional reuse of `grouping.ts` helpers (`groupByGap`, `extensionSessions`, `coveredCommitHashes`). See [`ARCHITECTURE.md`](ARCHITECTURE.md) — *Extending commit-group strategies*.
 
@@ -786,7 +795,7 @@ Groups commits **chronologically** by quiet-period gap and optional per-group si
 
 #### Grouping thresholds (day-gap)
 
-Before partitioning, the day-gap strategy asks two values (unless skipped by CLI flags), persisted per repository in `~/.workgraph/config.json`:
+Before partitioning, the day-gap strategy asks two values via `gatherRunInputs` (unless skipped by CLI flags or saved repo config during `run`), persisted per repository in `~/.workgraph/config.json`:
 
 * **`groupThresholdDays`** — max days that may pass between consecutive commits before starting a new group.
 * **`groupMaxCommits`** — max commits per group (`0` = unlimited), so very long bursts are split into bounded sessions.
@@ -985,9 +994,20 @@ Group summarize is append-only: groups that already have a `model` layer are ski
     "architectureSignal": "medium",
     "securitySignal": "low",
     "signalReasons": {
-      "technical": "Spans build/deploy scripting and backend packaging across multiple files.",
-      "architecture": "Touches deployment boundary and how the backend ships.",
-      "security": "No auth/identity/data-protection code in the substantive commits."
+      "technical": {
+        "text": "Spans build/deploy scripting and backend packaging across multiple files.",
+        "sourceGroupIds": [1616396106],
+        "sourceCommits": ["abc12345...", "def67890..."]
+      },
+      "architecture": {
+        "text": "Touches deployment boundary and how the backend ships.",
+        "sourceGroupIds": [1616396106],
+        "sourceCommits": ["abc12345..."]
+      },
+      "security": {
+        "text": "No auth/identity/data-protection code in the substantive commits.",
+        "sourceGroupIds": [1616396106]
+      }
     },
     "hiContext": ["Added backend deploy scripting and packaging, and adjusted the server entrypoint"],
     "mediumContext": ["Reworked how the backend artifact is assembled"],
@@ -999,7 +1019,12 @@ Group summarize is append-only: groups that already have a `model` layer are ski
           "Adjusted the server entrypoint to match the new layout."
         ],
         "missingPiece": ["Unclear whether this deployment path was used in production or only experimentally."],
-        "question": ["Was the deployment work used in production or experimental?"]
+        "question": ["Was the deployment work used in production or experimental?"],
+        "threadId": "1616396106000000",
+        "groupThreadIndex": 0,
+        "sourceGroupId": 1616396106,
+        "sourceGroupIds": [1616396106],
+        "sourceCommits": ["abc12345...", "def67890..."]
       },
       {
         "observation": ["Made a small fix to the docker-radius startup script."],
@@ -1050,7 +1075,7 @@ For every group:
 4. **Partition signal tiers** — compute the deterministic `groups.tiers` (`low` / `medium` / `hi`) from per-commit model signals.
 5. **Session 1 — classify** — send the group deterministic layer, the tier-annotated member commits, and the `groups.tiers` reference to the local model backend; get session signals + the three context-bullet arrays.
 6. **Session 2 — compose** — send the classification + the per-commit summaries grouped by tier; get the merged first-person `history`.
-7. **Write the model layer** — assemble session-1 fields + session-2 `history` + `provenance`.
+7. **Write the model layer** — assemble session-1 fields + session-2 `history` + `provenance`; attach **question provenance** to `questionsAnalyses` via `attachGroupQuestionProvenance` (§7).
 8. **Persist** the group JSON to `~/.workgraph/data/repos/<repo-id>/groups/<fileKey>.json` (day-gap: `fileKey` = last commit timestamp).
 
 The deterministic layer, `groups.commits`, and `groups.tiers` must always be produced. The model layer is best-effort: if the local model is unavailable or fails on either session, the group is still saved with `model: null`, and the report counts it as "not summarized."
@@ -1065,7 +1090,76 @@ Git history cannot explain business context, ownership, or impact. The system's 
 
 Questions are **role-aware** (§0): the same patch may prompt a Principal Developer about org-wide rollout consequences and a Junior Developer about whether the task was assigned or self-initiated. Project profile and prepared story context prevent asking about facts the user already provided at `init`.
 
-Each question is backed by a **reasoned analysis** so it is traceable, not a bare prompt. At commit level this is `questionsAnalysis` — `{ observation, missingPiece, question }`: the diff evidence that triggered the question, the human context it cannot establish, and the question itself (§3). At group and report level the same structure is **aggregated** into `questionsAnalyses` (array-valued fields), so open threads are merged and re-folded as work accumulates (§4, §8). At **`prepare`** the report's `questionsAnalyses` are reframed into up to four role-aware entries; **`final`** and **`deepen`** present the `question` strings to the human (derived in code via `flattenQuestions()`). There is **no** redundant flat `questions` field stored at any pipeline stage.
+Each question is backed by a **reasoned analysis** so it is traceable, not a bare prompt. At commit level this is `questionsAnalysis` — `{ observation, missingPiece, question }`: the diff evidence that triggered the question, the human context it cannot establish, and the question itself (§3). At group and report level the same structure is **aggregated** into `questionsAnalyses` (array-valued fields), so open threads are merged and re-folded as work accumulates (§4, §8). At **`prepare`** the report's `questionsAnalyses` are reframed into up to four role-aware entries and written to **`finish/<preparedId>.question.json`** (with full analyses + cards — not on the prepared record since schema **1.0.6**). **`final`** and **`deepen`** present the `question` strings to the human (derived in code via `flattenQuestions()` from the finish question file). There is **no** redundant flat `questions` field stored at any pipeline stage.
+
+### Signal reason provenance (schema ≥ 1.0.5)
+
+Commit summaries keep **plain-string** `signalReasons.{technical,architecture,security}` (one line per dimension). From **group** level onward, each non-empty reason carries CLI-attached provenance:
+
+```json
+{
+  "text": "Touches deployment boundary and how the backend ships.",
+  "sourceGroupIds": [1616396106],
+  "sourceCommits": ["abc12345...", "def67890..."]
+}
+```
+
+| Stage | `signalReasons` shape | Provenance behavior |
+|-------|----------------------|---------------------|
+| **Commit** (`summaries/…`) | `{ technical, architecture, security }` strings | None (model output only) |
+| **Group** (`groups/…`) | Same three keys, each a string **or** provenance object | On write/migrate: `sourceGroupIds: [groupId]`; `sourceCommits` = member commits whose per-commit reason on that dimension is non-empty |
+| **Report** (`reports/…`) | `{ technical: [], architecture: [], security: [] }` arrays | Each array entry is a provenance object. **`report` fold** merges near-duplicate reasons (word overlap ≥ `0.32`) and **unions** `sourceGroupIds` / `sourceCommits` |
+| **Prepared** (`prepared/…`) | **Exactly four** provenance slots (flat array) | LLM collapses report arrays to four role-aware reason strings (step 5); slots hold `text` only until prepare/deepen lineage resolution fills `sourceGroupIds` from linked questions |
+
+Readers accept legacy plain strings and normalize via `normalizeSignalReason()`.
+
+### Question provenance (code-side traceability)
+
+Each `questionsAnalyses` entry may carry **CLI-attached lineage fields** (not model output) so open threads stay traceable as they merge across pipeline stages. Provenance uses **group ids and commit hashes**, not file names inside ids.
+
+| Field | When attached | Meaning |
+|-------|---------------|---------|
+| **`threadId`** | `commit-group`, each report fold, `prepare` | Opaque numeric string: `String(checkpointId × 1_000_000 + index)`. At group level `checkpointId` is the group `timestampEnd`; after each report fold it becomes that fold's `reportId` (same as the report file stem). **The prefix is a report checkpoint label, not a claim that the question text comes from that group file alone.** |
+| **`groupThreadIndex`** | `commit-group`, report seed | Position of the thread within the group's `questionsAnalyses` (0-based). |
+| **`threadIndex`** | `prepare`, `final` | Position among the up-to-four prepared/final cards (0..3). |
+| **`derivedFromThreadIds`** | report merge, `prepare` reframe | Parent `threadId` values this entry was derived from when threads were merged (LLM fold or prepare reframe). Traces **evolution through merges** — read together with `sourceGroupIds`, not by opening a single group file matching the prefix. |
+| **`sourceGroupIds`** | group → report → prepare | **Cumulative union** of every work-session group id that contributed provenance along this thread's lineage (grows on each report fold). |
+| **`sourceGroupId`** | union heuristic | Optional single id. **Do not treat as the primary semantic source** — it is the last id in a union heuristic and may lag behind the latest fold. Prefer `sourceGroupIds` for breadth. |
+| **`sourceCommits`** | `commit-group` classify | Per-thread commit hashes attached via word-overlap against member summaries / `questionsAnalysis` (threshold 0.32). Best-effort, not exhaustive. |
+| **`sourceSummaries`** | `commit-group` classify | Parallel to `observation` lines when a commit match is found (summary file paths). |
+| **`derivedFromReportSignalRefs`** | `prepare`, `deepen` reframe (LLM output) | `{ dimension, index }` pointers into the **report's** `signalReasons[dimension][index]` catalog — resolved code-side into `sourceGroupIds` / `sourceCommits`. |
+| **`derivedFromPreparedSignalSlots`** | `prepare`, `deepen` reframe (LLM output) | Indices `0..3` into prepared `signalReasons[]` when the question is driven by a collapsed reason slot. |
+| **`lineageKind`** | `prepare`, `deepen` (code-side) | `"report-thread"` when `derivedFromThreadIds` is present; `"signal-reason"` when only signal refs/slots link the card. |
+| **`derivedFromSignalReasonIndex`** | `prepare`, `deepen` (code-side) | Primary prepared slot (`0..3`) when `lineageKind` is `"signal-reason"`. |
+
+**How to read lineage:** a mega-question in the final report may list `derivedFromThreadIds` with prefix `1612735869` while `groups/1612735869.json` has `questionsAnalyses: []` — that group was only the **fold checkpoint** where prior report threads received new ids, not the sole semantic source. The observations and commits come from the **accumulated chain** in `sourceGroupIds` / `sourceCommits`. A prepared card with `lineageKind: "signal-reason"` traces back through report signal catalog entries, not only through merged question threads.
+
+Provenance is attached in code **after** LLM steps:
+
+* **`commit-group`** — `attachGroupQuestionProvenance` after classify (session 1).
+* **`report`** — `seedReportQuestionProvenance` on `init(group_1)`; `attachReportMergeProvenance` after each substantive model merge (matches output threads to prev + group inputs via text overlap). **`signalReasons` arrays** are folded deterministically (`foldGroupIntoReportReasons`) with the same overlap merge as reasons.
+* **`prepare` / `deepen`** — LLM emits `derivedFromThreadIds` / `derivedFromReportSignalRefs` / `derivedFromPreparedSignalSlots`; **`resolvePrepareQuestionProvenanceFromLlm`** unions thread + signal lineage (no text matching at this stage); then **`enrichQuestionCards`** + optional **`polishEvidenceExcerptsWithLlm`**. Reframed analyses are written to **`finish/*.question.json`**, not stored on `prepared/` (§9, schema ≥ 1.0.6).
+* **`final`** — `finishQuestionProvenance` copies lineage + cards onto each `FinishQuestion` in `finish/*.question.json` (analyses live on the same file as `questionsAnalyses[]`).
+
+Matching for merge lineage uses word overlap between thread text lines (≥ `0.32`); when several inputs score similarly, all near-top matches are unioned. This is **heuristic**, not a strict bijection.
+
+Diagram: [`uml/question-provenance.puml`](uml/question-provenance.puml).
+
+### Question cards (human-facing)
+
+Before interactive Q&A, **`prepare`** and **`deepen`** enrich each thread with two optional fields aimed at the developer (not stored at commit or raw group level until prepare):
+
+| Field | Source | Purpose |
+|-------|--------|---------|
+| **`evidenceExcerpt`** | Deterministic (`buildEvidenceExcerpt` from `observation[]` + commits), optional LLM polish (`polishEvidenceExcerptsWithLlm`) | **3–4 bullet lines** (`- …`) plus `Related commits:` — thread-specific, not group `hiContext` soup. Multiline in CLI. |
+| **`whyAsked`** | Deterministic (`buildWhyAsked` from `missingPiece`) | One neutral sentence: **what human context is missing** that Git cannot show. Must **not** imply a desirable answer, seniority, or interview framing. |
+| **`question`** | LLM on prepare/deepen (+ `normalizeQuestionText` post-process) | Role-calibrated by **topic** (which gap to close), not performance-review tone. Must **not** open with role title («As a Staff Developer…»), assume production/HA/enterprise unless evidence supports it, or coach toward a «strong» answer. Use conditional phrasing when scale is unknown. |
+
+**Question style rule:** calibrate by what you try to learn, not by telling the developer how to answer. Good question (vendor modules): *Were vendor modules designed as stable extension points, or added pragmatically for specific deployments?* Bad: *As a Staff Developer, how did you balance platform direction with enterprise customer requirements?*
+
+`prepare` console preview and **`final`** / **`deepen`** interactive collection print **Source / Evidence / Why asked / Question** before the editor when cards are present. The same fields are copied onto each entry in `finish/<finishId>.question.json` (and `.question.vN.json`) via `finishQuestionProvenance`.
+
+**Rule:** `whyAsked` explains the missing context, not the desirable answer. Example — good: *Git cannot establish whether version upgrades followed customer SLAs or an internal roadmap.* Bad: *This probes for Staff-level platform ownership.*
 
 Questions may be attached to:
 
@@ -1094,9 +1188,10 @@ Human answers are **not** persisted on the prepared record (`prepared/<reportId>
 
 | Piece | Where | What |
 |-------|--------|------|
-| **Question text** | `finish/<finishId>.question.json` (v1) or `finish/<finishId>.question.vN.json` (v2+) | Up to four `{ id, question }` entries per round; `id` = Unix-ms timestamp at creation |
+| **Question text + analyses** | `finish/<finishId>.question.json` (v1) or `finish/<finishId>.question.vN.json` (v2+) | Up to four `{ id, question }` entries per round (`id` = Unix-ms timestamp at creation); optional provenance/card fields per question; **`questionsAnalyses[]`** holds the full reasoned threads (canonical since schema **1.0.6**) |
 | **Answers** | `finish/<finishId>.json` (or `.vN.json`) | Cumulative `{ questionId, answer }[]` — references ids, does **not** repeat question text |
 | **Question rounds** | `sourceQuestions` on the finish archive | Map `{ "<finishId>": ["v1", "v2", …] }` — which question-file rounds exist; **not** file-name links |
+| **Prepared narrative** | `prepared/<reportId>.json` | `history`, signals, four collapsed **`signalReasons`** provenance slots — **no** `questionsAnalyses` on new writes (legacy files may still carry them until migrated) |
 
 **Version labels** (`v1`, `v2`, …) align with the finish-chain cursor:
 
@@ -1178,7 +1273,13 @@ Every intermediate report is written; the **final report** is the last in the ch
     "technicalSignal": "low | medium | high",
     "architectureSignal": "low | medium | high",
     "securitySignal": "low | medium | high",
-    "signalReasons": { "technical": [], "architecture": [], "security": [] },
+    "signalReasons": {
+      "technical": [
+        { "text": "...", "sourceGroupIds": [1579390000, 1591444361], "sourceCommits": ["abc..."] }
+      ],
+      "architecture": [],
+      "security": []
+    },
     "questionsAnalyses": [
       { "observation": [], "missingPiece": [], "question": [] }
     ],
@@ -1206,7 +1307,7 @@ Every intermediate report is written; the **final report** is the last in the ch
 Differences from a group record:
 
 * **No commit hashes.** Provenance is by group **file name**, not hashes. **`sourceGroups`** (report root, next to `deterministic` and `model`) is the cumulative list of every group file folded so far (including routine-only folds). **`deterministic.historySource`** is **parallel to `history`** — same length, same indices (`0 … MAX_HISTORY_ENTRIES − 1`): `history[i]` is the narrative text; `historySource[i]` lists the group files that contributed to that entry. Cumulative provenance stays at the root; per-entry provenance stays in the deterministic layer; `history` carries text only.
-* **Signals stay single** `low/medium/high` (the **max** across folded groups), but **`signalReasons` are arrays** (the merged, deduped reasons from all folded groups).
+* **Signals stay single** `low/medium/high` (the **max** across folded groups), but **`signalReasons` are arrays of provenance objects** `{ text, sourceGroupIds, sourceCommits? }` — merged and deduped across folded groups (word overlap ≥ `0.32`; unions `sourceGroupIds` / `sourceCommits` on match).
 * **`history`** (not "summary" — this is a fuller account of what was done) is a **bounded** running list (≤ `MAX_HISTORY_ENTRIES`, i.e. 12) of `{ text }` objects — **text only**. Index `i` in `history` always pairs with index `i` in `deterministic.historySource`. A new session's entry is added only when it contributes something not already there; when the list exceeds the cap, **exactly one adjacent pair** is merged via a **rolling cursor** (below), unioning the corresponding `historySource[i]` and `historySource[i + 1]` rows into one.
 * **`mergeCursor`** (optional, 0-based) — the rolling compaction pointer: the index of the first entry in the next pair to merge. It advances down the list each time compaction fires and wraps to the oldest, so compression is spread evenly across all ages instead of repeatedly re-squashing the oldest blob. Absent on legacy records ⇒ treated as `0`.
 * **`mergedFrom`** (optional) — records **which fold produced this report**: the prior report it built on (`previousReportId` + `previousReportFile`) and the group file folded into it (`groupFile`). Where `sourceGroups` is the cumulative list of every group folded so far, `mergedFrom` names just the **single merge step** that created this file, so each report in the chain discloses its immediate parent report and the one group that was added. Absent on the **seeded** first report (`init(group_1)`) — nothing was merged — and on legacy records.
@@ -1224,8 +1325,8 @@ Differences from a group record:
 **Model-merge — one LLM session.** Given the report's model and the group's model, produce:
 
 * `changeTypes` — union; near-duplicate tags merged.
-* `signalReasons.{technical,architecture,security}` — **arrays**, with duplicate / near-duplicate reasons collapsed.
-* `questionsAnalyses` — **rebuilt** for the combined work from **both** sides' `questionsAnalyses` (same aggregated `{ observation: [], missingPiece: [], question: [] }` shape as a group). **Thread identity** is decided primarily from whether entries share the same `missingPiece` (human context Git cannot show), supported by overlapping `observation` — not from question wording alone. **Within a thread**, union `observation` and `missingPiece` (drop duplicates); in `question` keep **one best** question per thread (read each candidate's meaning; pick or rewrite the sharpest formulation — do not accumulate multiple question strings for the same thread). **Value-rank** threads for the developer's role (production use, ownership, security boundary, major design decisions outrank minor clarifications and routine upkeep; questions tied to hi-tier / high-signal work outrank low-tier-only threads). Drop threads already answered, pure duplicates, and routine upkeep (never an entry for routine-only work). **Bound** to ≤ `MAX_CONTEXT_BULLETS` entries; when over the limit, merge near-duplicate threads and **drop the least valuable**, listing the **most important threads first**. The merge prompt renders each thread with observations, missing pieces, and questions on **separate numbered lines** so the model can read them distinctly.
+* `signalReasons.{technical,architecture,security}` — **arrays of provenance objects**, with duplicate / near-duplicate reasons collapsed and `sourceGroupIds` / `sourceCommits` unioned (deterministic fold before/alongside the LLM merge).
+* `questionsAnalyses` — **rebuilt** for the combined work from **both** sides' `questionsAnalyses` (same aggregated `{ observation: [], missingPiece: [], question: [] }` shape as a group). **Thread identity** is decided primarily from whether entries share the same `missingPiece` (human context Git cannot show), supported by overlapping `observation` — not from question wording alone. **Within a thread**, union `observation` and `missingPiece` (drop duplicates); in `question` keep **one best** question per thread (read each candidate's meaning; pick or rewrite the sharpest formulation — do not accumulate multiple question strings for the same thread). **Value-rank** threads for the developer's role (production use, ownership, security boundary, major design decisions outrank minor clarifications and routine upkeep; questions tied to hi-tier / high-signal work outrank low-tier-only threads). Drop threads already answered, pure duplicates, and routine upkeep (never an entry for routine-only work). **Bound** to ≤ `MAX_CONTEXT_BULLETS` entries; when over the limit, merge near-duplicate threads and **drop the least valuable**, listing the **most important threads first**. The merge prompt renders each thread with observations, missing pieces, and questions on **separate numbered lines** so the model can read them distinctly. **After** the LLM returns merged threads, the CLI runs **`attachReportMergeProvenance`**: assigns new `threadId` values for this fold checkpoint (`reportId` = folded group's `timestampEnd`), sets `derivedFromThreadIds` from matched prev/group input threads, and unions `sourceGroupIds` / `sourceCommits` (§7).
 * `confidence` — re-assessed for the combined work.
 * `hiContext` / `mediumContext` / `lowContext` — merge duplicate/similar bullets, then **re-rank importance DOWNWARD ONLY** (a minor `hi` bullet may be merged or demoted; nothing is ever promoted), and **bound each tier to ≤ `MAX_CONTEXT_BULLETS`** — when over, drop the least important, keeping the bullets **most relevant to the developer's role** (from the project context). A hard code-side slice backstops the cap.
 
@@ -1246,7 +1347,7 @@ Differences from a group record:
 
 Because both contexts (≤ `MAX_CONTEXT_BULLETS`/tier) and history (≤ `MAX_HISTORY_ENTRIES`) are bounded, each fold's prompts are bounded — total cost is **O(N · cap)** rather than O(N²).
 
-`init(group_1)` = `merge` against an empty report: signals / context tiers / `changeTypes` / `questionsAnalyses` copied across, each `signalReasons` value lifted into a single-element array, `history` seeded with `{ text: group.history }`, `sourceGroups` set to `[group_1]`, and `historySource` set to `[[group_1]]` — index `0` in both arrays. The seeded report has **no** `mergedFrom` — nothing was merged into it.
+`init(group_1)` = `merge` against an empty report: signals / context tiers / `changeTypes` / `questionsAnalyses` copied across, each group `signalReasons` value lifted into a single-element **provenance array** per dimension (`seedReportReasonsFromGroup`), `history` seeded with `{ text: group.history }`, `sourceGroups` set to `[group_1]`, and `historySource` set to `[[group_1]]` — index `0` in both arrays. The seeded report has **no** `mergedFrom` — nothing was merged into it.
 
 ### Voice & honesty
 
@@ -1328,17 +1429,21 @@ From the report's `model`, copy unchanged:
 
 **Step 5 — Collapse signal reasons (one LLM session).**
 
-Given the report's `signalReasons` arrays (`technical`, `architecture`, `security`), the **composed `history`** from step 2, and project context (role + story + profile), produce exactly **four** reason strings — a flat array that captures why the three signals are what they are, reframed for the role and the unified narrative. Near-duplicate reasons from the report arrays are merged; minor upkeep reasons are dropped.
+Given the report's `signalReasons` provenance arrays (`technical`, `architecture`, `security` — each entry `{ text, sourceGroupIds, … }`), the **composed `history`** from step 2, and project context (role + story + profile), produce exactly **four** reason strings — a flat array that captures why the three signals are what they are, reframed for the role and the unified narrative. Near-duplicate reasons from the report arrays are merged; minor upkeep reasons are dropped. The CLI stores them as **four provenance slots** (`textsToPreparedSignalReasons`); `sourceGroupIds` are filled when question lineage resolves signal refs in step 6b.
 
 **Step 6 — Reframe questionsAnalyses (one LLM session).**
 
-Given the composed `history`, the four collapsed `signalReasons`, the report's existing `questionsAnalyses`, **prior human Q&A from the latest finish archive** (when present — `latestFinish()` → resolve `answers[]` via `sourceQuestions` + question files; do not repeat those threads), and project context (role + story + profile), produce up to **four** `questionsAnalyses` entries — role-aware reasoned threads that target **new** gaps (especially work added since the last report), not questions already answered in a prior finish round. Each entry uses the aggregated shape `{ observation: [], missingPiece: [], question: [] }` (usually one question string per entry). Questions must target what Git still cannot know; do not repeat facts already in `project.json`. `confidence` is re-assessed alongside this step.
+Given the composed `history`, the four collapsed `signalReasons`, the report's existing `questionsAnalyses`, **prior human Q&A from the latest finish archive** (when present — `latestFinish()` → resolve `answers[]` via `sourceQuestions` + question files; do not repeat those threads), and project context (role + story + profile), produce up to **four** `questionsAnalyses` entries — role-aware reasoned threads that target **new** gaps (especially work added since the last report), not questions already answered in a prior finish round. Each entry uses the aggregated shape `{ observation: [], missingPiece: [], question: [] }` (usually one question string per entry). The LLM also emits **lineage refs** for code-side resolution: `derivedFromThreadIds` (report thread ids), `derivedFromReportSignalRefs` (`{ dimension, index }` into the report signal catalog), and/or `derivedFromPreparedSignalSlots` (`0..3` into the collapsed reason slots). **`observation`** = factual what-changed bullets (not «The developer architected…»). **`missingPiece`** = neutral gap. **`question`** follows **question style** (§7): role-calibrated by topic, conditional when production/HA unknown, no role-title openers or performance-review tone. Questions must target what Git still cannot know; do not repeat facts already in `project.json`. `confidence` is re-assessed alongside this step.
 
-The prepared record stores **only these four active question threads** (`model.questionsAnalyses`). It does **not** store human answers — the canonical Q&A archive is the finish chain (§7, §11).
+**Step 6b — Provenance + question cards (deterministic + optional LLM).**
+
+After reframe, the CLI runs **`resolvePrepareQuestionProvenanceFromLlm`** (unions thread ids + signal catalog refs into `sourceGroupIds` / `sourceCommits` and sets `lineageKind`), then **`enrichQuestionCards`** (deterministic **`evidenceExcerpt`** from `observation[]` + commits; **`whyAsked`** from `missingPiece`), then **`polishEvidenceExcerptsWithLlm`** (one batched `narrativeModel` call — 3–4 scannable bullets per card; falls back to deterministic on failure — §7). The result is written to **`finish/<reportId>.question.json`** (if not already present) via `createFinishQuestions` — including the full **`questionsAnalyses[]`** array.
+
+The prepared record stores **signals, history, and four collapsed `signalReasons` slots** — **not** `questionsAnalyses` (schema ≥ **1.0.6**). It does **not** store human answers — the canonical Q&A archive is the finish chain (§7, §11).
 
 **Step 7 — Console preview (deterministic, no model).**
 
-After the prepared record is written, `prepare` prints a readable preview to the console: the **unified `history`** as one block, followed by the **question strings** derived from `questionsAnalyses` (numbered, up to four). This makes the upcoming `final` step transparent — the user sees the reconstructed narrative and exactly which questions they will be asked before running `final`.
+After the prepared record is written, `prepare` prints a readable preview to the console: the **unified `history`** as one block, followed by the **question cards** (numbered, up to four): question text plus **Evidence** / **Why asked** when present. This makes the upcoming `final` step transparent — the user sees the reconstructed narrative and exactly which questions they will be asked before running `final`.
 
 ### File layout
 
@@ -1356,7 +1461,7 @@ After the prepared record is written, `prepare` prints a readable preview to the
 
 ```json
 {
-  "schemaVersion": 1000000,
+  "schemaVersion": 1000006,
   "preparedId": 1759696393,
   "sourceReport": "1759696393.json",
   "groupCount": 65,
@@ -1367,9 +1472,11 @@ After the prepared record is written, `prepare` prints a readable preview to the
     "technicalSignal": "low | medium | high",
     "architectureSignal": "low | medium | high",
     "securitySignal": "low | medium | high",
-    "signalReasons": [],
-    "questionsAnalyses": [
-      { "observation": [], "missingPiece": [], "question": [] }
+    "signalReasons": [
+      { "text": "Spans deployment automation and backend packaging.", "sourceGroupIds": [1759696390, 1759696393] },
+      { "text": "", "sourceGroupIds": [] },
+      { "text": "", "sourceGroupIds": [] },
+      { "text": "", "sourceGroupIds": [] }
     ],
     "confidence": "low | medium | high",
     "history": "...",
@@ -1388,10 +1495,10 @@ Field notes:
 * **`sourceReport`** — link to the report file by name (no commit hashes).
 * **`changeTypes` / `*Signal`** — copied from the report (step 4).
 * **`technologies`** — cleaned/deduped list from the report (step 3); capped at five.
-* **`signalReasons`** — exactly **four** strings (step 5); not split by technical/architecture/security.
-* **`questionsAnalyses`** — up to **four** reasoned threads (step 6); role-aware. Interactive Q&A uses the `question` strings (`flattenQuestions()` in code); answers are collected later in `final` / `deepen` and stored under `finish/` (§7).
+* **`signalReasons`** — exactly **four** provenance slots (step 5); each `{ text, sourceGroupIds, sourceCommits? }` — collapsed from the report's three-dimensional reason arrays; not split by technical/architecture/security.
+* **`questionsAnalyses`** — **not stored on prepared** (schema ≥ 1.0.6). Up to four reasoned threads live on **`finish/<preparedId>.question.json`** (`questionsAnalyses[]` + per-question cards — step 6/6b, §7). Legacy prepared files may still carry `model.questionsAnalyses` until `migrate` runs.
 * **`history`** — single unified narrative string (step 2); replaces the report's multi-entry `history` array.
-* **`confidence`** — re-assessed in step 6 alongside `questionsAnalyses`, or copied from the report when unchanged.
+* **`confidence`** — re-assessed in step 6 alongside question reframe, or copied from the report when unchanged.
 * **No `answers` field** — legacy prepared files may still carry a deprecated `answers` block; readers ignore it. Q&A lives on the finish archive + question files.
 * **No `deterministic` layer**, no `hiContext` / `mediumContext` / `lowContext`, no per-group provenance — the prepared record is interpretation for human review, grounded in the report + project context.
 
@@ -1433,7 +1540,7 @@ If every prepared question duplicates prior answers, skip the Q&A prompt and **r
 
 ### Step 1 — Collect answers (interactive, no model)
 
-Present each question string to ask (derived from `model.questionsAnalyses` via `flattenQuestions()`, capped at four per round). In **extension mode**, only **new** questions not already answered in the latest finish are presented. Multi-line input allowed.
+Present each question string to ask (loaded from **`finish/<preparedId>.question.json`** via `resolveRoundQuestionAnalyses` — falls back to legacy `prepared.model.questionsAnalyses` if absent). Derived via `flattenQuestions()`, capped at four per round. When question cards are present, the CLI prints **Source** (group ids / commits), **Evidence** (`evidenceExcerpt`), **Why asked** (`whyAsked`), then **Question** before opening the editor. In **extension mode**, only **new** questions not already answered in the latest finish are presented. Multi-line input allowed.
 
 Questions for this round are stored in a **separate question file** next to the finish archive (not in `prepared/`):
 
@@ -1444,16 +1551,42 @@ Questions for this round are stored in a **separate question file** next to the 
 
 ```json
 {
-  "schemaVersion": 1000000,
+  "schemaVersion": 1000006,
   "sourceFinal": "1759696393.json",
   "sourceReport": "1759696393.json",
   "questions": [
-    { "id": "1759696393000", "question": "Was this deployed to production?" }
+    {
+      "id": "1759696393000",
+      "question": "Was this deployed to production?",
+      "threadIndex": 0,
+      "derivedFromThreadIds": ["1759696392000000"],
+      "sourceGroupIds": [1759696390, 1759696393],
+      "sourceCommits": ["abc12345..."],
+      "lineageKind": "report-thread",
+      "evidenceExcerpt": "Areas: backend · Commits: abc12345",
+      "whyAsked": "Git cannot establish whether this reached production."
+    }
+  ],
+  "questionsAnalyses": [
+    {
+      "observation": ["Added deploy scripting and backend packaging."],
+      "missingPiece": ["Unclear whether this reached production."],
+      "question": ["Was this deployed to production?"],
+      "threadId": "1759696393000000",
+      "threadIndex": 0,
+      "derivedFromThreadIds": ["1759696392000000"],
+      "derivedFromReportSignalRefs": [{ "dimension": "architecture", "index": 0 }],
+      "sourceGroupIds": [1759696390, 1759696393],
+      "sourceCommits": ["abc12345..."],
+      "lineageKind": "report-thread",
+      "evidenceExcerpt": "Areas: backend · Commits: abc12345",
+      "whyAsked": "Git cannot establish whether this reached production."
+    }
   ]
 }
 ```
 
-Each `id` is the **Unix-ms timestamp** when the question was created (unique within the finish chain). Answers on the finish archive reference these ids — they do **not** repeat the question text. The finish record's **`sourceQuestions`** map lists which question rounds were written (see §7):
+Each `id` is the **Unix-ms timestamp** when the question was created (unique within the finish chain). Optional provenance and card fields on each `questions[]` entry mirror the parallel **`questionsAnalyses[i]`** thread (§7). Answers on the finish archive reference question ids — they do **not** repeat the question text. The finish record's **`sourceQuestions`** map lists which question rounds were written (see §7):
 
 ```json
 {
@@ -1618,9 +1751,10 @@ Optional step **after `final`**. It does **not** re-run `report` or `prepare`. I
 ### Inputs (via provenance chain)
 
 1. **Latest finish archive** — `~/.workgraph/data/repos/<repo-id>/finish/<preparedId>.json` (or `<preparedId>.vN.json` if a prior `deepen` exists). The loader picks the record with the highest **`version`** cursor.
-2. **Prepared record** — loaded via `finish.sourcePrepared` → `prepared/<reportId>.json` (for `model.history`, `signalReasons`, `model.questionsAnalyses`).
-3. **Report** — loaded via `finish.sourceReport` → `reports/<reportId>.json` (for `model.questionsAnalyses` as context only).
-4. **Project context** — `project.json` (role, `story.preparedContext`, `profile`) in every LLM system prompt.
+2. **Finish question files** — all rounds listed in `finish.sourceQuestions` (canonical **`questionsAnalyses[]`** + cards since schema **1.0.6**).
+3. **Prepared record** — loaded via `finish.sourcePrepared` → `prepared/<reportId>.json` (for `model.history`, four collapsed **`signalReasons`** provenance slots).
+4. **Report** — loaded via `finish.sourceReport` → `reports/<reportId>.json` (for `model.questionsAnalyses` and **`signalReasons` catalog** as context only).
+5. **Project context** — `project.json` (role, `story.preparedContext`, `profile`) in every LLM system prompt.
 
 `deepen` does **not** read groups, commits, or evidence files directly — only through the finish → prepared → report file chain (same provenance as `final`).
 
@@ -1651,16 +1785,17 @@ Given:
 * **project context block** (§0);
 * **recalled context** from step 1;
 * **combined history** (prepare baseline + prior final history);
-* report `model.questionsAnalyses`, prepared `model.questionsAnalyses` (as flattened question strings for context), and **all prior Q&A** from the finish record;
-* prepared `signalReasons`.
+* report `model.questionsAnalyses`, **prior finish question rounds** (`questionsAnalyses[]` from all question files in `sourceQuestions`), and **all prior Q&A** from the finish record;
+* prepared `signalReasons` (four provenance slots) and report `signalReasons` catalog (for `derivedFromReportSignalRefs` resolution).
 
 Produce up to **four new** `questionsAnalyses` entries (aggregated shape) whose `question` strings are role-aware follow-ups that:
 
 * target gaps **still** not covered after prior Q&A and the recalled context;
 * do **not** repeat, rephrase, or narrow the same angle as any prior question;
-* follow the same role-aware rules as `prepare` (§7, §9).
+* follow the same role-aware rules as `prepare` (§7, §9);
+* emit the same **lineage refs** as prepare (`derivedFromThreadIds`, `derivedFromReportSignalRefs`, `derivedFromPreparedSignalSlots`) for **`resolvePrepareQuestionProvenanceFromLlm`**.
 
-The CLI derives the four interactive question strings from the result via `flattenQuestions()`.
+The CLI derives the four interactive question strings from the result via `flattenQuestions()` and writes them (with full analyses) to `<preparedId>.question.vN.json`.
 
 ### Step 3 — Collect answers to the four new questions (interactive, no model)
 
@@ -1911,8 +2046,11 @@ Each command seeds its picker from its own slot, falling back through the more g
 - **Noise filter** and **area detection** are deterministic, shared library modules.
 - **Model layer** is generated by a local LLM backend (Ollama or LM Studio; chosen interactively, remembered per slot) using `chatJson` structured JSON output with post-response extract/parse/schema validation (§13 Resilience); the signal-without-reason rule is enforced after generation.
 - **Report provenance** — cumulative group files in root-level `sourceGroups`; per-entry provenance in `deterministic.historySource` parallel to `history` (same length, same indices); legacy formats are read for backward compatibility.
-- `prepare` reads the latest report + `project.json`, runs four `narrativeModel` sessions (compose history, clean technologies, collapse reasons, reframe questionsAnalyses with **prior finish Q&A** resolved from finish archive + question files when present), writes `prepared/<reportId>.json` (no answers).
-- `final` reads the latest `prepared/<reportId>.json` + `project.json`, writes question text to `finish/<finishId>.question.json` (or `.question.vN.json`), collects Q&A (four on first run; **extension mode** merges prior finish `answers` + up to four new questions), persists cumulative `answers[]` + `sourceQuestions` on the finish archive, runs three `narrativeModel` sessions (refine IMPACT — combined history in extension mode — then Role Narrative, then CV bullets over **all** Q&A), writes `RECONSTRUCTION.<project>.md` or `.vN.md` to **cwd**, and archives under `finish/<preparedId>.{md,json,question.json}` or `<preparedId>.vN.{md,json}` + `.question.vN.json` (`version` 1 or N+1).
+- **Question provenance** — CLI-attached lineage on `questionsAnalyses` (`threadId`, `derivedFromThreadIds`, `sourceGroupIds`, `sourceCommits`, `lineageKind`, signal refs) through group → report fold → prepare/deepen → finish question files; report merge uses word-overlap heuristic; prepare/deepen resolve explicit LLM refs (§7).
+- **Signal reason provenance** — from group level: `{ text, sourceGroupIds, sourceCommits? }`; report arrays fold with overlap merge; prepared holds four collapsed slots (schema ≥ 1.0.5).
+- **Question cards** — `evidenceExcerpt` (deterministic) + `whyAsked` (deterministic from `missingPiece`) shown in prepare preview and `final` / `deepen` Q&A prompts (§7).
+- `prepare` reads the latest report + `project.json`, runs five `narrativeModel` sessions (compose history, clean technologies, collapse reasons, reframe questionsAnalyses, polish evidence excerpts) with **prior finish Q&A** when present, resolves question + signal lineage, writes **`finish/<reportId>.question.json`** (canonical `questionsAnalyses[]`) and `prepared/<reportId>.json` (history + signals + four reason slots — no analyses since 1.0.6).
+- `final` reads the latest `prepared/<reportId>.json` + **`finish/*.question.json`** + `project.json`, collects Q&A with question-card preview (four on first run; **extension mode** merges prior finish `answers` + up to four new questions), persists cumulative `answers[]` + `sourceQuestions` on the finish archive, runs three `narrativeModel` sessions (refine IMPACT — combined history in extension mode — then Role Narrative, then CV bullets over **all** Q&A), writes `RECONSTRUCTION.<project>.md` or `.vN.md` to **cwd**, and archives under `finish/<preparedId>.{md,json}` + question files (`version` 1 or N+1).
 - **`deepen`** reads the **latest** finish (highest `version`), follows `sourcePrepared` / `sourceReport`, collects **recalled non-code context**, generates four new questions (`narrativeModel`), writes `finish/<finishId>.question.vN.json`, collects four new answers, extends `sourceQuestions` and cumulative `answers[]`, refines IMPACT + Role Narrative + CV bullets over **combined history** (prepare baseline + prior final history) and **cumulative Q&A**, writes `RECONSTRUCTION.<project>.vN.md` to cwd, and appends `finish/<preparedId>.vN.{md,json}` without overwriting prior versions. Not part of `run`.
 - **Token usage** — each LLM call logs prompt/output tokens to stderr; cumulative totals by step and model are stored in `project.json` → `tokenUsage`.
 - `init`, `evidence`, `summarize`, and `commit-group` are **append-only** (`commit-group` uses **extension groups** on incremental re-run for day-gap); `report` is **resumable**; `prepare` is **idempotent per report**; `final` reuses saved answers on the same prepared or **appends vN** in extension mode; `deepen` is **append-only per version** (skips when the next version file already exists).
@@ -1935,11 +2073,15 @@ commit groups            = work sessions (deterministic membership + aggregated 
 group histories/signals  = interpretation over a session (may be wrong, must cite reasons)
 groups.tiers + context   = signal-weighted membership (low de-emphasized in group history)
 report                   = cumulative narrative (fold over sessions: merge, dedup, demote-only; history[i] ↔ deterministic.historySource[i])
-prepared narrative       = role-aligned distillation of the final report (human deliverable)
-questionsAnalyses        = reasoned open threads (observation + missingPiece + question); primary stored form at every stage
-human-facing questions   = `question` strings derived in code (`flattenQuestions`) for `final` / `deepen` Q&A (up to 4 per round in prepared)
-finish question files    = `<finishId>.question.json` / `.question.vN.json` — `{ id, question }[]` per round (not in prepared/)
-schemaVersion            = encoded CLI package semver on every pipeline JSON artifact (§1.5)
+prepared narrative       = role-aligned distillation of the final report (history + signals + four reason slots; no questionsAnalyses since 1.0.6)
+questionsAnalyses        = reasoned open threads (observation + missingPiece + question); canonical on finish question files; group/report retain full chains
+signalReasonProvenance   = { text, sourceGroupIds, sourceCommits? } from group level; arrays at report; four slots at prepared (§7)
+question provenance      = threadId, derivedFromThreadIds, sourceGroupIds, sourceCommits, lineageKind, derivedFromReportSignalRefs (CLI-attached; §7)
+question cards           = evidenceExcerpt + whyAsked (deterministic; whyAsked from missingPiece — §7)
+report checkpoint id     = timestampEnd encoded in threadId prefix — fold snapshot, not semantic group topic
+human-facing questions   = `question` strings derived in code (`flattenQuestions`) for `final` / `deepen` Q&A (up to 4 per round)
+finish question files    = `<finishId>.question.json` / `.question.vN.json` — `questions[]` + canonical `questionsAnalyses[]` per round
+schemaVersion            = encoded CLI package semver on every pipeline JSON artifact (§1.5); migrate via `dev-workgraph migrate`
 human answers            = `{ questionId, answer }[]` on finish archive (cumulative); resolved via `sourceQuestions` + question files
 sourceQuestions          = `{ "<finishId>": ["v1", "v2", …] }` on finish archive — which question rounds exist
 role narrative           = four impact bullets (interpretation grounded in prepare output + answers)

@@ -14,7 +14,8 @@ export type PipelineStep =
   | "report"
   | "prepare"
   | "final"
-  | "deepen";
+  | "deepen"
+  | "migrate";
 
 function emptyTotals(): TokenTotals {
   return { promptTokens: 0, completionTokens: 0, totalTokens: 0, calls: 0 };

@@ -13,6 +13,6 @@ export class JavaIgnoreFiles implements IgnoreFiles {
   }
 
   files(): string[] {
-    return ["*.class", "*.jar", "*.war", "*.ear"];
+    return ["*.class", "*.jar", "*.war", "*.ear", "pom.xml"];
   }
 }

@@ -144,9 +144,11 @@ digraph pipeline {
 
   // ── prepare → 4 questions → 4 answers (H) → final ─────────────────
 
-  v_prep [label="prepare\n(M:n)\nsourceReport\n(no answers)" fillcolor="#F3E5F5" width=1.45 height=1.05]
+  v_prep [label="prepare\n(M:n)\nsourceReport\n+ finish question file" fillcolor="#F3E5F5" width=1.55 height=1.1]
+  v_fq   [label="finish/<id>.question.json\n(questionsAnalyses\nat prepare)" fillcolor="#FCE4EC" width=1.55 height=1.0]
 
   v_r2 -> v_prep [label=" 1:1\nread "]
+  v_prep -> v_fq [label=" writes\nquestion file " color="#AD1457"]
 
   subgraph cluster_ask_final {
     label="ask user (final / deepen)\n4 questions/round (H) · text in *.question.*.json · answers on finish"
@@ -179,6 +181,10 @@ digraph pipeline {
   v_prep -> v_q2
   v_prep -> v_q3
   v_prep -> v_q4
+  v_fq -> v_q1 [label=" threads ", style=dashed color="#AD1457"]
+  v_fq -> v_q2 [style=dashed color="#AD1457"]
+  v_fq -> v_q3 [style=dashed color="#AD1457"]
+  v_fq -> v_q4 [style=dashed color="#AD1457"]
 
   subgraph cluster_finish {
     label="finish"

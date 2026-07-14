@@ -5,7 +5,48 @@ All notable changes to **dev-workgraph** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.4] - NEXT RELEASE
+## [1.0.6] - NEXT RELEASE
+
+### Added
+
+#### Signal reason provenance
+
+From **group** level onward, each non-empty `signalReasons` entry carries CLI-attached provenance: `{ text, sourceGroupIds, sourceCommits? }`. **Report** folds reasons into per-dimension arrays with overlap merge (≥ `0.32`) and unions `sourceGroupIds` / `sourceCommits`. **Prepared** collapses report arrays to four provenance slots. Commit summaries keep plain-string reasons.
+
+#### Question provenance and question cards
+
+Open threads carry **CLI-attached lineage** through the pipeline (`threadId`, `derivedFromThreadIds`, `sourceGroupIds`, `sourceCommits`) — attached after LLM steps at `commit-group`, `report` fold, `prepare`/`deepen`, and copied to `finish/*.question.json`. At **prepare/deepen** the LLM may emit **`derivedFromThreadIds`**, **`derivedFromReportSignalRefs`** (`{ dimension, index }` into the report signal catalog), and **`derivedFromPreparedSignalSlots`** (`0..3`); code resolves **`lineageKind`** (`report-thread` | `signal-reason`) via `resolvePrepareQuestionProvenanceFromLlm`.
+
+**`evidenceExcerpt`** (deterministic) and **`whyAsked`** (deterministic from `missingPiece`; neutral missing-context explanation, not role coaching) are shown in prepare preview and before interactive Q&A in `final` / `deepen`.
+
+Documented in [`REQUIREMENTS.md`](REQUIREMENTS.md) §7 and §1.5 (schema changelog); diagrams in [`uml/question-provenance.puml`](uml/question-provenance.puml).
+
+#### Question storage on finish files (schema `1000006`)
+
+Canonical **`questionsAnalyses[]`** (+ cards) live on **`finish/<preparedId>.question.json`** (written at `prepare`; `final` / `deepen` read via `resolveRoundQuestionAnalyses`). **Prepared** keeps `history`, signals, and four collapsed **`signalReasons`** slots — not `questionsAnalyses` on new writes.
+
+#### `migrate` command and lazy migration
+
+**`dev-workgraph migrate [repo]`** runs on-disk pipeline migrations (structural rewrites + optional LLM lineage backfill). Artifacts below the current `schemaVersion` are also migrated lazily on load.
+
+| Step | `schemaVersion` | What it does |
+|------|-----------------|--------------|
+| `pipeline-provenance` | `1000005` | Signal reason + question provenance on groups/reports/prepared/finish; optional **LLM backfill** for prepared/finish threads missing lineage refs |
+| `finish-questions-analyses` | `1000006` | Moves legacy `prepared.model.questionsAnalyses` onto `finish/*.question.json` and strips them from prepared |
+
+#### Neutral whyAsked (question cards)
+
+**`whyAsked`** is always built in code from `missingPiece` (`buildWhyAsked`) — LLM career framing is no longer used. Role-aware wording stays in **`question`** topic choice only.
+
+#### Scannable evidence bullets (question cards)
+
+**`evidenceExcerpt`** is built per thread from **`observation[]`** (ranked by relevance to the question) + **`sourceCommits`**, then optionally compressed by **`polishEvidenceExcerptsWithLlm`** (prepare step 5 / deepen). No group `hiContext` merge dump.
+
+### Changed
+
+- **`report` fold** — `signalReasons` arrays fold deterministically (`foldGroupIntoReportReasons`) before/alongside the LLM merge; question merge provenance via `attachReportMergeProvenance`.
+- **`prepare`** — reframed questions written to `finish/<reportId>.question.json` at prepare time (`createFinishQuestions`); prepared record no longer stores analyses.
+- **`final` / `deepen`** — load question cards from finish question files; legacy fallback to `prepared.model.questionsAnalyses` until migrated.
 
 ## [1.0.3] - 2026-07-09
 
@@ -45,14 +86,14 @@ After registration, `check`, model pickers, and `--<id>-url` flags work without 
 
 | Surface | Behavior |
 |---------|----------|
-| **Customizable** | `init` + `partition` only — how commits split into buckets (`members[]` + `fileKey`) |
+| **Customizable** | `gatherRunInputs` + `init` + `partition` — how commits split into buckets (`members[]` + `fileKey`) |
 | **Fixed runner** | `buildGroupRecord`, classify/compose LLM steps, `GroupRecord` schema — unchanged for `report` |
 | **CLI** | `--strategy <id>`; strategy-owned flags via `cliOptions` + `pickCliOptions` (day-gap: `--days`, `--max-commits`) |
-| **`run`** | Prompts for grouping strategy when more than one is registered; saves `commitGroupStrategy` in repo config |
+| **`run`** | Prompts for grouping strategy when more than one is registered; saves `commitGroupStrategy`; calls `gatherRunInputs` for strategy-specific settings (reuses saved values without prompting) |
 
 | Step | What to implement |
 |------|-------------------|
-| 1 | `CommitGroupStrategy` — `id`, `displayName`, `cliOptions`, `pickCliOptions`, `init`, `partition`, `formatSummary` |
+| 1 | `CommitGroupStrategy` — `id`, `displayName`, `cliOptions`, `pickCliOptions`, `gatherRunInputs`, `init`, `partition`, `formatSummary` |
 | 2 | Implement in e.g. `day-gap-strategy.ts` / `jira-strategy.ts` — reuse `grouping.ts` helpers optionally |
 | 3 | Append to `COMMIT_GROUP_STRATEGIES` in `registry.ts` |
 
@@ -84,7 +125,7 @@ Role shapes **which gaps to ask about** (`questionsAnalysis`, open questions), n
 
 ### Changed
 
-- **commit-group strategies:** `--days` / `--max-commits` are owned by the **day-gap** strategy (not hard-coded on the command); `--strategy <id>` selects the partition plugin. `run` no longer prompts for day-gap thresholds upfront — strategy `init` runs at the `commit-group` step.
+- **commit-group strategies:** `--days` / `--max-commits` are owned by the **day-gap** strategy (not hard-coded on the command); `--strategy <id>` selects the partition plugin. `run` gathers strategy-specific inputs via `gatherRunInputs` at the start (reuses saved repo settings); `init` delegates to the same helper at the `commit-group` step.
 - **Role-aware prompts:** inline per-role emphasis maps in `prompts.ts` replaced by `role-definitions.ts`; `cvEmphasisForRole` re-exported from there for CV bullet builders.
 - **Ollama `think`:** `commitModel` and `reportModel` calls send `think: false`; `narrativeModel` (`init`, `prepare`, `final`, `deepen`) omits `think` so thinking-capable models use Ollama defaults on narrative stages.
 

@@ -3,6 +3,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { ensureArtifactMigrated } from "./migrations/index.js";
 import type {
   FinishRecord,
   FinishSourceQuestions,
@@ -143,6 +144,7 @@ export function loadPreparedRecord(
   if (!fs.existsSync(preparedPath)) {
     throw new Error(`Prepared record not found: ${preparedPath}`);
   }
+  ensureArtifactMigrated(preparedPath, { preparedDir });
   return {
     file,
     record: JSON.parse(fs.readFileSync(preparedPath, "utf8")) as PreparedRecord,
@@ -158,6 +160,7 @@ export function loadReportRecord(
   if (!fs.existsSync(reportPath)) {
     throw new Error(`Report not found: ${reportPath}`);
   }
+  ensureArtifactMigrated(reportPath, { reportsDir });
   return {
     file,
     record: JSON.parse(fs.readFileSync(reportPath, "utf8")) as ReportRecord,

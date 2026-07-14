@@ -1,0 +1,199 @@
+@startuml question-provenance-lineage
+!theme plain
+skinparam shadowing false
+skinparam ArrowColor #555555
+
+title Question provenance — lineage across pipeline stages (§7)
+
+legend top left
+  |= Tag |= Meaning |
+  | **(M)** | LLM session |
+  | **(D)** | CLI code-side (deterministic / heuristic) |
+  | checkpoint | group timestampEnd used in threadId prefix |
+endlegend
+
+rectangle "**commit-group**" #E3F2FD {
+  card "classify (M:c)\nquestionsAnalyses" as CG
+  card "attachGroupQuestionProvenance (D)\nthreadId = groupId×1M+index\nsourceGroupIds, sourceCommits" as CGP
+  card "signalReasons → provenance objects (D)\n{text, sourceGroupIds, sourceCommits?}" as CGS
+}
+
+rectangle "**report fold**" #FFF3E0 {
+  card "init / merge questions (M:r)" as RM
+  card "seedReportQuestionProvenance (D)\nfirst report from group" as RS
+  card "foldGroupIntoReportReasons (D)\nmerge signalReason arrays" as RSR
+  card "attachReportMergeProvenance (D)\nnew threadId @ checkpoint\nderivedFromThreadIds ← matched inputs\nsourceGroupIds union" as RMP
+}
+
+rectangle "**prepare / deepen**" #E1F5FE {
+  card "reframe → 4 threads (M:n)\n+ derivedFromThreadIds\n+ derivedFromReportSignalRefs\n+ derivedFromPreparedSignalSlots" as PR
+  card "resolvePrepareQuestionProvenanceFromLlm (D)\nlineageKind: report-thread | signal-reason" as PP
+  card "enrichQuestionCards (D)\nevidenceExcerpt, whyAsked" as QC
+  card "polishEvidenceExcerptsWithLlm (M:n)\noptional" as POL
+  card "createFinishQuestions (D)\n→ finish/<id>.question.json\n(questionsAnalyses[] canonical)" as WFQ
+}
+
+rectangle "**final**" #FCE4EC {
+  card "resolveRoundQuestionAnalyses (D)\nfinish question file first" as LOAD
+  card "finishQuestionProvenance (D)\n→ finish/*.question.json" as FQ
+  card "CLI: Source / Evidence /\nWhy asked / Question" as CLI
+}
+
+CG --> CGP
+CG --> CGS
+CGP --> RM
+CGS --> RSR
+RM --> RS : init only
+RM --> RMP : each merge
+RS --> RMP
+RSR --> RMP
+RMP --> PR
+PR --> PP
+PP --> QC
+QC --> POL
+POL --> WFQ
+WFQ --> LOAD
+LOAD --> FQ
+FQ --> CLI
+
+note bottom of RMP
+  **threadId prefix = report checkpoint**
+  (reportId = folded group timestampEnd),
+  NOT "this question is about that group file alone".
+  Empty group questionsAnalyses can still be a checkpoint.
+end note
+
+@enduml
+
+
+@startuml question-thread-merge
+!theme plain
+skinparam shadowing false
+skinparam NoteBackgroundColor #FFFDE7
+
+title Report merge — how derivedFromThreadIds is built (§7, §8)
+
+rectangle "**Inputs to merge**" as IN {
+  card "prev report threads\n(threadId …t(k-1)…)" as PREV #FFF8E1
+  card "next group threads\n(may be empty [])" as GRP #E3F2FD
+}
+
+rectangle "**LLM model merge (M:r)**" as LLM #FFF3E0 {
+  card "Merged questionsAnalyses\n(array observation/missingPiece/question)" as OUT
+}
+
+rectangle "**attachReportMergeProvenance (D)**" as ATT #E8F5E9 {
+  card "findMatchingInputThreads\nword overlap ≥ 0.32" as MATCH
+  card "unionThreadProvenance\n→ derivedFromThreadIds\n→ sourceGroupIds union" as UNION
+  card "threadId = makeThreadId(reportId, index)" as NEWID
+}
+
+PREV --> LLM
+GRP --> LLM
+LLM --> OUT
+OUT --> MATCH
+PREV --> MATCH
+GRP --> MATCH
+MATCH --> UNION
+UNION --> NEWID
+
+note bottom of MATCH
+  Example: output thread merges prev #0, #1, #3
+  → derivedFromThreadIds lists three parent threadIds.
+  Missing #2 = no strong text overlap, not an error.
+end note
+
+@enduml
+
+
+@startuml question-cards
+!theme plain
+skinparam shadowing false
+
+title Question cards — human-facing context before Q&A (§7)
+
+left to right direction
+
+package "**prepare / deepen**" #FFF3E0 {
+  component "reframe questionsAnalyses (M:n)\n+ lineage refs" as REF
+  component "resolvePrepareQuestionProvenanceFromLlm (D)" as PP
+  component "enrichQuestionCards (D)" as QC
+  component "createFinishQuestions (D)" as WFQ
+}
+
+package "**buildWhyAsked (D)**" #E8F5E9 {
+  component "missingPiece → neutral sentence\nGit cannot establish…" as WHY
+}
+
+package "**buildEvidenceExcerpt (D)**" #E8F5E9 {
+  component "observation[] ranked by relevance" as B1
+  component "sourceCommits → hash prefixes" as B2
+  component "Related commits: …" as B3
+}
+
+package "**FinishQuestionsRecord**" #FCE4EC {
+  component "questionsAnalyses[]\n+ questions[] + cards + provenance" as FINREC
+}
+
+package "**PreparedRecord**" #E1F5FE {
+  component "history + signals\n+ 4 signalReason slots\n(no questionsAnalyses ≥1.0.6)" as PREPREC
+}
+
+package "**final / deepen Q&A**" #FCE4EC {
+  component "resolveRoundQuestionAnalyses" as LOAD
+  component "printQuestionCards preview" as PREVIEW
+}
+
+REF --> PP
+PP --> QC
+WHY --> QC
+B1 --> QC
+B2 --> QC
+B3 --> QC
+QC --> FINREC
+QC --> PREPREC : signalReason slots only
+PREPREC --> WFQ : createFinishQuestions (prepare)
+WFQ --> FINREC
+FINREC --> LOAD
+LOAD --> PREVIEW
+
+note bottom of QC
+  whyAsked always from missingPiece — never LLM role coaching.
+  Canonical questionsAnalyses on finish/*.question.json (schema ≥1.0.6).
+end note
+
+@enduml
+
+
+@startuml signal-reason-provenance
+!theme plain
+skinparam shadowing false
+
+title Signal reason provenance — group → report → prepared (§7, schema 1000005)
+
+left to right direction
+
+package "**commit summarize**" #E8F5E9 {
+  component "signalReasons\nplain strings" as COMM
+}
+
+package "**commit-group**" #E3F2FD {
+  component "{ text, sourceGroupIds,\nsourceCommits? }" as GRP
+}
+
+package "**report fold**" #FFF3E0 {
+  component "signalReasons[dimension][]\nfoldGroupIntoReportReasons (D)\noverlap merge ≥0.32" as RPT
+}
+
+package "**prepare**" #E1F5FE {
+  component "4 collapsed slots (M:n)\ntextsToPreparedSignalReasons" as PREP
+}
+
+COMM --> GRP : migrate / write
+GRP --> RPT : fold each group
+RPT --> PREP : collapse to 4 strings
+
+note bottom of RPT
+  Union sourceGroupIds / sourceCommits on
+  near-duplicate reason text match.
+end note

@@ -317,12 +317,17 @@ describe("prepare prompts", () => {
     expect(prompt).toContain("t1");
   });
 
-  it("buildPrepareQuestionsPrompt includes report questionsAnalyses", () => {
-    const prompt = buildPrepareQuestionsPrompt("history", ["r1"], [
-      { observation: ["obs"], missingPiece: ["miss"], question: ["existing q"] },
-    ]);
+  it("buildPrepareQuestionsPrompt includes report questionsAnalyses and signal catalog", () => {
+    const prompt = buildPrepareQuestionsPrompt(
+      "history",
+      ["r1"],
+      [{ observation: ["obs"], missingPiece: ["miss"], question: ["existing q"] }],
+      { technical: ["t-reason"], architecture: [], security: [] },
+    );
     expect(prompt).toContain("existing q");
-    expect(prompt).toContain("r1");
+    expect(prompt).toContain("slot 0");
+    expect(prompt).toContain("technical[0]");
+    expect(prompt).toContain("t-reason");
   });
 
   it("buildPrepareQuestionsPrompt includes prior Q&A when extending", () => {
@@ -330,6 +335,7 @@ describe("prepare prompts", () => {
       "history",
       ["r1"],
       [{ observation: ["obs"], missingPiece: ["miss"], question: ["new q"] }],
+      { technical: [], architecture: [], security: [] },
       [{ question: "Old?", answer: "Answered." }],
     );
     expect(prompt).toContain("Prior human Q&A");
@@ -341,6 +347,12 @@ describe("prepare prompts", () => {
     expect(PREPARE_HISTORY_SYSTEM).toContain("distill");
     expect(PREPARE_REASONS_SYSTEM).toContain("FOUR");
     expect(PREPARE_QUESTIONS_SYSTEM).toContain("questionsAnalyses");
+    expect(PREPARE_QUESTIONS_SYSTEM).toContain("derivedFromThreadIds");
+    expect(PREPARE_QUESTIONS_SYSTEM).toContain("derivedFromReportSignalRefs");
+    expect(PREPARE_QUESTIONS_SYSTEM).toContain("whyAsked or evidenceExcerpt");
+    expect(PREPARE_QUESTIONS_SYSTEM).toContain("missingPiece must state");
+    expect(PREPARE_QUESTIONS_SYSTEM).toContain("QUESTION STYLE");
+    expect(PREPARE_QUESTIONS_SYSTEM).toContain("performance-review");
   });
 });
 
@@ -416,32 +428,36 @@ describe("deepen prompts", () => {
   });
 
   it("buildDeepenQuestionsPrompt includes recalled context and prior Q&A", () => {
-    const prompt = buildDeepenQuestionsPrompt(
-      "Prepare history.",
-      "Prior final history.",
-      ["r1", "r2", "r3", "r4"],
-      ["report q1"],
-      ["prepared q1"],
-      [{ question: "Old?", answer: "Yes." }],
-      "Team pivoted after review.",
-    );
+    const prompt = buildDeepenQuestionsPrompt({
+      preparedHistory: "Prepare history.",
+      priorFinalHistory: "Prior final history.",
+      preparedSignalSlots: ["r1", "r2", "r3", "r4"],
+      reportAnalyses: [{ observation: ["o"], missingPiece: ["m"], question: ["report q1"] }],
+      reportSignalReasons: { technical: ["tech reason"], architecture: [], security: [] },
+      priorQuestions: ["prepared q1"],
+      priorQa: [{ question: "Old?", answer: "Yes." }],
+      recalledContext: "Team pivoted after review.",
+    });
     expect(prompt).toContain("Team pivoted after review.");
     expect(prompt).toContain("Prepare history.");
     expect(prompt).toContain("Prior final history.");
     expect(prompt).toContain("Old?");
     expect(prompt).toContain("prepared q1");
+    expect(prompt).toContain("report q1");
+    expect(prompt).toContain("technical[0]");
   });
 
   it("buildDeepenQuestionsPrompt handles empty prior Q&A and recalled context", () => {
-    const prompt = buildDeepenQuestionsPrompt(
-      "Prepare only.",
-      "",
-      ["r1", "r2", "r3", "r4"],
-      [],
-      [],
-      [],
-      "   ",
-    );
+    const prompt = buildDeepenQuestionsPrompt({
+      preparedHistory: "Prepare only.",
+      priorFinalHistory: "",
+      preparedSignalSlots: ["r1", "r2", "r3", "r4"],
+      reportAnalyses: [],
+      reportSignalReasons: { technical: [], architecture: [], security: [] },
+      priorQuestions: [],
+      priorQa: [],
+      recalledContext: "   ",
+    });
     expect(prompt).toContain("(none provided)");
     expect(prompt).toContain("Prior Q&A (do not re-ask these angles):");
     expect(prompt).toContain("(none)");

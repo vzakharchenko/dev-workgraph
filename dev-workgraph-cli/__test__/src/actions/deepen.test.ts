@@ -331,6 +331,7 @@ describe("deepen", () => {
 
     vi.mocked(chatJson)
       .mockImplementationOnce(async (opts) => chatJsonFromSchema(opts.schema))
+      .mockImplementationOnce(async (opts) => chatJsonFromSchema(opts.schema))
       .mockImplementationOnce(async () => ({}))
       .mockImplementationOnce(async (opts) => chatJsonFromSchema(opts.schema));
 
@@ -361,6 +362,7 @@ describe("deepen", () => {
     fs.writeFileSync(preparedPath, JSON.stringify(prepared));
 
     vi.mocked(chatJson)
+      .mockImplementationOnce(async (opts) => chatJsonFromSchema(opts.schema))
       .mockImplementationOnce(async (opts) => chatJsonFromSchema(opts.schema))
       .mockImplementationOnce(async (opts) => chatJsonFromSchema(opts.schema))
       .mockImplementationOnce(async () => ({ narrative: [] }));
@@ -526,17 +528,17 @@ describe("deepen", () => {
     });
 
     const calls = vi.mocked(chatJson).mock.calls;
-    expect(calls.length).toBeGreaterThanOrEqual(3);
+    expect(calls.length).toBeGreaterThanOrEqual(4);
 
     const questionsUser = calls[0]?.[0]?.user as string;
     expect(questionsUser).toContain("Pivot after security review.");
     expect(questionsUser).toContain("Staging only.");
 
-    const impactUser = calls[1]?.[0]?.user as string;
+    const impactUser = calls[2]?.[0]?.user as string;
     expect(impactUser).toContain("New answer one.");
     expect(impactUser).toContain("Pivot after security review.");
 
-    const narrativeUser = calls[2]?.[0]?.user as string;
+    const narrativeUser = calls[3]?.[0]?.user as string;
     expect(narrativeUser).toContain("New answer four.");
   });
 });

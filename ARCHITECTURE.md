@@ -23,7 +23,7 @@ Evidence, interpretation, and missing context stay separate:
 |-------|--------|----------|
 | **Evidence** | High | patches, deterministic JSON (files, churn, areas), commit timestamps |
 | **Interpretation** | May be wrong; must cite signal reasons | commit/group/report model summaries, prepared narrative |
-| **Missing context** | Recovered via human | `questionsAnalyses` → interactive Q&A → finish archive |
+| **Missing context** | Recovered via human | `questionsAnalyses` on finish question files → interactive Q&A → finish archive |
 
 **Core rule:** never overclaim production usage, customer impact, or org-wide adoption unless the developer stated it in an answer.
 
@@ -76,6 +76,7 @@ Stages run in order; `run` orchestrates through `final`. **`deepen`** is optiona
 | Prepared narrative | `prepare` | narrative | idempotent per report |
 | Deliverable | `final` | narrative | reuse or append vN |
 | Extension | `deepen` | narrative | append-only vN+1 |
+| Schema upgrade | `migrate` | narrative (optional LLM backfill) | idempotent per artifact |
 
 ![Run orchestrator](img/dev-workgraph-run-orchestrator.png)
 
@@ -104,13 +105,15 @@ data/repos/<repo-id>/
   summaries/<ts>/<hash>.json          # commit model layer
   groups/<timestampEnd>.json
   reports/<reportId>.json
-  prepared/<reportId>.json            # questions only — no answers
+  prepared/<reportId>.json            # history + signals + 4 collapsed signalReasons — no questionsAnalyses
   finish/
     <id>.json                         # FinishRecord
-    <id>.question.json                # v1 questions
+    <id>.question.json                # v1: questions[] + questionsAnalyses[] + cards
     <id>.v2.json / .question.v2.json  # deepen / extension
     <id>.md
 ```
+
+**Schema versions** (`schemaVersion` = encoded CLI semver): `1000005` adds signal-reason and question **provenance objects** on groups/reports; `1000006` moves canonical **`questionsAnalyses[]`** from `prepared/` to `finish/*.question.json`. Legacy artifacts are upgraded via **`migrate`** (explicit) or lazy migration on load. See [`REQUIREMENTS.md`](REQUIREMENTS.md) §1.5.
 
 **Review periods** (`--period <id>`) mirror this tree under `periods/<id>/`. Config (authors, saved grouping strategy) lives in `config.json` outside the data dir; strategy-specific settings (e.g. day-gap thresholds) are persisted per repo by the active strategy; `export` bundles both.
 
@@ -130,7 +133,7 @@ The context block is prepended to every later LLM prompt so summaries and questi
 
 **`evidence`** (deterministic): `git show` → patch + JSON with files, churn, areas, noise filtering.
 
-**`summarize`** (`commitModel`): per-commit model layer — summary, signals + reasons, `questionsAnalysis`.
+**`summarize`** (`commitModel`): per-commit model layer — summary, signals + plain-string `signalReasons`, `questionsAnalysis`.
 
 ![Evidence overview](img/evidence-overview.png)
 
@@ -151,7 +154,7 @@ Shipped strategy `day-gap` groups chronologically by gap (`groupThresholdDays`) 
 For every partition bucket the action:
 
 1. **Deterministic** — `buildGroupRecord`: union membership, aggregate churn/areas, `groups.tiers` (hi / medium / low).
-2. **Model** (`commitModel`) — session signals, context bullets, `questionsAnalyses`, first-person `history`.
+2. **Model** (`commitModel`) — session signals, **signal reason provenance** (`{ text, sourceGroupIds, sourceCommits? }`), context bullets, `questionsAnalyses` (+ `attachGroupQuestionProvenance`), first-person `history`.
 
 The strategy only supplies **buckets** (`members` + `fileKey` for `groups/<fileKey>.json`). Downstream `report` still reads `GroupRecord` files regardless of how they were formed.
 
@@ -168,31 +171,37 @@ CLI: `--strategy <id>` selects the registered strategy (default: first in `COMMI
 Incremental **fold** over groups (oldest first): `report_k = merge(report_{k-1}, group_k)`.
 
 - **Routine gate** — cheap LLM call; upkeep-only groups fold deterministically (one call, skip heavy merge).
-- **Substantive groups** — merge model fields, add-if-new history, rolling compaction (`mergeCursor`, cap ≤ 12 history entries).
+- **Substantive groups** — merge model fields (including **`signalReasons` arrays** folded deterministically + **`questionsAnalyses`** with `attachReportMergeProvenance`), add-if-new history, rolling compaction (`mergeCursor`, cap ≤ 12 history entries).
 - **Resumable** — each fold writes `reports/<timestampEnd>.json`; re-run continues from longest prefix.
 
 ![Report fold chain](img/report-fold-chain.png)
 
 ![Report overview](img/report-overview.png)
 
-Provenance: `sourceGroups[]` lists contributing group files; `history[i]` ↔ `deterministic.historySource[i]`.
+Provenance: `sourceGroups[]` lists contributing group files; `history[i]` ↔ `deterministic.historySource[i]`. **Signal reasons** from group level are provenance objects; report stores merged arrays per dimension. **Question threads** carry lineage (`threadId`, `derivedFromThreadIds`, `sourceGroupIds`, `sourceCommits`) attached after each merge — see §7 in REQUIREMENTS and `question-provenance.puml`.
 
 ## Phase 5 — Prepared narrative (`prepare`)
 
 Distills the **latest** report into one role-aligned artifact — sole direct input to `final`.
 
-Four `narrativeModel` sessions + deterministic copies:
+Four `narrativeModel` sessions (steps 1–4) + deterministic post-processing (5–6):
 
 1. Compose unified **history** (one string).
 2. Clean **technologies** (max 5).
-3. Collapse **signalReasons** → 4 strings.
-4. Reframe **questionsAnalyses** → up to 4 threads (skips threads already answered in latest finish).
+3. Collapse report **signalReasons** → four provenance slots (`textsToPreparedSignalReasons`).
+4. Reframe **questionsAnalyses** → up to 4 threads (skips threads already answered in latest finish); LLM emits lineage refs (`derivedFromThreadIds`, `derivedFromReportSignalRefs`, `derivedFromPreparedSignalSlots`).
+5. **(D)** `resolvePrepareQuestionProvenanceFromLlm` + `enrichQuestionCards` + optional `polishEvidenceExcerptsWithLlm` — sets `lineageKind`, cards (`evidenceExcerpt`, `whyAsked`).
+6. **(E)** Write **`finish/<reportId>.question.json`** via `createFinishQuestions` (canonical `questionsAnalyses[]` + question ids); prepared record stores history/signals/reason slots only.
 
 ![Prepare overview](img/prepare-overview.png)
 
+![Question provenance lineage](img/question-provenance-lineage.png)
+
+![Question cards](img/question-cards.png)
+
 ![Prepare → final handoff](img/prepare-to-final.png)
 
-**No `answers` on prepared** — human Q&A lives only under `finish/` so incremental `prepare` does not treat old questions as already handled incorrectly.
+**No `answers` on prepared** — human Q&A lives only under `finish/`. **No `questionsAnalyses` on prepared** (schema ≥ 1.0.6) — cards and full threads live on the finish question file written at prepare time.
 
 ## Phase 6 — Final deliverable (`final`)
 
@@ -210,9 +219,11 @@ Three cooperating pieces on the **finish** chain:
 
 | Piece | Location | Content |
 |-------|----------|---------|
-| Question text | `finish/<id>.question.json`, `.question.vN.json` | `{ id, question }[]` — id = Unix-ms |
+| Questions + analyses | `finish/<id>.question.json`, `.question.vN.json` | `questions[]` (`{ id, question, …provenance/cards }`) + **`questionsAnalyses[]`** (full reasoned threads) |
 | Answers | `finish/<id>.json` | Cumulative `{ questionId, answer }[]` |
 | Rounds | `sourceQuestions` on finish record | `{ "<finishId>": ["v1", "v2", …] }` |
+
+`final` / `deepen` load cards via `resolveRoundQuestionAnalyses` (finish question file first; legacy fallback to `prepared.model.questionsAnalyses`).
 
 ![FinishRecord schema](img/final-finish-record.png)
 
@@ -230,7 +241,7 @@ Three `narrativeModel` sessions in `final`: refine IMPACT → Role Narrative (4 
 
 ## Phase 7 — Narrative extension (`deepen`)
 
-Optional post-`final`: recalled non-code context → 4 new questions → cumulative Q&A → refined narrative → **`RECONSTRUCTION.<project>.v2.md`** (append-only).
+Optional post-`final`: recalled non-code context → 4 new questions → cumulative Q&A → refined narrative → **`RECONSTRUCTION.<project>.v2.md`** (append-only). New rounds use the same lineage resolution as `prepare` and write `finish/<id>.question.vN.json`.
 
 ![Deepen flow](img/dev-workgraph-deepen.png)
 
@@ -240,8 +251,23 @@ Combined history baseline: `prepared.model.history` + prior `finish.history`. Do
 
 ### Provenance
 
-Links are **file names only** (no commit hashes on finish/prepared):  
+**File chain** (no commit hashes on finish/prepared):  
 `finish` → `sourcePrepared` → `prepared` → `sourceReport` → `report` → `sourceGroups[]` → groups → summaries/commits.
+
+**Signal reason provenance** (group → report → prepared): each non-empty reason is `{ text, sourceGroupIds, sourceCommits? }`. Report folds arrays with overlap merge; prepared holds four collapsed slots. Commit summaries keep plain strings.
+
+**Question lineage** (group → report → prepare/deepen → finish question files): CLI-attached fields after LLM steps; prepare/deepen resolve explicit LLM refs into `lineageKind` (`report-thread` | `signal-reason`). Implementation: `question-provenance.ts`, `signal-reason-provenance.ts`, `repair-question-lineage.ts`.
+
+### Schema migration (`migrate`)
+
+`src/lib/migrations/` runs versioned steps registered in `MIGRATION_STEP_KINDS`:
+
+| Step | Target `schemaVersion` | Structural | Optional LLM |
+|------|------------------------|------------|--------------|
+| `pipeline-provenance` | `1000005` | Signal + question provenance on groups/reports/prepared/finish | `runPipelineProvenanceLlmBackfill` (narrative slot) for threads missing lineage refs |
+| `finish-questions-analyses` | `1000006` | Move `prepared.model.questionsAnalyses` → `finish/*.question.json` | — |
+
+`migrateRepo` walks artifact kinds in order; `ensureArtifactMigrated` upgrades on lazy load. Dry-run and backup flags supported.
 
 ### Token usage
 
@@ -273,6 +299,8 @@ Implementation lives in [`dev-workgraph-cli/src/`](dev-workgraph-cli/src/):
 | LM Studio lifecycle | `src/lib/lmstudio-session.ts` |
 | Grouping primitives | `src/lib/grouping.ts` — `groupByGap`, `extensionSessions`, merge helpers |
 | Finish + Q&A | `src/lib/finish-questions.ts`, `finish-load.ts` |
+| Question / signal provenance | `src/lib/question-provenance.ts`, `signal-reason-provenance.ts`, `repair-question-lineage.ts`, `question-cards.ts` |
+| Schema migrations | `src/lib/migrations/` — registry, detect, steps (`v1000005`, `v1000006`), optional LLM backfill |
 | Config / paths | `src/lib/config.ts` |
 | Prompts | `src/lib/prompts.ts` |
 
@@ -331,7 +359,8 @@ export const COMMIT_GROUP_STRATEGIES: readonly CommitGroupStrategy[] = [dayGapSt
 | `id`, `displayName` | CLI `--strategy`, `run` picker, saved `commitGroupStrategy` |
 | `cliOptions` | Strategy-owned Commander flags (e.g. `--days`, `--max-commits`) |
 | `pickCliOptions(opts)` | Extract only this strategy's fields from parsed CLI options |
-| `init(ctx)` | Prompts, persisted repo settings, returns `params` for `partition` |
+| `gatherRunInputs(repoPath, cli?, opts?)` | Strategy-specific setup prompts and persistence; used by `run` gathering and by `init` |
+| `init(ctx)` | Maps gathered `strategyCli` → `params` for `partition` (delegates to `gatherRunInputs`) |
 | `partition(commits, init, ctx)` | Async — returns `buckets[]` + stats (`rawBucketCount`, `pendingCount`, `fullyCovered`) |
 | `formatSummary(ctx, init, partition)` | One-line human summary before LLM summarize loop |
 
@@ -342,9 +371,9 @@ Each bucket: `{ members: CommitRecord[], fileKey: string }` where `fileKey` is t
 1. **Implement** `CommitGroupStrategy` in e.g. `src/lib/commit-group/jira-strategy.ts`. Reuse helpers from `grouping.ts` when useful (`groupByGap`, `extensionSessions`, `coveredCommitHashes`); not required.
 2. **Register** — import and append to `COMMIT_GROUP_STRATEGIES` in `registry.ts` (sole import site for concrete strategies).
 3. **CLI** — `registerCommitGroupStrategyOptions` (in `cli-options.ts`) registers every strategy's `cliOptions` on `commit-group`; inactive strategies' flags are ignored via `pickCliOptions`.
-4. **Config** — persist strategy-specific keys inside `init` (day-gap uses `groupThresholdDays` / `groupMaxCommits` on `RepoConfig`); the runner only stores `commitGroupStrategy` id.
+4. **Config** — persist strategy-specific keys inside `gatherRunInputs` / `init` (day-gap uses `groupThresholdDays` / `groupMaxCommits` on `RepoConfig`); the runner only stores `commitGroupStrategy` id.
 
-`run` calls `resolveRunGroupStrategy`: one registered strategy → use it silently; several → list picker (or reuse saved `commitGroupStrategy`). Strategy-specific prompts (e.g. day gap) run inside `init` at the `commit-group` step, not in `run`.
+`run` calls `resolveRunGroupStrategy`: one registered strategy → use it silently; several → list picker (or reuse saved `commitGroupStrategy`). Then `strategy.gatherRunInputs(repoPath, {}, { skipPromptIfSaved: true })` collects strategy-specific settings before the pipeline; results are passed as `strategyCli` to `commit-group`, where `init` reuses the same helper.
 
 Example alternative partition: group by Jira ticket parsed from commit messages, one bucket per ticket, `fileKey` = ticket key — same `GroupRecord` output, different session boundaries for `report` to fold.
 
@@ -366,6 +395,8 @@ If you implement a generally useful grouping strategy, please open a pull reques
 | Report | `uml/report.puml` | `img/report-*.png` |
 | Prepare | `uml/prepare.puml` | `img/prepare-*.png` |
 | Final | `uml/final.puml` | `img/final-*.png` |
+| Question provenance | `uml/question-provenance.puml` | `img/question-provenance-*.png` |
+| Migrate | `uml/migrate.puml` | `img/migrate-*.png` |
 | Deepen / run | `uml/pipeline.puml` | `img/dev-workgraph-deepen.png`, `dev-workgraph-run-orchestrator.png` |
 
 Regenerate all PNGs (see [`uml/README.md`](uml/README.md) for diagram legend):

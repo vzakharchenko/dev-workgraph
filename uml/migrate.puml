@@ -1,0 +1,48 @@
+@startuml migrate-overview
+!theme plain
+skinparam shadowing false
+skinparam ArrowColor #555555
+
+title **migrate** — schema upgrades (§1.5)\n`dev-workgraph migrate [repo]`
+
+legend top left
+  |= Tag |= Meaning |
+  | **(D)** | Structural rewrite (no LLM) |
+  | **(M:n)** | Optional LLM lineage backfill |
+endlegend
+
+rectangle "**Input**" #FFF8E1 {
+  card "data/repos/<repo-id>/\ngroups, reports, prepared, finish" as IN
+  card "schemaVersion < current CLI" as LEG
+}
+
+rectangle "**Phase 1 — structural (D)**" #E8F5E9 {
+  card "**pipeline-provenance** → 1000005\nsignalReason provenance objects\ngroup / report / prepared / finish\nquestion thread lineage (heuristic)" as S1
+  card "**finish-questions-analyses** → 1000006\nmove prepared.questionsAnalyses\n→ finish/*.question.json\nstrip from prepared" as S2
+}
+
+rectangle "**Phase 2 — LLM backfill (M:n, optional)**" #FFF3E0 {
+  card "**runPipelineProvenanceLlmBackfill**\nprepared + finish-questions\nthreads missing lineage refs\n→ derivedFrom* refs + resolvePrepareQuestionProvenanceFromLlm" as LLM
+}
+
+rectangle "**Lazy path**" #E3F2FD {
+  card "ensureArtifactMigrated\non artifact load" as LAZY
+}
+
+IN --> S1
+S1 --> S2
+S2 --> LLM : if ctx.llmSlots.narrative
+IN --> LAZY
+
+note bottom of S1
+  **signal-reason-provenance.ts** — fold report arrays,
+  seed from groups. **question-provenance.ts** —
+  attachGroup / seedReport / attachReportMerge.
+end note
+
+note bottom of S2
+  **prepare** on new runs writes finish question file
+  directly; migrate repairs legacy repos.
+end note
+
+@enduml

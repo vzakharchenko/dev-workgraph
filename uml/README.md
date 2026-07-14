@@ -34,7 +34,7 @@ Partition logic is **pluggable** (`src/lib/commit-group/`). Diagrams distinguish
 
 | Piece | Meaning |
 |-------|---------|
-| **Strategy** | `init` + `partition` → buckets (`members[]`, `fileKey`) |
+| **Strategy** | `gatherRunInputs` + `init` + `partition` → buckets (`members[]`, `fileKey`) |
 | **Runner** | Fixed `buildGroupRecord` + classify/compose LLM → `groups/<fileKey>.json` |
 | **day-gap** (default) | `groupByGap`, `extensionSessions`, `--days` / `--max-commits` |
 
@@ -52,5 +52,7 @@ See [`ARCHITECTURE.md`](../ARCHITECTURE.md) § Phase 3 and **Extending commit-gr
 | `commit-group.puml` | Work sessions (strategy + runner) |
 | `commit-group-strategies.puml` | Pluggable partition plugins, registry |
 | `report.puml` | Cumulative report fold |
+| `question-provenance.puml` | Question lineage (`threadId`, `derivedFromThreadIds`) + question cards + signal reason provenance |
 | `prepare.puml` | Prepared narrative |
 | `final.puml` | Q&A and RECONSTRUCTION deliverable |
+| `migrate.puml` | Schema upgrades (`pipeline-provenance`, `finish-questions-analyses`) |

@@ -54,6 +54,14 @@ export interface QuestionAnalysis {
 }
 
 /**
+ * Reference into report `signalReasons[dimension][index]` (LLM output at prepare/deepen).
+ */
+interface ReportSignalReasonRef {
+  dimension: "technical" | "architecture" | "security";
+  index: number;
+}
+
+/**
  * The aggregated form of {@link QuestionAnalysis} used at group and report level.
  * Because a group/report merges several commits, each field is an ARRAY: the
  * merged observations, the merged missing pieces, and the merged questions that
@@ -63,6 +71,34 @@ export interface QuestionAnalyses {
   observation: string[];
   missingPiece: string[];
   question: string[];
+  /** Stable opaque id for tracing threads through report/prepare merges. */
+  threadId?: string;
+  /** Commit hashes parallel to `observation` (CLI-attached, not from the model). */
+  sourceCommits?: string[];
+  /** Summary paths parallel to `observation`. */
+  sourceSummaries?: (string | null)[];
+  /** Primary work-session group id (`GroupRecord.groupId`). */
+  sourceGroupId?: number;
+  /** All group ids that contributed (report-level union). */
+  sourceGroupIds?: number[];
+  /** Index of this thread within the group's `questionsAnalyses`. */
+  groupThreadIndex?: number;
+  /** Parent thread ids when this entry was merged from prior stages. */
+  derivedFromThreadIds?: string[];
+  /** Report signal-reason catalog refs from prepare/deepen LLM (resolved code-side). */
+  derivedFromReportSignalRefs?: ReportSignalReasonRef[];
+  /** Prepared collapsed signal slots 0..3 from prepare/deepen LLM (resolved code-side). */
+  derivedFromPreparedSignalSlots?: number[];
+  /** Index 0..3 after `prepare` reframing. */
+  threadIndex?: number;
+  /** How this thread traces back after prepare (schema ≥ 1.0.5). */
+  lineageKind?: "report-thread" | "signal-reason";
+  /** Index into prepared `signalReasons` when {@link lineageKind} is `signal-reason`. */
+  derivedFromSignalReasonIndex?: number;
+  /** Compact human-readable source shown before Q&A (often code-built). */
+  evidenceExcerpt?: string;
+  /** Why this question matters for the developer's role. */
+  whyAsked?: string;
 }
 
 /**
@@ -285,13 +321,43 @@ export function groupClassifyJsonSchema(): Record<string, unknown> {
 }
 
 /** JSON Schema for the aggregated `questionsAnalyses` (group/report): array-valued fields. */
-function aggregatedQuestionAnalysisSchema(): Record<string, unknown> {
+function aggregatedQuestionAnalysisSchema(opts?: {
+  allowDerivedFrom?: boolean;
+  allowQuestionCards?: boolean;
+}): Record<string, unknown> {
   const strArray = { type: "array", items: { type: "string" } };
+  const properties: Record<string, unknown> = {
+    observation: strArray,
+    missingPiece: strArray,
+    question: strArray,
+  };
+  if (opts?.allowDerivedFrom) {
+    properties.derivedFromThreadIds = strArray;
+    properties.derivedFromReportSignalRefs = {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          dimension: { type: "string", enum: ["technical", "architecture", "security"] },
+          index: { type: "integer", minimum: 0 },
+        },
+        required: ["dimension", "index"],
+      },
+    };
+    properties.derivedFromPreparedSignalSlots = {
+      type: "array",
+      items: { type: "integer", minimum: 0, maximum: 3 },
+    };
+  }
+  if (opts?.allowQuestionCards) {
+    properties.whyAsked = { type: "string" };
+    properties.evidenceExcerpt = { type: "string" };
+  }
   return {
     type: "array",
     items: {
       type: "object",
-      properties: { observation: strArray, missingPiece: strArray, question: strArray },
+      properties,
       required: ["observation", "missingPiece", "question"],
     },
   };
@@ -475,15 +541,71 @@ export function prepareReasonsJsonSchema(): Record<string, unknown> {
   };
 }
 
+/** JSON Schema for prepare/deepen evidence card polish (batched per thread). */
+export function prepareEvidenceJsonSchema(threadCount: number): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      evidenceExcerpts: {
+        type: "array",
+        items: { type: "string" },
+        minItems: threadCount,
+        maxItems: threadCount,
+      },
+    },
+    required: ["evidenceExcerpts"],
+  };
+}
+
 /** JSON Schema for `prepare` step 5: role-aware questionsAnalyses + re-assessed confidence. */
 export function prepareQuestionsJsonSchema(): Record<string, unknown> {
   return {
     type: "object",
     properties: {
-      questionsAnalyses: aggregatedQuestionAnalysisSchema(),
+      questionsAnalyses: aggregatedQuestionAnalysisSchema({
+        allowDerivedFrom: true,
+      }),
       confidence: { type: "string", enum: [...SIGNALS] },
     },
     required: ["questionsAnalyses", "confidence"],
+  };
+}
+
+function migrateLineageEntrySchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      derivedFromThreadIds: { type: "array", items: { type: "string" } },
+      derivedFromReportSignalRefs: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            dimension: { type: "string", enum: ["technical", "architecture", "security"] },
+            index: { type: "integer", minimum: 0 },
+          },
+          required: ["dimension", "index"],
+        },
+      },
+      derivedFromPreparedSignalSlots: {
+        type: "array",
+        items: { type: "integer", minimum: 0, maximum: 3 },
+      },
+    },
+  };
+}
+
+/** JSON Schema for migrate LLM backfill: lineage refs only, parallel to input threads. */
+export function migrateLineageJsonSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      lineage: {
+        type: "array",
+        items: migrateLineageEntrySchema(),
+      },
+    },
+    required: ["lineage"],
   };
 }
 
@@ -549,20 +671,170 @@ export function cleanQuestionAnalysis(raw: unknown): QuestionAnalysis[] {
  * compacts each array field and drops entries that end up with no question.
  * @param raw - The raw value.
  */
-export function cleanQuestionAnalyses(raw: unknown): QuestionAnalyses[] {
+const SIGNAL_DIMENSIONS = ["technical", "architecture", "security"] as const;
+
+function cleanReportSignalReasonRefs(raw: unknown): ReportSignalReasonRef[] {
   if (!Array.isArray(raw)) return [];
+  const out: ReportSignalReasonRef[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const dim = (entry as { dimension?: unknown }).dimension;
+    const index = (entry as { index?: unknown }).index;
+    if (
+      typeof dim !== "string" ||
+      !SIGNAL_DIMENSIONS.includes(dim as (typeof SIGNAL_DIMENSIONS)[number])
+    ) {
+      continue;
+    }
+    if (typeof index !== "number" || !Number.isInteger(index) || index < 0) continue;
+    out.push({ dimension: dim as ReportSignalReasonRef["dimension"], index });
+  }
+  return out;
+}
+
+function cleanPreparedSignalSlots(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (slot): slot is number =>
+      typeof slot === "number" && Number.isInteger(slot) && slot >= 0 && slot <= 3,
+  );
+}
+
+function cleanQuestionStringArrays(): {
+  strArray: (v: unknown) => string[];
+  nullableStrArray: (v: unknown) => (string | null)[];
+} {
   const strArray = (v: unknown): string[] =>
     Array.isArray(v) ? v.map((s) => String(s ?? "").trim()).filter(Boolean) : [];
+  const nullableStrArray = (v: unknown): (string | null)[] =>
+    Array.isArray(v)
+      ? v.map((s) => {
+          if (s === null || s === undefined) return null;
+          const t = String(s).trim();
+          return t || null;
+        })
+      : [];
+  return { strArray, nullableStrArray };
+}
+
+function trimmedString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return value;
+}
+
+function parseLineageKind(value: unknown): QuestionAnalyses["lineageKind"] | undefined {
+  if (value === "report-thread" || value === "signal-reason") return value;
+  return undefined;
+}
+
+function finiteNumberArray(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((id): id is number => typeof id === "number" && Number.isFinite(id));
+}
+
+function optionalIdentityFields(entry: Partial<QuestionAnalyses>): Partial<QuestionAnalyses> {
+  const fields: Partial<QuestionAnalyses> = {};
+  const threadId = trimmedString(entry.threadId);
+  if (threadId) fields.threadId = threadId;
+
+  const groupThreadIndex = finiteNumber(entry.groupThreadIndex);
+  if (groupThreadIndex !== undefined) fields.groupThreadIndex = groupThreadIndex;
+
+  const threadIndex = finiteNumber(entry.threadIndex);
+  if (threadIndex !== undefined) fields.threadIndex = threadIndex;
+
+  const lineageKind = parseLineageKind(entry.lineageKind);
+  if (lineageKind) fields.lineageKind = lineageKind;
+
+  const derivedFromSignalReasonIndex = finiteNumber(entry.derivedFromSignalReasonIndex);
+  if (derivedFromSignalReasonIndex !== undefined) {
+    fields.derivedFromSignalReasonIndex = derivedFromSignalReasonIndex;
+  }
+
+  return fields;
+}
+
+function optionalProvenanceFields(
+  entry: Partial<QuestionAnalyses>,
+  strArray: (v: unknown) => string[],
+  nullableStrArray: (v: unknown) => (string | null)[],
+): Partial<QuestionAnalyses> {
+  const fields: Partial<QuestionAnalyses> = {};
+
+  const sourceGroupId = finiteNumber(entry.sourceGroupId);
+  if (sourceGroupId !== undefined) fields.sourceGroupId = sourceGroupId;
+
+  const derivedFrom = strArray(entry.derivedFromThreadIds);
+  if (derivedFrom.length > 0) fields.derivedFromThreadIds = derivedFrom;
+
+  const derivedFromReportSignalRefs = cleanReportSignalReasonRefs(
+    entry.derivedFromReportSignalRefs,
+  );
+  if (derivedFromReportSignalRefs.length > 0) {
+    fields.derivedFromReportSignalRefs = derivedFromReportSignalRefs;
+  }
+
+  const derivedFromPreparedSignalSlots = cleanPreparedSignalSlots(
+    entry.derivedFromPreparedSignalSlots,
+  );
+  if (derivedFromPreparedSignalSlots.length > 0) {
+    fields.derivedFromPreparedSignalSlots = derivedFromPreparedSignalSlots;
+  }
+
+  const sourceGroupIds = finiteNumberArray(entry.sourceGroupIds);
+  if (sourceGroupIds.length > 0) fields.sourceGroupIds = sourceGroupIds;
+
+  const sourceCommits = strArray(entry.sourceCommits);
+  if (sourceCommits.length > 0) fields.sourceCommits = sourceCommits;
+
+  const sourceSummaries = nullableStrArray(entry.sourceSummaries);
+  if (sourceSummaries.length > 0) fields.sourceSummaries = sourceSummaries;
+
+  return fields;
+}
+
+function optionalCardFields(entry: Partial<QuestionAnalyses>): Partial<QuestionAnalyses> {
+  const fields: Partial<QuestionAnalyses> = {};
+  const evidenceExcerpt = trimmedString(entry.evidenceExcerpt);
+  if (evidenceExcerpt) fields.evidenceExcerpt = evidenceExcerpt;
+
+  const whyAsked = trimmedString(entry.whyAsked);
+  if (whyAsked) fields.whyAsked = whyAsked;
+
+  return fields;
+}
+
+function cleanOneQuestionAnalysis(
+  raw: unknown,
+  strArray: (v: unknown) => string[],
+  nullableStrArray: (v: unknown) => (string | null)[],
+): QuestionAnalyses | null {
+  const entry = (raw ?? {}) as Partial<QuestionAnalyses>;
+  const question = strArray(entry.question);
+  if (question.length === 0) return null;
+
+  return {
+    observation: strArray(entry.observation),
+    missingPiece: strArray(entry.missingPiece),
+    question,
+    ...optionalIdentityFields(entry),
+    ...optionalProvenanceFields(entry, strArray, nullableStrArray),
+    ...optionalCardFields(entry),
+  };
+}
+
+export function cleanQuestionAnalyses(raw: unknown): QuestionAnalyses[] {
+  if (!Array.isArray(raw)) return [];
+  const { strArray, nullableStrArray } = cleanQuestionStringArrays();
   return raw
-    .map((q) => {
-      const entry = (q ?? {}) as Partial<QuestionAnalyses>;
-      return {
-        observation: strArray(entry.observation),
-        missingPiece: strArray(entry.missingPiece),
-        question: strArray(entry.question),
-      };
-    })
-    .filter((q) => q.question.length > 0);
+    .map((q) => cleanOneQuestionAnalysis(q, strArray, nullableStrArray))
+    .filter((q): q is QuestionAnalyses => q !== null);
 }
 
 /**

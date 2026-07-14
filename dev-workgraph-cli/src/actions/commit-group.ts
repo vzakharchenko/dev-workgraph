@@ -29,6 +29,7 @@ import {
   projectContextBlock,
   withProjectContext,
 } from "../lib/prompts.js";
+import { attachGroupQuestionProvenance } from "../lib/question-provenance.js";
 import { writeRecordJson } from "../lib/record-io.js";
 import type { CommitRecord, GroupRecord } from "../lib/records.js";
 import { resolveLlmSlot } from "../lib/select.js";
@@ -109,6 +110,7 @@ function groupSkipReason(
 async function summarizeGroupSession(
   record: GroupRecord,
   members: CommitRecord[],
+  groupId: number,
   ctx: GroupSummarizeContext,
 ): Promise<GroupRecord> {
   const classifyPrompt = buildGroupClassifyPrompt(record, members);
@@ -157,7 +159,11 @@ async function summarizeGroupSession(
       hiContext: tiers.hiContext,
       mediumContext: tiers.mediumContext,
       lowContext: tiers.lowContext,
-      questionsAnalyses: cleanQuestionAnalyses(questionsAnalyses),
+      questionsAnalyses: attachGroupQuestionProvenance(
+        cleanQuestionAnalyses(questionsAnalyses),
+        members,
+        groupId,
+      ),
       provenance: {
         model: ctx.model,
         generatedAt: new Date().toISOString(),
@@ -262,7 +268,12 @@ export async function commitGroup(options: CommitGroupOptions): Promise<void> {
       process.stdout.write(`${label} ... `);
 
       try {
-        const summarizedRecord = await summarizeGroupSession(record, members, summarizeCtx);
+        const summarizedRecord = await summarizeGroupSession(
+          record,
+          members,
+          record.groupId,
+          summarizeCtx,
+        );
         writeRecordJson(file, summarizedRecord);
         console.log("ok");
         summarized += 1;

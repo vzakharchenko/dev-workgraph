@@ -34,6 +34,10 @@ import {
   ROUTINE_CHECK_SYSTEM,
   withProjectContext,
 } from "../lib/prompts.js";
+import {
+  attachReportMergeProvenance,
+  seedReportQuestionProvenance,
+} from "../lib/question-provenance.js";
 import { writeRecordJson } from "../lib/record-io.js";
 import type {
   GroupRecord,
@@ -48,6 +52,7 @@ import {
   stripLegacyProvenance,
 } from "../lib/report-provenance.js";
 import { resolveLlmSlot } from "../lib/select.js";
+import { signalReasonText } from "../lib/signal-reason-provenance.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
@@ -67,8 +72,10 @@ const asStringArray = (value: unknown): string[] =>
     ? value.filter((v): v is string => typeof v === "string" && v.length > 0)
     : [];
 
-const nonEmpty = (value: unknown): string[] =>
-  typeof value === "string" && value.trim() ? [value] : [];
+const nonEmptyReason = (value: unknown): string[] => {
+  const text = signalReasonText(value);
+  return text.trim() ? [text] : [];
+};
 
 const uniq = (values: string[]): string[] => [...new Set(values)];
 
@@ -124,11 +131,14 @@ function initReport(
       architectureSignal: g?.architectureSignal ?? "low",
       securitySignal: g?.securitySignal ?? "low",
       signalReasons: {
-        technical: nonEmpty(g?.signalReasons.technical),
-        architecture: nonEmpty(g?.signalReasons.architecture),
-        security: nonEmpty(g?.signalReasons.security),
+        technical: nonEmptyReason(g?.signalReasons.technical),
+        architecture: nonEmptyReason(g?.signalReasons.architecture),
+        security: nonEmptyReason(g?.signalReasons.security),
       },
-      questionsAnalyses: g?.questionsAnalyses ?? [],
+      questionsAnalyses: seedReportQuestionProvenance(
+        g?.questionsAnalyses ?? [],
+        group.timestampEnd,
+      ),
       confidence: g?.confidence ?? "low",
       hiContext: g?.hiContext ?? [],
       mediumContext: g?.mediumContext ?? [],
@@ -306,9 +316,12 @@ async function mergeFoldModelLayer(
       architecture: cap(asStringArray(reasons.architecture)),
       security: cap(asStringArray(reasons.security)),
     },
-    questionsAnalyses: cleanQuestionAnalyses(merged.questionsAnalyses).slice(
-      0,
-      MAX_CONTEXT_BULLETS,
+    questionsAnalyses: attachReportMergeProvenance(
+      cleanQuestionAnalyses(merged.questionsAnalyses).slice(0, MAX_CONTEXT_BULLETS),
+      meta.prev.model.questionsAnalyses,
+      g?.questionsAnalyses ?? [],
+      meta.group.timestampEnd,
+      meta.group.timestampEnd,
     ),
     confidence: (merged.confidence as Signal) ?? meta.prev.model.confidence,
     ...contexts,

@@ -1,9 +1,17 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setPeriod } from "../../../src/lib/config.js";
 import { resolvePeriodDefinition, resolvePeriodRange } from "../../../src/lib/periods.js";
+
+const { promptMock } = vi.hoisted(() => ({
+  promptMock: vi.fn(),
+}));
+
+vi.mock("inquirer", () => ({
+  default: { prompt: promptMock },
+}));
 
 describe("resolvePeriodRange", () => {
   let tmpHome: string;
@@ -53,6 +61,7 @@ describe("resolvePeriodDefinition", () => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "workgraph-period-def-"));
     previousHome = process.env.WORKGRAPH_HOME;
     process.env.WORKGRAPH_HOME = tmpHome;
+    promptMock.mockReset();
   });
 
   afterEach(() => {
@@ -100,5 +109,40 @@ describe("resolvePeriodDefinition", () => {
         to: "2024-01-01",
       }),
     ).rejects.toThrow(/must be after/i);
+  });
+
+  it("rejects invalid period labels", async () => {
+    await expect(
+      resolvePeriodDefinition({
+        repoPath: repo,
+        id: "../escape",
+        from: "2024-01-01",
+        to: "2025-01-01",
+      }),
+    ).rejects.toThrow(/invalid period label/i);
+  });
+
+  it("prompts for period id and dates when flags are omitted", async () => {
+    promptMock
+      .mockResolvedValueOnce({ id: "2026" })
+      .mockResolvedValueOnce({ date: "2026-01-01" })
+      .mockResolvedValueOnce({ date: "2027-01-01" });
+    const resolved = await resolvePeriodDefinition({ repoPath: repo });
+    expect(resolved).toEqual({
+      id: "2026",
+      period: { from: "2026-01-01", to: "2027-01-01" },
+    });
+    expect(promptMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("prompts only for the end date when the start date is provided", async () => {
+    promptMock.mockResolvedValueOnce({ date: "2025-01-01" });
+    const resolved = await resolvePeriodDefinition({
+      repoPath: repo,
+      id: "fresh",
+      from: "2024-01-01",
+    });
+    expect(resolved.period).toEqual({ from: "2024-01-01", to: "2025-01-01" });
+    expect(promptMock).toHaveBeenCalledTimes(1);
   });
 });

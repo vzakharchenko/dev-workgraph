@@ -25,14 +25,16 @@ rectangle "**Not read by prepare**" #ECEFF1 {
 
 rectangle "**prepare (M:n + D)**" #FFF3E0 {
   card "Multi-entry report history\n-> one unified history" as H
-  card "Report questions -> 4 role-aware" as Q
-  card "signalReasons arrays -> 4 flat strings" as R
+  card "Report questions -> 4 role-aware threads" as Q
+  card "Report signalReason arrays -> 4 provenance slots" as R
   card "technologies cleaned (max 5)" as T
+  card "Write finish/<reportId>.question.json" as FQ
 }
 
 rectangle "**Output**" #E8F5E9 {
-  card "prepared/<reportId>.json" as OUT
-  card "Console preview:\nhistory + 4 questions" as PREV
+  card "prepared/<reportId>.json\n(history + signals + reasons)" as OUT
+  card "finish/<reportId>.question.json\n(questionsAnalyses + cards)" as FOUT
+  card "Console preview:\nhistory + 4 question cards" as PREV
 }
 
 INIT --> H
@@ -41,10 +43,12 @@ REP --> Q
 REP --> R
 REP --> T
 H --> OUT
-Q --> OUT
 R --> OUT
 T --> OUT
+Q --> FQ
+FQ --> FOUT
 OUT --> PREV
+FOUT --> PREV
 
 G .. H : not loaded
 C .. H
@@ -58,7 +62,13 @@ end note
 
 note bottom of OUT
   **Idempotent per report:** skip if prepared/<reportId>.json
-  exists. Sole input to **final**.
+  exists. Narrative + signals for **final**.
+  **No questionsAnalyses** (schema ≥1.0.6).
+end note
+
+note bottom of FOUT
+  **finish/<reportId>.question.json** written at prepare
+  (if absent). Canonical questionsAnalyses + cards.
 end note
 
 @enduml
@@ -114,18 +124,25 @@ partition "**[3/4] Collapse reasons (M:n)**" {
   :Output: **exactly 4** flat signalReasons strings;\nmerge near-dups, drop upkeep noise;
 }
 
-partition "**[4/4] Reframe questions (M:n)**" {
-  :Input: composed history + 4 reasons\n+ report.questionsAnalyses\n+ **prior finish Q&A**\n(latestFinish -> sourceQuestions\n+ question files)\n+ project context;
-  :Output: **up to 4** new role-aware questions\n(do not repeat prior Q&A);\nre-assess **confidence**;
+partition "**[4/5] Reframe questions (M:n)**" {
+  :Input: composed history + 4 reason slots\n+ report.questionsAnalyses\n+ **prior finish Q&A**\n+ project context;
+  :Output: **up to 4** threads + lineage refs\n(derivedFromThreadIds / SignalRefs / Slots);\nre-assess **confidence**;
+}
+
+partition "**[5/5] Provenance + cards + persist (D + M:n)**" {
+  :**resolvePrepareQuestionProvenanceFromLlm (D):**\nlineageKind, sourceGroupIds;
+  :**enrichQuestionCards (D):**\nevidence from observation[] + commits;\nwhyAsked from missingPiece;
+  :**polishEvidenceExcerptsWithLlm (M:n):**\n3–4 bullets per card (batched, optional);
+  :**createFinishQuestions (D):**\nwrite finish/<reportId>.question.json\n(if not exists);
 }
 
 partition "**Copy from report (D)**" {
   :changeTypes, *Signal levels\nunchanged from report.model;
 }
 
-:Write prepared/<reportId>.json;
+:Write prepared/<reportId>.json\n(history + 4 signalReason slots — no analyses);
 
-:Console preview: unified history,\ntechnologies, numbered questions;
+:Console preview: unified history,\ntechnologies, numbered question cards\n+ Evidence / Why asked;
 
 #LightGreen:Ready for **final**;
 
@@ -148,8 +165,8 @@ rectangle "**Used from report**" #E3F2FD {
   component "history[] — all entry texts\n-> rawHistory (D concat)" as RH
   component "model.technical/architecture/security Signal\n(copied D)" as SIG
   component "model.changeTypes (copied D)" as CT
-  component "model.signalReasons arrays\n-> collapsed to 4 (M:n)" as SR
-  component "model.questions\n-> reframed to 4 (M:n)" as RQ
+  component "model.signalReasons provenance arrays\n-> 4 slots (M:n)" as SR
+  component "model.questionsAnalyses\n-> reframed to 4 (M:n)" as RQ
   component "model.technologies\n-> cleaned max 5 (M:n)" as RT
   component "model.confidence\n(re-assessed in step 4)" as CONF
   component "groupCount, reportId" as META
@@ -224,25 +241,32 @@ rectangle "**[2/4] Technologies (M:n)**" as S2 #FFF3E0 {
 }
 
 rectangle "**[3/4] signalReasons (M:n)**" as S3 #FFF3E0 {
-  card "3 arrays -> **4 flat strings**"
+  card "3 provenance arrays -> **4 slots**"
   card "Merge near-duplicates"
   card "Drop minor upkeep reasons"
   card "Grounded in composed history"
 }
 
 rectangle "**[4/4] questions (M:n)**" as S4 #FFF3E0 {
-  card "Report questionsAnalyses\n+ prior finish Q&A\n(resolve question files)\n-> **up to 4** new"
+  card "Report questionsAnalyses\n+ prior finish Q&A\n-> **up to 4** new"
   card "Role-aware; skip story/README\n+ already-answered threads"
   card "Target what Git cannot know"
   card "**confidence** re-assessed"
+}
+
+rectangle "**[4b] Provenance + cards (D)**" as S4B #E8F5E9 {
+  card "resolvePrepareQuestionProvenanceFromLlm"
+  card "enrichQuestionCards\n→ evidenceExcerpt\n→ whyAsked from missingPiece"
+  card "createFinishQuestions\n→ finish/*.question.json"
 }
 
 rectangle "**Copy (D)**" as SC #E8F5E9 {
   card "changeTypes + *Signal levels\nfrom report unchanged"
 }
 
-rectangle "**Output PreparedRecord**" as OUT #E1F5FE {
+rectangle "**Output**" as OUT #E1F5FE {
   card "prepared/<reportId>.json"
+  card "finish/<reportId>.question.json"
 }
 
 PJ --> S1
@@ -253,11 +277,12 @@ S0 --> S1
 REP --> S2
 S1 --> S3
 S3 --> S4
+S4 --> S4B
 REP --> SC
 S1 --> OUT
 S2 --> OUT
 S3 --> OUT
-S4 --> OUT
+S4B --> OUT
 SC --> OUT
 
 @enduml
@@ -280,8 +305,7 @@ class "PreparedRecord" as PR #E1F5FE {
 class "PreparedModelLayer (M:n + D copy)" as MOD #FFF3E0 {
   **history** — single unified narrative (step 1)
   **technologies** — max 5 cleaned (step 2)
-  **signalReasons** — exactly 4 strings (step 3)
-  **questionsAnalyses** — up to 4 threads (step 4)
+  **signalReasons** — 4 provenance slots (step 3)
   **confidence** — re-assessed (step 4)
   --
   **changeTypes** — copied from report (D)
@@ -290,21 +314,28 @@ class "PreparedModelLayer (M:n + D copy)" as MOD #FFF3E0 {
   provenance { model, generatedAt, sourceReport }
 }
 
-class "Not present (vs report)" as ABS #ECEFF1 {
+class "FinishQuestionsRecord (written at prepare)" as FQR #FCE4EC {
+  **questionsAnalyses[]** — up to 4 threads (step 4–5)
+  **threadIndex**, lineageKind, provenance fields
+  **evidenceExcerpt**, **whyAsked**
+  **questions[]** — id + question strings
+}
+
+class "Not on prepared (vs legacy)" as ABS #ECEFF1 {
+  no questionsAnalyses (schema ≥1.0.6)
   no deterministic layer
   no historySource / sourceGroups
   no hiContext / mediumContext / lowContext
-  no mergeCursor
-  **no answers** — Q&A in finish/
+  **no answers** — Q&A in finish archive
 }
 
 PR *-- MOD
+PR .. FQR : prepare writes\nfinish question file
 PR .. ABS
 
-note bottom of MOD
-  Human answers are collected in **final** / **deepen**
-  and stored on the finish archive + question files —
-  **not** on the prepared record (§7).
+note bottom of FQR
+  Human answers collected in **final** / **deepen**
+  on finish archive (answers[] + sourceQuestions).
 end note
 
 @enduml
@@ -318,17 +349,18 @@ title **prepare** -> **final** — human-facing handoff
 
 rectangle "**prepare output**" #FFF3E0 {
   card "prepared/<reportId>.json" as P
+  card "finish/<reportId>.question.json" as FQ
   card "model.history — Git reconstruction" as H
-  card "model.questions x4" as Q
+  card "questionsAnalyses x4 + cards" as Q
 }
 
 rectangle "**Console preview (D)**" as PREV #FFFDE7 {
   card "Print unified history"
-  card "Print numbered 4 questions"
+  card "Print numbered question cards"
 }
 
 rectangle "**final (next step)**" #FCE4EC {
-  card "Write finish/*.question.json"
+  card "resolveRoundQuestionAnalyses\nfrom finish question file" as LOAD
   card "Present 4 questions interactively"
   card "Persist answers on finish archive\n(questionId refs + sourceQuestions)"
   card "Refine history with answers (M:n)"
@@ -337,15 +369,15 @@ rectangle "**final (next step)**" #FCE4EC {
 }
 
 P --> PREV
+FQ --> PREV
 PREV ..> Q : user sees before final
 P --> H
-P --> Q
-Q --> final
+FQ --> LOAD
+LOAD --> final
 
 note bottom
-  prepare makes **final** transparent — user knows
-  exactly which questions will be asked.
-  final reads **only** prepared + project.json,
+  prepare writes **finish question file** at prepare time.
+  final reads prepared + **finish/*.question.json**,
   not report or groups directly.
 end note
 
@@ -364,6 +396,7 @@ database "reports/<reportId>.json" as RPT
 participant "**prepare**" as PRE
 participant "LLM\nnarrativeModel\nOllama | LM Studio" as LLM
 database "prepared/<reportId>.json" as OUT
+database "finish/<reportId>.question.json" as FOUT
 
 DEV -> PRE : prepare ./repo
 
@@ -380,16 +413,19 @@ alt technologies present
   LLM --> PRE : max 5 technologies
 end
 
-PRE -> LLM : [3/4] collapse signalReasons -> 4
-LLM --> PRE : signalReasons[4]
+PRE -> LLM : [3/4] collapse signalReasons -> 4 slots
+LLM --> PRE : signalReasons[4] texts
 
 PRE -> LLM : [4/4] reframe questions + confidence\n(+ prior finish Q&A if any)
-LLM --> PRE : questionsAnalyses, confidence
+LLM --> PRE : questionsAnalyses + lineage refs
 
+PRE -> PRE : resolvePrepareQuestionProvenanceFromLlm (D)
+PRE -> PRE : enrichQuestionCards (D)
 PRE -> PRE : copy changeTypes + signals from report (D)
 
-PRE -> OUT : write PreparedRecord\n(no answers)
+PRE -> OUT : write PreparedRecord\n(no questionsAnalyses)
+PRE -> FOUT : createFinishQuestions\n(if question file absent)
 
-PRE --> DEV : console preview\n(history + questions)
+PRE --> DEV : console preview\n(history + question cards)
 
 @enduml

@@ -91,15 +91,17 @@ partition "Prepared narrative (§10)" {
     1. (D) concat report history → rawHistory
     2. (M:n) compose unified **history**
     3. (D) copy signals + changeTypes
-    4. (M:n) collapse signalReasons → 4 strings
+    4. (M:n) collapse signalReasons → 4 provenance slots
     5. (M:n) reframe **4 questions**\n       (+ prior finish Q&A input)
-    6. (D) console preview
-    **prepared/**<reportId>.json
+    6. (D) resolvePrepareQuestionProvenanceFromLlm\n       + enrichQuestionCards + createFinishQuestions
+    **prepared/**<reportId>.json (no questionsAnalyses)
+    **finish/**<reportId>.question.json (canonical Q&A threads)
+    7. (D) console preview
   end note
 }
 
 partition "Final deliverable (§11)" {
-  :(H) **final** — collect answers\nUp to 4 questions/round;\nwrite **.question.json** / **.question.vN.json**;
+  :(H) **final** — collect answers\nresolveRoundQuestionAnalyses from finish question file;
   :(M:n) **final** — refine IMPACT\nWeave **all** Q&A (resolve question files);
   :(M:n) **final** — Role Narrative\n4 claim-safe impact bullets;
   :(D) **final** — write markdown\nRECONSTRUCTION.<project>.md or .vN.md;
@@ -287,11 +289,11 @@ folder "data/repos/<repo-id>/" as REPO {
     file "<timestampEnd>.json"
   }
   folder "prepared/" as PREP {
-    file "<reportId>.json\n(questionsAnalyses only)"
+    file "<reportId>.json\n(history + signalReasons)"
   }
   folder "finish/" as FIN {
     file "<id>.md + .json\n(version 1, from final)"
-    file "<id>.question.json\n(v1 question text)"
+    file "<id>.question.json\n(v1 — questionsAnalyses\nwritten at prepare)"
     file "<id>.v2.md + .v2.json\n(deepen / extension)"
     file "<id>.question.v2.json\n(v2 questions)"
     file "<id>.vN…"
@@ -310,7 +312,8 @@ COMM --> SUMM : evidence → summarize
 SUMM --> GRP : canonical summaries
 GRP --> RPT : fold chain
 RPT --> PREP : latest report
-PREP --> FIN : prepared narrative\n(answers on finish only)
+PREP --> FIN : prepared narrative
+PREP --> FIN : finish question file\n(questionsAnalyses at prepare)
 FIN --> FIN : deepen or extension final\n-> v2, v3, … (sourcePreviousFinish)
 
 note bottom of REPO

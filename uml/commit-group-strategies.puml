@@ -13,7 +13,7 @@ legend top left
 endlegend
 
 rectangle "src/lib/commit-group/" #E8F5E9 {
-  card "**CommitGroupStrategy**\nid · displayName\ncliOptions · pickCliOptions\ninit · partition · formatSummary" as IFACE
+  card "**CommitGroupStrategy**\nid · displayName\ncliOptions · pickCliOptions\ngatherRunInputs · init\npartition · formatSummary" as IFACE
 
   card "**registry.ts**\nCOMMIT_GROUP_STRATEGIES\n(sole import of concrete strategies)" as REG #C8E6C9
 
@@ -48,6 +48,7 @@ note bottom of REG
   1 registered = silent default
   N registered = picker or saved
   **commitGroupStrategy** in repo config
+  then **gatherRunInputs** → strategyCli
 end note
 
 note bottom of OUT
@@ -68,8 +69,9 @@ title **commit-group** — strategy vs runner responsibilities
 
 |Strategy (plugin)|
 start
-:Read strategyCli from CLI\npickCliOptions;
-:init(ctx) — prompts, persist\n(e.g. groupThresholdDays);
+:Read strategyCli from CLI\nor run gathering;
+:gatherRunInputs — prompts, persist\n(e.g. groupThresholdDays);
+:init(ctx) — map gathered CLI → params;
 :partition(commits) to buckets;
 note right
   Each bucket:

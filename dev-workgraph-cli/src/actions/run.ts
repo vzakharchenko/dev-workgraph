@@ -11,11 +11,13 @@ import {
 import { getRepoConfig, repoProjectPath, setRepoConfig } from "../lib/config.js";
 import { currentUserEmail, getAuthors, resolveRepo } from "../lib/git.js";
 import type { LlmCommandOptions } from "../lib/llm/cli-options.js";
-import type { LlmModelChoice } from "../lib/llm/types.js";
 import { withProviderStep } from "../lib/lmstudio-session.js";
-import { discoverLlmBackends, noLlmBackendsError, providerLabel } from "../lib/ollama.js";
+import { providerLabel } from "../lib/ollama.js";
 import { resolvePeriodDefinition } from "../lib/periods.js";
-import { resolveLlmSlot } from "../lib/select.js";
+import {
+  type PipelineLlmSlots,
+  resolvePipelineLlmSlots,
+} from "../lib/resolve-pipeline-llm-slots.js";
 import { llmReady } from "./check.js";
 import { commitGroup } from "./commit-group.js";
 import { evidence } from "./evidence.js";
@@ -41,11 +43,7 @@ export interface RunOptions extends LlmCommandOptions {
   periodMode?: boolean;
 }
 
-interface RunSlots {
-  commit: LlmModelChoice;
-  report: LlmModelChoice;
-  narrative: LlmModelChoice;
-}
+interface RunSlots extends PipelineLlmSlots {}
 
 interface RunInitContext {
   needInit: boolean;
@@ -90,34 +88,7 @@ async function resolveRunPeriod(
 }
 
 async function resolveRunSlots(options: RunOptions): Promise<RunSlots> {
-  const shared = {
-    ollama: options.ollama,
-    lmstudio: options.lmstudio,
-    model: options.model?.trim() || undefined,
-  };
-
-  const backends = await discoverLlmBackends(shared);
-  if (backends.length === 0) {
-    throw noLlmBackendsError();
-  }
-
-  console.log(
-    "\nSelect a model for each pipeline stage (Ollama and LM Studio models appear together).\n",
-  );
-
-  const commit = await resolveLlmSlot("commit", {
-    ...shared,
-    message: "Model for commit summaries & commit-group?",
-  });
-  const reportSlot = await resolveLlmSlot("report", {
-    ...shared,
-    message: "Model for report?",
-  });
-  const narrative = await resolveLlmSlot("narrative", {
-    ...shared,
-    message: "Model for project context (init), prepare & final?",
-  });
-  return { commit, report: reportSlot, narrative };
+  return resolvePipelineLlmSlots(options);
 }
 
 async function ensureBackendsReady(slots: RunSlots): Promise<void> {
@@ -211,6 +182,8 @@ export async function run(options: RunOptions): Promise<void> {
   const initCtx = await resolveRunInitContext(repoPath, period);
   const emails = await resolveRunAuthors(repoPath);
   const groupStrategy = await resolveRunGroupStrategy(repoPath);
+  const strategy = getCommitGroupStrategy(groupStrategy);
+  const strategyCli = await strategy.gatherRunInputs(repoPath, {}, { skipPromptIfSaved: true });
 
   console.log("\n=== Running pipeline (final will ask the prepared questions at the end) ===");
 
@@ -254,6 +227,7 @@ export async function run(options: RunOptions): Promise<void> {
       repo: repoPath,
       model: slots.commit.model,
       groupStrategy,
+      strategyCli,
       period,
     }),
   );

@@ -9,6 +9,7 @@ import type {
   CommitGroupPartitionResult,
   CommitGroupRunContext,
   CommitGroupStrategy,
+  GatherRunInputsOptions,
 } from "./types.js";
 
 const DEFAULT_THRESHOLD_DAYS = 7;
@@ -19,6 +20,8 @@ interface DayGapParams {
   maxCommits: number;
 }
 
+interface ResolveDayGapOpts extends GatherRunInputsOptions {}
+
 function asDayGapParams(init: CommitGroupInitResult): DayGapParams {
   const { thresholdDays, maxCommits } = init.params;
   return {
@@ -27,12 +30,21 @@ function asDayGapParams(init: CommitGroupInitResult): DayGapParams {
   };
 }
 
-async function resolveThreshold(repoPath: string, flagDays?: number): Promise<number> {
+async function resolveThreshold(
+  repoPath: string,
+  flagDays?: number,
+  opts?: ResolveDayGapOpts,
+): Promise<number> {
   if (flagDays !== undefined && Number.isFinite(flagDays) && flagDays > 0) {
     setRepoConfig(repoPath, { groupThresholdDays: flagDays });
     return flagDays;
   }
-  const saved = getRepoConfig(repoPath)?.groupThresholdDays ?? DEFAULT_THRESHOLD_DAYS;
+  const cfg = getRepoConfig(repoPath);
+  if (opts?.skipPromptIfSaved && cfg?.groupThresholdDays !== undefined) {
+    console.log(`Using saved group threshold: ${cfg.groupThresholdDays} day(s)`);
+    return cfg.groupThresholdDays;
+  }
+  const saved = cfg?.groupThresholdDays ?? DEFAULT_THRESHOLD_DAYS;
   const { days } = await inquirer.prompt<{ days: number }>([
     {
       type: "number",
@@ -46,12 +58,23 @@ async function resolveThreshold(repoPath: string, flagDays?: number): Promise<nu
   return value;
 }
 
-async function resolveMaxCommits(repoPath: string, flagMax?: number): Promise<number> {
+async function resolveMaxCommits(
+  repoPath: string,
+  flagMax?: number,
+  opts?: ResolveDayGapOpts,
+): Promise<number> {
   if (flagMax !== undefined && Number.isFinite(flagMax) && flagMax >= 0) {
     setRepoConfig(repoPath, { groupMaxCommits: flagMax });
     return flagMax;
   }
-  const saved = getRepoConfig(repoPath)?.groupMaxCommits ?? DEFAULT_MAX_COMMITS;
+  const cfg = getRepoConfig(repoPath);
+  if (opts?.skipPromptIfSaved && cfg?.groupMaxCommits !== undefined) {
+    console.log(
+      `Using saved max commits/group: ${cfg.groupMaxCommits === 0 ? "unlimited" : cfg.groupMaxCommits}`,
+    );
+    return cfg.groupMaxCommits;
+  }
+  const saved = cfg?.groupMaxCommits ?? DEFAULT_MAX_COMMITS;
   const { maxCommits } = await inquirer.prompt<{ maxCommits: number }>([
     {
       type: "number",
@@ -63,6 +86,25 @@ async function resolveMaxCommits(repoPath: string, flagMax?: number): Promise<nu
   const value = Number.isFinite(maxCommits) && maxCommits >= 0 ? maxCommits : saved;
   setRepoConfig(repoPath, { groupMaxCommits: value });
   return value;
+}
+
+async function gatherDayGapInputs(
+  repoPath: string,
+  cli?: Record<string, unknown>,
+  opts?: ResolveDayGapOpts,
+): Promise<{ days: number; maxCommits: number }> {
+  const resolvedCli = cli ?? {};
+  const thresholdDays = await resolveThreshold(
+    repoPath,
+    resolvedCli.days as number | undefined,
+    opts,
+  );
+  const maxCommits = await resolveMaxCommits(
+    repoPath,
+    resolvedCli.maxCommits as number | undefined,
+    opts,
+  );
+  return { days: thresholdDays, maxCommits };
 }
 
 function formatDayGapSummary(
@@ -113,13 +155,15 @@ export const dayGapStrategy: CommitGroupStrategy = {
     return out;
   },
 
+  gatherRunInputs(repoPath, cli, opts) {
+    return gatherDayGapInputs(repoPath, cli, opts);
+  },
+
   async init(ctx) {
-    const cli = ctx.options.strategyCli;
-    const thresholdDays = await resolveThreshold(ctx.repoPath, cli.days as number | undefined);
-    const maxCommits = await resolveMaxCommits(ctx.repoPath, cli.maxCommits as number | undefined);
+    const { days, maxCommits } = await gatherDayGapInputs(ctx.repoPath, ctx.options.strategyCli);
     return {
-      label: `${thresholdDays}-day gap, max ${maxCommits || "∞"} commits/group`,
-      params: { thresholdDays, maxCommits },
+      label: `${days}-day gap, max ${maxCommits || "∞"} commits/group`,
+      params: { thresholdDays: days, maxCommits },
     };
   },
 

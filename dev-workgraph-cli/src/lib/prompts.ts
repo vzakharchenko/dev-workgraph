@@ -18,9 +18,32 @@ import {
   questionEmphasisForRole,
   roleDefinitionPromptBlock,
 } from "./role-definitions.js";
+import {
+  normalizeSignalReason,
+  signalReasonArrayTexts,
+  signalReasonText,
+} from "./signal-reason-provenance.js";
 
 export { MAX_HISTORY_ENTRIES } from "./report-provenance.js";
 export { cvEmphasisForRole } from "./role-definitions.js";
+
+/** Shared rules for `question` strings — role-calibrated by topic, not performance-review tone. */
+const QUESTION_STYLE_RULES = [
+  "QUESTION STYLE (every question string):",
+  "- Role-calibrated by TOPIC (what gap to close), not by tone. Pick gaps that matter at this",
+  "  seniority — but do NOT address the developer by role title ('As a Staff Developer…'),",
+  "  do NOT use performance-review or Lattice phrasing ('platform direction perspective',",
+  "  'prove Staff-level ownership', 'enterprise customer requirements' as assumed facts).",
+  "- Goal: help the developer recall what actually happened — not prove seniority.",
+  "- Do NOT assume production scale, HA clusters, enterprise customers, or operational constraints",
+  "  unless observation/evidence supports them. Use conditional phrasing instead:",
+  "  'Were these designed for clustered deployments, or mainly single-node correctness?'",
+  "- Name only features/terms that appear in observations or evidence (do not invent WebAuthn",
+  "  in a RADIUS question unless WebAuthn appears in the thread evidence).",
+  "- Prefer plain English; avoid awkward compounds like 'same-time' (use 'at the same time').",
+  "observation bullets: factual what-changed phrases ('Added Mikrotik module', 'RadSec TLS');",
+  "never third-person narrative ('The developer architected…').",
+].join("\n");
 
 // ───────────────────────────── project context (from `init`) ─────────────────
 
@@ -40,7 +63,7 @@ export function projectContextBlock(ctx: ProjectContext | null): string {
     `- Apparent stack: ${p.apparentStack.join(", ") || "(unknown)"}`,
     `- Key themes: ${p.keyThemes.join(", ") || "(unknown)"}`,
     `- Background (prepared from the developer's story; may be incomplete): ${ctx.story.preparedContext}`,
-    `- Frame questions for a ${ctx.role}: ${emphasis}. Avoid questions the background already answers.`,
+    `- Prefer question topics at this seniority: ${emphasis}. Never open with "As a ${ctx.role}…" or performance-review tone.`,
   ].join("\n");
 }
 
@@ -588,10 +611,39 @@ const ROUTINE_MAINTENANCE_RULE = [
 
 const bulletList = (items: string[]): string => items.map((b) => `- ${b}`).join("\n") || "(none)";
 
+function analysesGroupIdTrace(entry: QuestionAnalyses): string | null {
+  if (entry.sourceGroupIds?.length) {
+    return `groupIds=${entry.sourceGroupIds.join(", ")}`;
+  }
+  if (entry.sourceGroupId !== undefined) return `groupId=${entry.sourceGroupId}`;
+  return null;
+}
+
+function analysesThreadHeader(index: number, trace: string): string {
+  if (!trace) return `  thread ${index + 1}:`;
+  return `  thread ${index + 1} (${trace}):`;
+}
+
+function signalReasonLine(dim: string, index: number, trace: string, text: string): string {
+  const label = `${dim}[${index}]`;
+  const suffix = trace ? ` (${trace})` : "";
+  return `  ${label}${suffix}: ${text.trim() || "(empty)"}`;
+}
+
 /** Renders aggregated questionsAnalyses (group/report) for a merge prompt. */
 const analysesBlock = (entries: QuestionAnalyses[]): string =>
   entries
     .map((e, i) => {
+      const trace = [
+        e.threadId ? `id=${e.threadId}` : null,
+        e.groupThreadIndex !== undefined ? `groupThread=${e.groupThreadIndex}` : null,
+        analysesGroupIdTrace(e),
+        e.sourceCommits?.length
+          ? `commits=${e.sourceCommits.map((h) => h.slice(0, 8)).join(", ")}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
       const observations = e.observation.length
         ? e.observation.map((o, j) => `       ${j + 1}. ${o}`).join("\n")
         : "       (none)";
@@ -602,7 +654,7 @@ const analysesBlock = (entries: QuestionAnalyses[]): string =>
         ? e.question.map((q, j) => `       ${j + 1}. ${q}`).join("\n")
         : "       (none)";
       return [
-        `  thread ${i + 1}:`,
+        analysesThreadHeader(i, trace),
         "     observations:",
         observations,
         "     missing pieces:",
@@ -612,6 +664,38 @@ const analysesBlock = (entries: QuestionAnalyses[]): string =>
       ].join("\n");
     })
     .join("\n\n") || "(none)";
+
+/** Renders report signal-reason catalog with stable indices for prepare/deepen lineage. */
+const signalReasonCatalogBlock = (signalReasons: {
+  technical: unknown[];
+  architecture: unknown[];
+  security: unknown[];
+}): string => {
+  const dims = ["technical", "architecture", "security"] as const;
+  const lines: string[] = [];
+  for (const dim of dims) {
+    const entries = signalReasons[dim] ?? [];
+    for (let i = 0; i < entries.length; i += 1) {
+      const prov = normalizeSignalReason(entries[i], []);
+      const trace = [
+        prov.sourceGroupIds.length ? `groupIds=${prov.sourceGroupIds.join(", ")}` : null,
+        prov.sourceCommits?.length
+          ? `commits=${prov.sourceCommits.map((h) => h.slice(0, 8)).join(", ")}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      lines.push(signalReasonLine(dim, i, trace, prov.text));
+    }
+  }
+  return lines.join("\n") || "(none)";
+};
+
+const preparedSignalSlotsBlock = (slots: string[]): string =>
+  slots
+    .slice(0, 4)
+    .map((text, i) => `  slot ${i}: ${text.trim() || "(empty)"}`)
+    .join("\n") || "(none)";
 
 // Merge the accumulated report's model layer with the next group's model layer.
 export const REPORT_MERGE_SYSTEM = [
@@ -631,6 +715,7 @@ export const REPORT_MERGE_SYSTEM = [
   "  In question: keep ONE best question per thread — read each candidate's meaning, pick or rewrite the",
   "  sharpest single question that recovers the merged missing piece. Do NOT accumulate multiple question",
   "  strings for the same thread unless they ask genuinely different things that cannot be one question.",
+  QUESTION_STYLE_RULES,
   "  VALUE — rank threads by what still matters most for the developer's role (see PROJECT CONTEXT):",
   "  production use, ownership vs maintenance, customer/product driver, security boundary, and major",
   "  design decisions outrank minor clarifications, housekeeping, and routine upkeep. Questions tied to",
@@ -732,9 +817,9 @@ export function buildReportMergePrompt(report: ReportRecord, group: GroupRecord)
   return [
     "ACCUMULATED report model so far:",
     `- changeTypes: ${r.changeTypes.join(", ") || "(none)"}`,
-    `- signalReasons.technical: ${bulletList(r.signalReasons.technical)}`,
-    `- signalReasons.architecture: ${bulletList(r.signalReasons.architecture)}`,
-    `- signalReasons.security: ${bulletList(r.signalReasons.security)}`,
+    `- signalReasons.technical: ${bulletList(signalReasonArrayTexts(r.signalReasons.technical))}`,
+    `- signalReasons.architecture: ${bulletList(signalReasonArrayTexts(r.signalReasons.architecture))}`,
+    `- signalReasons.security: ${bulletList(signalReasonArrayTexts(r.signalReasons.security))}`,
     `- questionsAnalyses:\n${analysesBlock(r.questionsAnalyses)}`,
     `- hiContext:\n${bulletList(r.hiContext)}`,
     `- mediumContext:\n${bulletList(r.mediumContext)}`,
@@ -742,9 +827,9 @@ export function buildReportMergePrompt(report: ReportRecord, group: GroupRecord)
     "",
     "NEXT group model to fold in:",
     `- changeTypes: ${(g?.changeTypes ?? []).join(", ") || "(none)"}`,
-    `- signalReasons.technical: ${g?.signalReasons.technical ?? "(none)"}`,
-    `- signalReasons.architecture: ${g?.signalReasons.architecture ?? "(none)"}`,
-    `- signalReasons.security: ${g?.signalReasons.security ?? "(none)"}`,
+    `- signalReasons.technical: ${signalReasonText(g?.signalReasons.technical) || "(none)"}`,
+    `- signalReasons.architecture: ${signalReasonText(g?.signalReasons.architecture) || "(none)"}`,
+    `- signalReasons.security: ${signalReasonText(g?.signalReasons.security) || "(none)"}`,
     `- questionsAnalyses:\n${analysesBlock(g?.questionsAnalyses ?? [])}`,
     `- hiContext:\n${bulletList(g?.hiContext ?? [])}`,
     `- mediumContext:\n${bulletList(g?.mediumContext ?? [])}`,
@@ -887,7 +972,11 @@ export const PREPARE_REASONS_SYSTEM = [
  * @param history - The composed history from step 2.
  */
 export function buildPrepareReasonsPrompt(
-  reasons: { technical: string[]; architecture: string[]; security: string[] },
+  reasons: {
+    technical: unknown[];
+    architecture: unknown[];
+    security: unknown[];
+  },
   history: string,
 ): string {
   return [
@@ -895,9 +984,9 @@ export function buildPrepareReasonsPrompt(
     history || "(none)",
     "",
     "Report signal reasons:",
-    `technical:\n${bulletList(reasons.technical)}`,
-    `architecture:\n${bulletList(reasons.architecture)}`,
-    `security:\n${bulletList(reasons.security)}`,
+    `technical:\n${bulletList(signalReasonArrayTexts(reasons.technical))}`,
+    `architecture:\n${bulletList(signalReasonArrayTexts(reasons.architecture))}`,
+    `security:\n${bulletList(signalReasonArrayTexts(reasons.security))}`,
   ].join("\n");
 }
 
@@ -905,38 +994,59 @@ export function buildPrepareReasonsPrompt(
 export const PREPARE_QUESTIONS_SYSTEM = [
   "You produce up to FOUR role-aware question analyses that recover the missing human context Git",
   "cannot show, plus a confidence. First person ('I'). Return JSON",
-  '{ "questionsAnalyses": [{ "observation": ["..."], "missingPiece": ["..."], "question": ["..."] }],',
-  '  "confidence": "low|medium|high" }.',
-  "Given the composed history, the four signal reasons, the report's existing questionsAnalyses,",
-  "any prior human Q&A from an earlier finish round, and the role + project context: write analyses",
-  "targeting what still cannot be known (production use, ownership vs maintenance, customer/product",
-  "driver, security boundary), framed for the role — especially gaps opened by NEW work in the",
-  "history. Each entry is one open thread; usually one question string per entry. Do NOT repeat",
-  "questions already answered in prior Q&A (same missing piece or paraphrase). Drop duplicates and",
-  "facts already in the project context. confidence = your confidence in this narrative.",
+  '{ "questionsAnalyses": [{ "observation": ["..."], "missingPiece": ["..."], "question": ["..."],',
+  '    "derivedFromThreadIds": ["..."], "derivedFromReportSignalRefs": [{ "dimension": "technical|architecture|security", "index": 0 }],',
+  '    "derivedFromPreparedSignalSlots": [0] }], "confidence": "low|medium|high" }.',
+  "Given the composed history, the four prepared signal slots, the report signal-reason catalog,",
+  "the report's existing questionsAnalyses (with thread ids), any prior human Q&A from an earlier",
+  "finish round, and the role + project context: write analyses targeting what still cannot be",
+  "known (production use, ownership vs maintenance, customer/product driver, security boundary).",
+  "Each entry is one open thread; usually one question string per entry.",
+  QUESTION_STYLE_RULES,
+  "missingPiece must state the human context Git cannot show — neutrally, without implying what",
+  "answer is desirable. Do NOT output whyAsked or evidenceExcerpt (the CLI builds those).",
+  "LINEAGE (required for every output thread — cite sources by ID/index only, never by text match):",
+  "- derivedFromThreadIds: copy thread id(s) from the report questionsAnalyses catalog when this",
+  "  question continues or reframes those threads.",
+  "- derivedFromReportSignalRefs: cite report signal reasons as { dimension, index } from the",
+  "  catalog (e.g. architecture[1]).",
+  "- derivedFromPreparedSignalSlots: cite prepared signal slots 0..3 when the question is driven by",
+  "  those collapsed reasons.",
+  "- Each thread must cite at least one source (thread ids and/or signal refs and/or slots).",
+  "Do NOT repeat questions already answered in prior Q&A (same missing piece or paraphrase).",
+  "Drop duplicates and facts already in the project context. confidence = your confidence in this narrative.",
 ].join("\n");
 
 /**
  * Builds the prepare step-5 (reframe questions) user prompt.
  * @param history - The composed history from step 2.
- * @param reasons - The four collapsed reasons from step 4.
+ * @param preparedSignalSlots - The four collapsed reasons from step 4 (slots 0..3).
  * @param reportAnalyses - The report's existing questionsAnalyses.
+ * @param reportSignalReasons - Report signal-reason catalog with provenance.
  * @param priorQa - Q&A from the latest finish archive, when extending after new commits.
  */
 export function buildPrepareQuestionsPrompt(
   history: string,
-  reasons: string[],
+  preparedSignalSlots: string[],
   reportAnalyses: QuestionAnalyses[],
+  reportSignalReasons: {
+    technical: unknown[];
+    architecture: unknown[];
+    security: unknown[];
+  },
   priorQa: { question: string; answer: string }[] = [],
 ): string {
   const blocks = [
     "Composed history:",
     history || "(none)",
     "",
-    "Signal reasons (4):",
-    bulletList(reasons),
+    "Prepared signal slots (0..3):",
+    preparedSignalSlotsBlock(preparedSignalSlots),
     "",
-    "The report's existing questionsAnalyses:",
+    "Report signal-reason catalog (cite as dimension[index]):",
+    signalReasonCatalogBlock(reportSignalReasons),
+    "",
+    "The report's existing questionsAnalyses (cite thread id when reframing):",
     analysesBlock(reportAnalyses),
   ];
   if (priorQa.length > 0) {
@@ -948,6 +1058,89 @@ export function buildPrepareQuestionsPrompt(
     );
   }
   return blocks.join("\n");
+}
+
+/** Migration backfill: lineage refs only — do not rewrite question thread text. */
+export const MIGRATE_LINEAGE_SYSTEM = [
+  "You attach pipeline provenance to EXISTING prepared question threads during schema migration.",
+  "Do NOT rewrite observation, missingPiece, or question text — output lineage refs only.",
+  'Return JSON { "lineage": [{ "derivedFromThreadIds": ["..."],',
+  '    "derivedFromReportSignalRefs": [{ "dimension": "technical|architecture|security", "index": 0 }],',
+  '    "derivedFromPreparedSignalSlots": [0] }] } — one object per frozen input thread, same order.',
+  "LINEAGE (required for every thread — cite sources by ID/index only, never by text match):",
+  "- derivedFromThreadIds: thread id(s) from the report questionsAnalyses catalog when this",
+  "  question continues those threads.",
+  "- derivedFromReportSignalRefs: cite report signal reasons as { dimension, index } from the",
+  "  catalog (e.g. architecture[1]).",
+  "- derivedFromPreparedSignalSlots: cite prepared signal slots 0..3 when driven by those reasons.",
+  "- Each thread must cite at least one source (thread ids and/or signal refs and/or slots).",
+].join("\n");
+
+/**
+ * Builds the migrate lineage-backfill user prompt (frozen prepared threads + report catalog).
+ */
+export function buildMigrateLineagePrompt(
+  history: string,
+  preparedSignalSlots: string[],
+  frozenThreads: QuestionAnalyses[],
+  reportAnalyses: QuestionAnalyses[],
+  reportSignalReasons: {
+    technical: unknown[];
+    architecture: unknown[];
+    security: unknown[];
+  },
+): string {
+  return [
+    "Composed history:",
+    history || "(none)",
+    "",
+    "Prepared signal slots (0..3):",
+    preparedSignalSlotsBlock(preparedSignalSlots),
+    "",
+    "Report signal-reason catalog (cite as dimension[index]):",
+    signalReasonCatalogBlock(reportSignalReasons),
+    "",
+    "Report questionsAnalyses catalog (cite thread id when linking):",
+    analysesBlock(reportAnalyses),
+    "",
+    "Frozen prepared threads (attach lineage only — do NOT rewrite these texts):",
+    analysesBlock(frozenThreads),
+  ].join("\n");
+}
+
+// Step 5b: polish question-card evidence excerpts (batched, one entry per thread).
+export const PREPARE_EVIDENCE_SYSTEM = [
+  "You compress Git-evidence into scannable question-card Evidence blocks for the developer.",
+  'Return JSON { "evidenceExcerpts": ["...", ...] } — one string per input thread, same order.',
+  "Each evidenceExcerpts[i] is MULTILINE plain text:",
+  "- Exactly 3 or 4 lines starting with '- ' (factual bullets grounded ONLY in that thread's",
+  "  observations and sourceCommits — do not invent features, production scale, or customers).",
+  "- Optional final line: Related commits: abc12345, def67890 (8-char prefixes from input only).",
+  "Rules:",
+  "- Pick bullets most relevant to that thread's question and missingPiece.",
+  "- Short phrases (one line each); no third-person 'The developer architected…'.",
+  "- Do NOT copy long report/history paragraphs verbatim — distill.",
+  "- No performance-review tone; facts only.",
+  "- Do NOT repeat the question text in the evidence block.",
+].join("\n");
+
+/** Builds the batched evidence-polish user prompt. */
+export function buildPrepareEvidencePrompt(threads: QuestionAnalyses[]): string {
+  const blocks = threads.map((thread, index) => {
+    const observations = thread.observation.filter(Boolean);
+    const commits = (thread.sourceCommits ?? []).map((h) => h.slice(0, 8)).filter(Boolean);
+    const question = thread.question.join(" ") || "(none)";
+    const missing = thread.missingPiece.join(" ") || "(none)";
+    return [
+      `Thread ${index + 1}:`,
+      `question: ${question}`,
+      `missingPiece: ${missing}`,
+      "observations:",
+      observations.length > 0 ? observations.map((o) => `- ${o}`).join("\n") : "(none)",
+      `sourceCommits: ${commits.length > 0 ? commits.join(", ") : "(none)"}`,
+    ].join("\n");
+  });
+  return blocks.join("\n\n");
 }
 
 // ───────────────────────────── final deliverable (`final`) ───────────────────────
@@ -1193,41 +1386,57 @@ export function buildDeepenImpactNarrativePrompt(
 export const DEEPEN_QUESTIONS_SYSTEM = [
   "You produce up to FOUR NEW role-aware follow-up question analyses that recover human context Git",
   "cannot show. First person framing for the developer ('I'). Return JSON",
-  '{ "questionsAnalyses": [{ "observation": ["..."], "missingPiece": ["..."], "question": ["..."] }],',
-  '  "confidence": "low|medium|high" }.',
+  '{ "questionsAnalyses": [{ "observation": ["..."], "missingPiece": ["..."], "question": ["..."],',
+  '    "derivedFromThreadIds": ["..."], "derivedFromReportSignalRefs": [{ "dimension": "technical|architecture|security", "index": 0 }],',
+  '    "derivedFromPreparedSignalSlots": [0] }], "confidence": "low|medium|high" }.',
   "You are given PROJECT CONTEXT (role + story + profile from project.json), newly recalled",
   "human context (non-code memories about the project), combined history (prepare baseline plus",
-  "prior final refinement), the report's questionsAnalyses, signal reasons, and every question",
-  "already asked with its answer.",
+  "prior final refinement), report questionsAnalyses with thread ids, report signal-reason catalog,",
+  "prepared signal slots, and every question already asked with its answer.",
   "Use the recalled context to ask sharper questions about what it opens up — but do NOT treat",
   "it as proof of production impact unless the developer stated that explicitly.",
   "Write four questions about gaps STILL not covered after prior Q&A and the recalled context —",
   "do NOT repeat, rephrase, or narrow the same angle as any prior question.",
   "Target what remains unknown: production use, ownership vs maintenance, customer/product driver,",
   "security boundary, handoff, constraints, or outcomes not yet stated.",
-  "Frame for the role in PROJECT CONTEXT. confidence = confidence in the narrative so far.",
+  QUESTION_STYLE_RULES,
+  "missingPiece must state missing context neutrally — do not imply a desirable answer.",
+  "Do NOT output whyAsked or evidenceExcerpt (the CLI builds those).",
+  "LINEAGE (required — cite sources by ID/index only): derivedFromThreadIds from report threads,",
+  "derivedFromReportSignalRefs from the signal catalog, derivedFromPreparedSignalSlots 0..3.",
+  "Each thread must cite at least one source. confidence = confidence in the narrative so far.",
 ].join("\n");
 
 /**
- * Builds the `deepen` follow-up-questions user prompt.
- * @param preparedHistory - Unified history from the prepared record.
- * @param priorFinalHistory - Refined history from the latest finish archive.
- * @param reasons - Four collapsed signal reasons from the prepared record.
- * @param reportQuestions - Report-level questions (context only; must not be repeated).
- * @param priorQuestions - Prepared questions from the initial round (must not be repeated).
- * @param priorQa - All Q&A pairs from prior finish rounds.
- * @param recalledContext - Non-code context recalled this deepen round; used to shape sharper
- *   follow-up questions, not treated as proven fact or production impact by default.
+ * Input for {@link buildDeepenQuestionsPrompt}.
  */
-export function buildDeepenQuestionsPrompt(
-  preparedHistory: string,
-  priorFinalHistory: string,
-  reasons: string[],
-  reportQuestions: string[],
-  priorQuestions: string[],
-  priorQa: { question: string; answer: string }[],
-  recalledContext: string,
-): string {
+export interface DeepenQuestionsPromptInput {
+  preparedHistory: string;
+  priorFinalHistory: string;
+  preparedSignalSlots: string[];
+  reportAnalyses: QuestionAnalyses[];
+  reportSignalReasons: {
+    technical: unknown[];
+    architecture: unknown[];
+    security: unknown[];
+  };
+  priorQuestions: string[];
+  priorQa: { question: string; answer: string }[];
+  recalledContext: string;
+}
+
+/** Builds the `deepen` follow-up-questions user prompt. */
+export function buildDeepenQuestionsPrompt(input: DeepenQuestionsPromptInput): string {
+  const {
+    preparedHistory,
+    priorFinalHistory,
+    preparedSignalSlots,
+    reportAnalyses,
+    reportSignalReasons,
+    priorQuestions,
+    priorQa,
+    recalledContext,
+  } = input;
   return [
     "Newly recalled context (non-code — use to shape questions, not as proven fact):",
     recalledContext.trim() || "(none provided)",
@@ -1235,11 +1444,14 @@ export function buildDeepenQuestionsPrompt(
     "Combined history (prepare baseline, then prior final):",
     combinePreparedAndPriorHistory(preparedHistory, priorFinalHistory),
     "",
-    "Signal reasons (4):",
-    bulletList(reasons),
+    "Prepared signal slots (0..3):",
+    preparedSignalSlotsBlock(preparedSignalSlots),
     "",
-    "Report questions (for context — do not repeat):",
-    bulletList(reportQuestions),
+    "Report signal-reason catalog (cite as dimension[index]):",
+    signalReasonCatalogBlock(reportSignalReasons),
+    "",
+    "Report questionsAnalyses (for context — cite thread id when relevant; do not repeat):",
+    analysesBlock(reportAnalyses),
     "",
     "Prepared questions already asked (do not repeat):",
     bulletList(priorQuestions),
