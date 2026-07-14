@@ -125,6 +125,8 @@ The deliverable is `RECONSTRUCTION.<project>.2024.md` — a period review does n
 
 **Resumable** — stop anytime before `final`; re-run `npx dev-workgraph run .` and completed commits, groups, and report folds are skipped. Interactive Q&A starts only after `prepare`.
 
+**Read-only pipeline** — each stage **reads** existing JSON and only **writes what is missing**: new commits, extension groups, the next report fold, a new prepared file, or a new finish round. It does **not** rewrite artifacts that are already done. **`evidence`** is append-only (new commits only; existing manifests are never replaced). That keeps reruns cheap and preserves provenance. When the on-disk **schema** changes after a CLI upgrade, use **`migrate`** (below) — not re-running `summarize` / `report` / `prepare` over finished work.
+
 **Dogfooded** on **MacBook Pro M4 Pro (48 GB)**. One real repo (**~300 commits**): unattended stages took **~6 hours** before the first questions (`final`). Time depends on models, patch size, and cache from prior runs.
 
 ### Recommended models (Ollama)
@@ -153,8 +155,39 @@ These are the models used for the example outputs below. With **LM Studio**, pic
 | Distill | `prepare` | narrative | One history + up to 4 questions for `final` |
 | Deliver | `final` | narrative | **You answer** → `RECONSTRUCTION.<project>.md` |
 | Extend | `deepen` | narrative | Recalled context + 4 new Q&A → `.v2.md`, … |
+| Upgrade | `migrate` | narrative* | Bring on-disk JSON to the current `schemaVersion` |
 
-`run` executes everything through `final`. `deepen` is **not** part of `run` — run it separately when you remember more context.
+`run` executes everything through `final`. `deepen` is **not** part of `run` — run it separately when you remember more context. **`migrate`** is also **not** part of `run` — run it after upgrading the CLI when older pipeline JSON needs a schema bump (\*optional LLM lineage backfill uses the narrative slot).
+
+## Schema migration (`migrate`)
+
+Pipeline stages treat finished work as **read-only**: they load existing `groups/`, `reports/`, `prepared/`, and `finish/` files and skip or extend — they do not re-derive or overwrite them. **`evidence`** only **extends** the commit tree (new hashes); it never replaces an existing manifest or patch.
+
+When a new CLI version changes JSON field layout (e.g. question cards moving from `prepared/` to `finish/*.question.json`, signal-reason provenance objects, question lineage refs), that upgrade belongs in a **dedicated migration path** — not in `summarize`, `report`, or `prepare`. Otherwise every rerun would silently rewrite history and break the append-only / resumable model.
+
+**`dev-workgraph migrate [repo]`** upgrades pipeline artifacts to the current **`schemaVersion`** (encoded package semver on each JSON file):
+
+1. **Structural steps (deterministic)** — rewrite fields in place: e.g. `pipeline-provenance` (1.0.5), `finish-questions-analyses` (1.0.6).
+2. **Optional LLM backfill** — fill missing question-lineage refs on prepared / finish question files (uses **narrative** model; skip with `--skip-llm`).
+
+Artifacts are migrated in order: `groups/` → `reports/` → `prepared/` → `finish/*.question.json` → `finish/` archives. **Lazy migration** also runs when a file is loaded and its `schemaVersion` is behind the current CLI.
+
+```bash
+# After upgrading dev-workgraph on a repo with existing ~/.workgraph data
+dev-workgraph migrate ./repo
+
+# Preview changes, keep backups
+dev-workgraph migrate ./repo --dry-run
+dev-workgraph migrate ./repo --backup
+
+# Structural rewrite only (no LLM)
+dev-workgraph migrate ./repo --skip-llm
+
+# Same for a review period subtree
+dev-workgraph migrate ./repo --period 2024
+```
+
+See [`REQUIREMENTS.md`](../REQUIREMENTS.md) §1.5 and [`uml/migrate.puml`](../uml/migrate.puml) for step details.
 
 ## Commands
 
@@ -169,6 +202,7 @@ dev-workgraph report       ./repo
 dev-workgraph prepare      ./repo
 dev-workgraph final        ./repo
 dev-workgraph deepen       ./repo
+dev-workgraph migrate      ./repo
 dev-workgraph run          ./repo
 dev-workgraph export       ./repo
 dev-workgraph import       <bundle.tar.gz>
@@ -187,6 +221,9 @@ Common flags:
 - `final --answers-file <path>` — non-interactive answers (JSON)
 - `final --output <path>` — override markdown path
 - `deepen --context-file <path>` — non-interactive recalled context
+- `migrate --dry-run` — print planned schema upgrades without writing
+- `migrate --backup` — write `.bak.<schemaVersion>` before each changed file
+- `migrate --skip-llm` — structural migration only (no lineage LLM backfill)
 
 ## On-disk data
 
@@ -198,10 +235,10 @@ commits/<ts>/<hash>.{patch,json}     # evidence (deterministic)
 summaries/<ts>/<hash>.json           # commit model layer
 groups/<timestampEnd>.json
 reports/<reportId>.json
-prepared/<reportId>.json             # questions only — no answers
+prepared/<reportId>.json             # history + signals (no questionsAnalyses on ≥1.0.6)
 finish/
   <id>.json                          # finish archive
-  <id>.question.json                 # v1 questions
+  <id>.question.json                 # question cards (written at prepare; v1)
   <id>.v2.json / .question.v2.json   # deepen / extension
   <id>.md
 ```
