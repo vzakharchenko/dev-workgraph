@@ -246,11 +246,11 @@ export function formatQuestionCardLines(
     }
   }
   if (thread.whyAsked) {
-    lines.push(...["Why asked:", thread.whyAsked]);
+    lines.push("Why asked:", thread.whyAsked);
   }
   const question = primaryQuestionText(thread);
   if (question) {
-    lines.push(...["Question:", question]);
+    lines.push("Question:", question);
   }
   return lines;
 }

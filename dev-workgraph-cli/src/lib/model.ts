@@ -717,81 +717,116 @@ function cleanQuestionStringArrays(): {
   return { strArray, nullableStrArray };
 }
 
+function trimmedString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return value;
+}
+
+function parseLineageKind(value: unknown): QuestionAnalyses["lineageKind"] | undefined {
+  if (value === "report-thread" || value === "signal-reason") return value;
+  return undefined;
+}
+
+function finiteNumberArray(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((id): id is number => typeof id === "number" && Number.isFinite(id));
+}
+
+function optionalIdentityFields(entry: Partial<QuestionAnalyses>): Partial<QuestionAnalyses> {
+  const fields: Partial<QuestionAnalyses> = {};
+  const threadId = trimmedString(entry.threadId);
+  if (threadId) fields.threadId = threadId;
+
+  const groupThreadIndex = finiteNumber(entry.groupThreadIndex);
+  if (groupThreadIndex !== undefined) fields.groupThreadIndex = groupThreadIndex;
+
+  const threadIndex = finiteNumber(entry.threadIndex);
+  if (threadIndex !== undefined) fields.threadIndex = threadIndex;
+
+  const lineageKind = parseLineageKind(entry.lineageKind);
+  if (lineageKind) fields.lineageKind = lineageKind;
+
+  const derivedFromSignalReasonIndex = finiteNumber(entry.derivedFromSignalReasonIndex);
+  if (derivedFromSignalReasonIndex !== undefined) {
+    fields.derivedFromSignalReasonIndex = derivedFromSignalReasonIndex;
+  }
+
+  return fields;
+}
+
+function optionalProvenanceFields(
+  entry: Partial<QuestionAnalyses>,
+  strArray: (v: unknown) => string[],
+  nullableStrArray: (v: unknown) => (string | null)[],
+): Partial<QuestionAnalyses> {
+  const fields: Partial<QuestionAnalyses> = {};
+
+  const sourceGroupId = finiteNumber(entry.sourceGroupId);
+  if (sourceGroupId !== undefined) fields.sourceGroupId = sourceGroupId;
+
+  const derivedFrom = strArray(entry.derivedFromThreadIds);
+  if (derivedFrom.length > 0) fields.derivedFromThreadIds = derivedFrom;
+
+  const derivedFromReportSignalRefs = cleanReportSignalReasonRefs(
+    entry.derivedFromReportSignalRefs,
+  );
+  if (derivedFromReportSignalRefs.length > 0) {
+    fields.derivedFromReportSignalRefs = derivedFromReportSignalRefs;
+  }
+
+  const derivedFromPreparedSignalSlots = cleanPreparedSignalSlots(
+    entry.derivedFromPreparedSignalSlots,
+  );
+  if (derivedFromPreparedSignalSlots.length > 0) {
+    fields.derivedFromPreparedSignalSlots = derivedFromPreparedSignalSlots;
+  }
+
+  const sourceGroupIds = finiteNumberArray(entry.sourceGroupIds);
+  if (sourceGroupIds.length > 0) fields.sourceGroupIds = sourceGroupIds;
+
+  const sourceCommits = strArray(entry.sourceCommits);
+  if (sourceCommits.length > 0) fields.sourceCommits = sourceCommits;
+
+  const sourceSummaries = nullableStrArray(entry.sourceSummaries);
+  if (sourceSummaries.length > 0) fields.sourceSummaries = sourceSummaries;
+
+  return fields;
+}
+
+function optionalCardFields(entry: Partial<QuestionAnalyses>): Partial<QuestionAnalyses> {
+  const fields: Partial<QuestionAnalyses> = {};
+  const evidenceExcerpt = trimmedString(entry.evidenceExcerpt);
+  if (evidenceExcerpt) fields.evidenceExcerpt = evidenceExcerpt;
+
+  const whyAsked = trimmedString(entry.whyAsked);
+  if (whyAsked) fields.whyAsked = whyAsked;
+
+  return fields;
+}
+
 function cleanOneQuestionAnalysis(
   raw: unknown,
   strArray: (v: unknown) => string[],
   nullableStrArray: (v: unknown) => (string | null)[],
 ): QuestionAnalyses | null {
   const entry = (raw ?? {}) as Partial<QuestionAnalyses>;
-  const threadId =
-    typeof entry.threadId === "string" && entry.threadId.trim() ? entry.threadId.trim() : undefined;
-  const derivedFrom = strArray(entry.derivedFromThreadIds);
-  const derivedFromReportSignalRefs = cleanReportSignalReasonRefs(
-    entry.derivedFromReportSignalRefs,
-  );
-  const derivedFromPreparedSignalSlots = cleanPreparedSignalSlots(
-    entry.derivedFromPreparedSignalSlots,
-  );
-  const sourceCommits = strArray(entry.sourceCommits);
-  const sourceSummaries = nullableStrArray(entry.sourceSummaries);
-  const sourceGroupId =
-    typeof entry.sourceGroupId === "number" && Number.isFinite(entry.sourceGroupId)
-      ? entry.sourceGroupId
-      : undefined;
-  const sourceGroupIds = Array.isArray(entry.sourceGroupIds)
-    ? entry.sourceGroupIds.filter(
-        (id): id is number => typeof id === "number" && Number.isFinite(id),
-      )
-    : [];
-  const groupThreadIndex =
-    typeof entry.groupThreadIndex === "number" && Number.isFinite(entry.groupThreadIndex)
-      ? entry.groupThreadIndex
-      : undefined;
-  const threadIndex =
-    typeof entry.threadIndex === "number" && Number.isFinite(entry.threadIndex)
-      ? entry.threadIndex
-      : undefined;
-  const lineageKind =
-    entry.lineageKind === "report-thread" || entry.lineageKind === "signal-reason"
-      ? entry.lineageKind
-      : undefined;
-  const derivedFromSignalReasonIndex =
-    typeof entry.derivedFromSignalReasonIndex === "number" &&
-    Number.isFinite(entry.derivedFromSignalReasonIndex)
-      ? entry.derivedFromSignalReasonIndex
-      : undefined;
-  const evidenceExcerpt =
-    typeof entry.evidenceExcerpt === "string" && entry.evidenceExcerpt.trim()
-      ? entry.evidenceExcerpt.trim()
-      : undefined;
-  const whyAsked =
-    typeof entry.whyAsked === "string" && entry.whyAsked.trim() ? entry.whyAsked.trim() : undefined;
-  const cleaned: QuestionAnalyses = {
+  const question = strArray(entry.question);
+  if (question.length === 0) return null;
+
+  return {
     observation: strArray(entry.observation),
     missingPiece: strArray(entry.missingPiece),
-    question: strArray(entry.question),
+    question,
+    ...optionalIdentityFields(entry),
+    ...optionalProvenanceFields(entry, strArray, nullableStrArray),
+    ...optionalCardFields(entry),
   };
-  if (threadId) cleaned.threadId = threadId;
-  if (sourceGroupId !== undefined) cleaned.sourceGroupId = sourceGroupId;
-  if (derivedFrom.length > 0) cleaned.derivedFromThreadIds = derivedFrom;
-  if (derivedFromReportSignalRefs.length > 0) {
-    cleaned.derivedFromReportSignalRefs = derivedFromReportSignalRefs;
-  }
-  if (derivedFromPreparedSignalSlots.length > 0) {
-    cleaned.derivedFromPreparedSignalSlots = derivedFromPreparedSignalSlots;
-  }
-  if (sourceGroupIds.length > 0) cleaned.sourceGroupIds = sourceGroupIds;
-  if (sourceCommits.length > 0) cleaned.sourceCommits = sourceCommits;
-  if (sourceSummaries.length > 0) cleaned.sourceSummaries = sourceSummaries;
-  if (groupThreadIndex !== undefined) cleaned.groupThreadIndex = groupThreadIndex;
-  if (threadIndex !== undefined) cleaned.threadIndex = threadIndex;
-  if (lineageKind) cleaned.lineageKind = lineageKind;
-  if (derivedFromSignalReasonIndex !== undefined) {
-    cleaned.derivedFromSignalReasonIndex = derivedFromSignalReasonIndex;
-  }
-  if (evidenceExcerpt) cleaned.evidenceExcerpt = evidenceExcerpt;
-  if (whyAsked) cleaned.whyAsked = whyAsked;
-  return cleaned.question.length > 0 ? cleaned : null;
 }
 
 export function cleanQuestionAnalyses(raw: unknown): QuestionAnalyses[] {
