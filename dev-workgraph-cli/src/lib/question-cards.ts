@@ -166,7 +166,6 @@ function isValidPolishedExcerpt(value: string): boolean {
   const nonBullets = lines.filter((l) => !l.startsWith("- "));
   if (nonBullets.length > 1) return false;
   return !(nonBullets.length === 1 && !nonBullets[0]?.startsWith("Related commits:"));
-
 }
 
 /**
