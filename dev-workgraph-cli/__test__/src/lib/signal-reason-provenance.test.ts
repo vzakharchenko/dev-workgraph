@@ -13,6 +13,9 @@ import {
   signalReasonArrayTexts,
   signalReasonText,
   textsToPreparedSignalReasons,
+  foldAndReconcileReportSignalReasons,
+  reconcileMergedSignalReasons,
+  seedReportReasonsFromGroupWithCommits,
 } from "../../../src/lib/signal-reason-provenance.js";
 
 describe("signal-reason-provenance", () => {
@@ -147,5 +150,61 @@ describe("signal-reason-provenance", () => {
       groupB,
     );
     expect(reasons.technical).toHaveLength(2);
+  });
+
+  it("reconcileMergedSignalReasons attaches provenance to LLM merge output", () => {
+    const groupId = 1_700_086_400;
+    let folded = seedReportReasonsFromGroup(
+      { technical: "Iterator-based export architecture", architecture: "", security: "" },
+      1_700_000_000,
+    );
+    const group = {
+      timestampEnd: groupId,
+      model: {
+        signalReasons: {
+          technical: "Iterator based export architecture for Jira",
+          architecture: "",
+          security: "",
+        },
+      },
+      groups: { commits: [], sourceSummaries: [] },
+    } as import("../../../src/lib/records.js").GroupRecord;
+    folded = foldGroupIntoReportReasons(folded, group.model.signalReasons, groupId);
+    const reconciled = reconcileMergedSignalReasons(
+      folded,
+      { technical: ["Iterator based export architecture for Jira"], architecture: [], security: [] },
+      groupId,
+      group,
+      "/tmp",
+    );
+    expect(reconciled.technical[0]?.text).toBe("Iterator based export architecture for Jira");
+    expect(reconciled.technical[0]?.sourceGroupIds).toEqual(
+      expect.arrayContaining([1_700_000_000, groupId]),
+    );
+  });
+
+  it("foldAndReconcileReportSignalReasons preserves prior provenance when LLM rephrases", () => {
+    const groupId = 1_700_086_400;
+    const prev = {
+      technical: [{ text: "Core auth refactor", sourceGroupIds: [1_700_000_000], sourceCommits: ["abc"] }],
+      architecture: [],
+      security: [],
+    };
+    const group = {
+      timestampEnd: groupId,
+      model: { signalReasons: { technical: "", architecture: "", security: "" } },
+      groups: { commits: [], sourceSummaries: [] },
+    } as import("../../../src/lib/records.js").GroupRecord;
+    const reconciled = foldAndReconcileReportSignalReasons(
+      prev,
+      group,
+      { technical: ["Core auth refactor"], architecture: [], security: [] },
+      "/tmp",
+    );
+    expect(reconciled.technical[0]).toEqual({
+      text: "Core auth refactor",
+      sourceGroupIds: [1_700_000_000],
+      sourceCommits: ["abc"],
+    });
   });
 });

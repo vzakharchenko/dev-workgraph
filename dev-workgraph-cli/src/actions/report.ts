@@ -3,7 +3,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { repoGroupsDir, repoReportsDir } from "../lib/config.js";
+import { repoDataRoot, repoGroupsDir, repoReportsDir } from "../lib/config.js";
 import { resolveRepo } from "../lib/git.js";
 import { loadGroupRecords, mergeDeterministic } from "../lib/grouping.js";
 import type { LlmCommandOptions } from "../lib/llm/cli-options.js";
@@ -52,7 +52,11 @@ import {
   stripLegacyProvenance,
 } from "../lib/report-provenance.js";
 import { resolveLlmSlot } from "../lib/select.js";
-import { signalReasonText } from "../lib/signal-reason-provenance.js";
+import {
+  foldAndReconcileReportSignalReasons,
+  type SignalDimension,
+  seedReportReasonsFromGroupWithCommits,
+} from "../lib/signal-reason-provenance.js";
 import { TokenUsageTracker } from "../lib/token-usage.js";
 
 /**
@@ -72,10 +76,13 @@ const asStringArray = (value: unknown): string[] =>
     ? value.filter((v): v is string => typeof v === "string" && v.length > 0)
     : [];
 
-const nonEmptyReason = (value: unknown): string[] => {
-  const text = signalReasonText(value);
-  return text.trim() ? [text] : [];
-};
+const capSignalReasonTexts = (
+  reasons: Record<string, unknown>,
+): Record<SignalDimension, string[]> => ({
+  technical: asStringArray(reasons.technical).slice(0, MAX_CONTEXT_BULLETS),
+  architecture: asStringArray(reasons.architecture).slice(0, MAX_CONTEXT_BULLETS),
+  security: asStringArray(reasons.security).slice(0, MAX_CONTEXT_BULLETS),
+});
 
 const uniq = (values: string[]): string[] => [...new Set(values)];
 
@@ -116,9 +123,11 @@ function initReport(
   group: GroupRecord,
   generatedAt: string,
   model: string,
+  dataRoot: string,
 ): ReportRecord {
   const g = group.model;
   const historySources = g?.history ? [[file]] : [];
+  const signalReasons = seedReportReasonsFromGroupWithCommits(g?.signalReasons, group, dataRoot);
   return {
     reportId: group.timestampEnd,
     sourceGroups: uniq([file]),
@@ -130,11 +139,7 @@ function initReport(
       technicalSignal: g?.technicalSignal ?? "low",
       architectureSignal: g?.architectureSignal ?? "low",
       securitySignal: g?.securitySignal ?? "low",
-      signalReasons: {
-        technical: nonEmptyReason(g?.signalReasons.technical),
-        architecture: nonEmptyReason(g?.signalReasons.architecture),
-        security: nonEmptyReason(g?.signalReasons.security),
-      },
+      signalReasons,
       questionsAnalyses: seedReportQuestionProvenance(
         g?.questionsAnalyses ?? [],
         group.timestampEnd,
@@ -190,6 +195,7 @@ export async function report(options: ReportOptions): Promise<void> {
   });
 
   const reportsDir = repoReportsDir(repoPath, options.period);
+  const dataRoot = repoDataRoot(repoPath, options.period);
   const selected = options.limit ? groups.slice(0, options.limit) : groups;
   fs.mkdirSync(reportsDir, { recursive: true });
 
@@ -220,7 +226,7 @@ export async function report(options: ReportOptions): Promise<void> {
       console.log(`[${i + 1}/${selected.length}] fold ${file} (${record.commitCount} commits)`);
 
       if (current === null) {
-        current = initReport(file, record, generatedAt, model);
+        current = initReport(file, record, generatedAt, model, dataRoot);
         console.log(`   seeded report (${current.history.length} history entry)`);
       } else {
         current = await foldGroup({
@@ -229,6 +235,7 @@ export async function report(options: ReportOptions): Promise<void> {
           group: record,
           generatedAt,
           projectBlock,
+          dataRoot,
           llm: { baseUrl, model, provider: providerId, tracker },
         });
       }
@@ -248,6 +255,7 @@ interface FoldMergeMeta {
   prev: ReportRecord;
   file: string;
   group: GroupRecord;
+  dataRoot: string;
   sourceGroups: string[];
   historySources: string[][];
   mergedDeterministic: ReturnType<typeof mergeDeterministic>;
@@ -307,15 +315,18 @@ async function mergeFoldModelLayer(
     lowContext: cap(asStringArray(merged.lowContext)),
   };
   const reasons = (merged.signalReasons ?? {}) as Record<string, unknown>;
+  const mergedReasonTexts = capSignalReasonTexts(reasons);
+  const signalReasons = foldAndReconcileReportSignalReasons(
+    meta.prev.model.signalReasons,
+    meta.group,
+    mergedReasonTexts,
+    meta.dataRoot,
+  );
   return {
     changeTypes: asStringArray(merged.changeTypes),
     technologies: mergeTechnologies(meta.prev.model.technologies, g?.technologies),
     ...meta.signals,
-    signalReasons: {
-      technical: cap(asStringArray(reasons.technical)),
-      architecture: cap(asStringArray(reasons.architecture)),
-      security: cap(asStringArray(reasons.security)),
-    },
+    signalReasons,
     questionsAnalyses: attachReportMergeProvenance(
       cleanQuestionAnalyses(merged.questionsAnalyses).slice(0, MAX_CONTEXT_BULLETS),
       meta.prev.model.questionsAnalyses,
@@ -446,6 +457,7 @@ async function foldGroup(input: {
   group: GroupRecord;
   generatedAt: string;
   projectBlock: string;
+  dataRoot: string;
   llm: {
     baseUrl: string;
     model: string;
@@ -473,6 +485,7 @@ async function foldGroup(input: {
     prev,
     file,
     group,
+    dataRoot: input.dataRoot,
     sourceGroups,
     historySources,
     mergedDeterministic: mergeDeterministic(prev.deterministic, group.deterministic),

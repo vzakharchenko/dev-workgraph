@@ -1,7 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Vasyl Zakharchenko
 // SPDX-License-Identifier: Apache-2.0
 
+import fs from "node:fs";
+import path from "node:path";
+import { readRecordJson } from "./migrations/io.js";
+import type { GroupRecord } from "./records.js";
+
 export type SignalDimension = "technical" | "architecture" | "security";
+
+const DIMENSIONS: SignalDimension[] = ["technical", "architecture", "security"];
 
 /** CLI-attached provenance for a signal reason (schema ≥ 1.0.5). */
 export interface SignalReasonProvenance {
@@ -149,13 +156,141 @@ export function seedReportReasonsFromGroup(
   signalReasons: Record<SignalDimension, unknown> | undefined,
   groupId: number,
 ): ReportSignalReasonArrays {
-  const dims: SignalDimension[] = ["technical", "architecture", "security"];
   const out = emptyReportSignalReasons();
-  for (const dim of dims) {
+  for (const dim of DIMENSIONS) {
     const prov = normalizeSignalReason(signalReasons?.[dim], [groupId]);
     if (prov.text.trim()) out[dim].push(prov);
   }
   return out;
+}
+
+function loadSummarySignalReasons(
+  dataRoot: string,
+  relSummary: string | null,
+): { technical: string; architecture: string; security: string } | null {
+  if (!relSummary) return null;
+  const summaryPath = path.join(dataRoot, relSummary);
+  if (!fs.existsSync(summaryPath)) return null;
+  try {
+    const record = readRecordJson(summaryPath) as {
+      model?: { signalReasons?: { technical: string; architecture: string; security: string } };
+    };
+    return record.model?.signalReasons ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Collects member commit hashes that contributed a signal reason for one dimension. */
+function collectCommitsForGroupDimension(
+  group: GroupRecord,
+  dataRoot: string,
+  dim: SignalDimension,
+): string[] {
+  const commits: string[] = [];
+  const block = group.groups;
+  if (!block?.commits) return commits;
+  for (let i = 0; i < block.commits.length; i += 1) {
+    const hash = block.commits[i];
+    if (!hash) continue;
+    const reasons = loadSummarySignalReasons(dataRoot, block.sourceSummaries?.[i] ?? null);
+    if (commitContributesReason(reasons ?? undefined, dim)) commits.push(hash);
+  }
+  return uniq(commits);
+}
+
+/** Seeds report reasons from one group with commit-level provenance when available. */
+export function seedReportReasonsFromGroupWithCommits(
+  signalReasons: Record<SignalDimension, unknown> | undefined,
+  group: GroupRecord,
+  dataRoot: string,
+): ReportSignalReasonArrays {
+  const groupId = group.timestampEnd;
+  const out = emptyReportSignalReasons();
+  for (const dim of DIMENSIONS) {
+    const prov = normalizeSignalReason(signalReasons?.[dim], [groupId]);
+    if (!prov.text.trim()) continue;
+    const commits = collectCommitsForGroupDimension(group, dataRoot, dim);
+    out[dim].push({
+      ...prov,
+      sourceCommits: commits.length > 0 ? commits : prov.sourceCommits,
+    });
+  }
+  return out;
+}
+
+function enrichIncomingGroupReasons(
+  group: GroupRecord,
+  dataRoot: string,
+): Record<SignalDimension, unknown> {
+  const groupId = group.timestampEnd;
+  const incoming: Record<SignalDimension, unknown> = {
+    technical: "",
+    architecture: "",
+    security: "",
+  };
+  for (const dim of DIMENSIONS) {
+    const prov = normalizeSignalReason(group.model?.signalReasons?.[dim], [groupId]);
+    if (!prov.text.trim()) continue;
+    const commits = collectCommitsForGroupDimension(group, dataRoot, dim);
+    incoming[dim] = {
+      ...prov,
+      sourceCommits: commits.length > 0 ? commits : prov.sourceCommits,
+    };
+  }
+  return incoming;
+}
+
+/** Maps LLM-merged reason texts onto folded provenance entries (schema ≥ 1.0.5). */
+export function reconcileMergedSignalReasons(
+  folded: ReportSignalReasonArrays,
+  mergedByDimension: Record<SignalDimension, string[]>,
+  fallbackGroupId: number,
+  group: GroupRecord,
+  dataRoot: string,
+): ReportSignalReasonArrays {
+  const out = emptyReportSignalReasons();
+  for (const dim of DIMENSIONS) {
+    for (const text of mergedByDimension[dim] ?? []) {
+      const trimmed = text.trim();
+      if (!trimmed) continue;
+      const idx = findMatchingReasonIndex(folded[dim], trimmed);
+      if (idx >= 0) {
+        const existing = folded[dim][idx];
+        if (!existing) continue;
+        out[dim].push({
+          text: trimmed,
+          sourceGroupIds: existing.sourceGroupIds,
+          sourceCommits: existing.sourceCommits?.length ? existing.sourceCommits : undefined,
+        });
+        continue;
+      }
+      const commits = collectCommitsForGroupDimension(group, dataRoot, dim);
+      out[dim].push({
+        text: trimmed,
+        sourceGroupIds: [fallbackGroupId],
+        sourceCommits: commits.length > 0 ? commits : undefined,
+      });
+    }
+  }
+  return out;
+}
+
+/** Folds one group into prior report reasons, then aligns with LLM merge output. */
+export function foldAndReconcileReportSignalReasons(
+  prevSignalReasons: {
+    technical: unknown[];
+    architecture: unknown[];
+    security: unknown[];
+  },
+  group: GroupRecord,
+  mergedByDimension: Record<SignalDimension, string[]>,
+  dataRoot: string,
+): ReportSignalReasonArrays {
+  const groupId = group.timestampEnd;
+  let folded = reportModelToSignalReasonArrays(prevSignalReasons);
+  folded = foldGroupIntoReportReasons(folded, enrichIncomingGroupReasons(group, dataRoot), groupId);
+  return reconcileMergedSignalReasons(folded, mergedByDimension, groupId, group, dataRoot);
 }
 
 /** Folds one group's reasons into cumulative report arrays. */
@@ -164,9 +299,8 @@ export function foldGroupIntoReportReasons(
   signalReasons: Record<SignalDimension, unknown> | undefined,
   groupId: number,
 ): ReportSignalReasonArrays {
-  const dims: SignalDimension[] = ["technical", "architecture", "security"];
   const out = { ...prev };
-  for (const dim of dims) {
+  for (const dim of DIMENSIONS) {
     const incoming = normalizeSignalReason(signalReasons?.[dim], [groupId]);
     out[dim] = foldReasonIntoArray(prev[dim], incoming);
   }
@@ -193,9 +327,8 @@ export function reportModelToSignalReasonArrays(signalReasons: {
   architecture: unknown[];
   security: unknown[];
 }): ReportSignalReasonArrays {
-  const dims: SignalDimension[] = ["technical", "architecture", "security"];
   const out = emptyReportSignalReasons();
-  for (const dim of dims) {
+  for (const dim of DIMENSIONS) {
     for (const entry of signalReasons[dim] ?? []) {
       const prov = normalizeSignalReason(entry, []);
       if (prov.text.trim()) out[dim].push(prov);

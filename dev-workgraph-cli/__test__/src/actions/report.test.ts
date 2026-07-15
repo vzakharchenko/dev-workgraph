@@ -520,7 +520,12 @@ describe("report", () => {
     const record = JSON.parse(
       fs.readFileSync(path.join(repoReportsDir(FAKE_REPO), "1700000000.json"), "utf8"),
     ) as ReportRecord;
-    expect(record.model.signalReasons.technical).toEqual([" touched core logic "]);
+    expect(record.model.signalReasons.technical).toEqual([
+      {
+        text: " touched core logic ",
+        sourceGroupIds: [1_700_000_000],
+      },
+    ]);
     expect(record.model.signalReasons.architecture).toEqual([]);
     expect(record.model.signalReasons.security).toEqual([]);
   });
