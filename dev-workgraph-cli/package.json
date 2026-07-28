@@ -66,7 +66,7 @@
     "undici": "^8.9.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.5",
+    "@biomejs/biome": "2.5.6",
     "@types/node": "^26.1.2",
     "@vitest/coverage-v8": "^4.1.10",
     "knip": "^6.29.0",
