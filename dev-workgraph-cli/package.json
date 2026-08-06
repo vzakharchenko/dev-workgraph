@@ -69,8 +69,8 @@
     "@biomejs/biome": "2.5.7",
     "@types/node": "^26.1.2",
     "@vitest/coverage-v8": "^4.1.10",
-    "knip": "^6.31.0",
-    "tsx": "^4.23.8",
+    "knip": "^6.32.0",
+    "tsx": "^4.23.9",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   }
