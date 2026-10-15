@@ -63,15 +63,15 @@
   "dependencies": {
     "commander": "^15.0.0",
     "inquirer": "^14.2.3",
-    "undici": "^8.12.1"
+    "undici": "^8.12.2"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
     "@types/node": "^26.6.5",
-    "@vitest/coverage-v8": "^5.0.4",
+    "@vitest/coverage-v8": "^5.0.5",
     "knip": "^6.41.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.4"
+    "vitest": "^5.0.5"
   }
 }
