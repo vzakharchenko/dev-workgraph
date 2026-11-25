@@ -67,11 +67,11 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.9",
-    "@types/node": "^26.6.7",
-    "@vitest/coverage-v8": "^5.1.1",
+    "@types/node": "^26.6.10",
+    "@vitest/coverage-v8": "^5.1.2",
     "knip": "^6.48.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vitest": "^5.1.1"
+    "vitest": "^5.1.2"
   }
 }
